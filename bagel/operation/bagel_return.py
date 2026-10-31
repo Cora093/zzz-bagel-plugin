@@ -6,6 +6,7 @@ from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 from zzz_od.operation.back_to_normal_world import BackToNormalWorld
 
+from .bagel_leave_pages import BagelLeavePages
 from .bagel_operation import BagelOperation
 
 if TYPE_CHECKING:
@@ -35,6 +36,12 @@ class BagelReturn(BagelOperation):
         if self.world_recovery_attempted:
             return self.round_fail('通用返回大世界后仍无法继续贝果返回，停止并保留现场')
         self.world_recovery_attempted = True
+        # 主程序通用返回会在贝果界面反复点标题，先由插件退出。
+        leave = BagelLeavePages(self.ctx)
+        leave.timeout_seconds = min(20, max(0, self.timeout_seconds - self.operation_usage_time))
+        result = leave.execute()
+        if not result.success:
+            return self.round_by_op_result(result)
         operation = BackToNormalWorld(self.ctx, ensure_normal_world=True)
         operation.timeout_seconds = min(20, max(0, self.timeout_seconds - self.operation_usage_time))
         result = operation.execute()

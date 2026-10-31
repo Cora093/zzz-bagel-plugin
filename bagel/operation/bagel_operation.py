@@ -168,6 +168,7 @@ class BagelOperation(ZOperation):
         活动页标题为「迷宫诡域：活动名」（如「迷宫诡域：古怪试炼」），
         与贝果主界面的「迷宫诡域贝果计划」不同，但两页都有「前往空洞」。
         活动页点「前往空洞」进入选图页，再进入主界面。
+        活动期间主界面标题也是「迷宫诡域：古怪试炼」，此时主界面同样返回 True。
         """
         area = self.ctx.screen_loader.get_area('贝果-研究站', '标题')
         if area is None:
@@ -186,6 +187,14 @@ class BagelOperation(ZOperation):
         if all(self._has(name, '贝果-研究站') for name in ('标题', '前往空洞')):
             return True
         return self._has('前往备战', '贝果-选图')
+
+    def _at_bagel_page(self) -> bool:
+        """核对是否停在贝果的界面页：活动页、主界面、选图或备战。"""
+        return (
+            self._at_bagel_hub()
+            or self._at_bagel_activity()
+            or self._has('预设组合', '贝果-备战')
+        )
 
     def execute(self) -> OperationResult:
         """操作返回前完成事件清理。"""

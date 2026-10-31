@@ -26,6 +26,7 @@ from ..vision.bagel_screen import (
 from .bagel_clear_loadout import BagelClearLoadout
 from .bagel_exit import BagelExit
 from .bagel_investment import read_investment
+from .bagel_leave_pages import BagelLeavePages
 from .bagel_open_compendium import BagelOpenCompendium
 from .bagel_operation import BagelOperation
 from .bagel_return import BagelReturn
@@ -209,24 +210,28 @@ class BagelEnter(BagelOperation):
         at_prepare = self._has('预设组合', '贝果-备战')
         at_map = self._has('前往备战', '贝果-选图')
         at_hub = all(self._has(name, '贝果-研究站') for name in ('标题', '前往空洞'))
+        at_activity = self._at_bagel_activity()
         if not self.prepare_shortcut_entry:
             if at_prepare:
                 return self.round_success('已在备战')
             if at_map or at_hub:
                 return self.round_success()
+            if at_activity:
+                # 活动页也有「前往空洞」，点它进入选图页，不能停在这里。
+                return self.round_by_find_and_click_area(
+                    self.last_screenshot, '贝果-研究站', '前往空洞',
+                    until_find_all=[('贝果-选图', '前往备战')],
+                    success_wait=1, retry_wait=1,
+                )
         at_dialog = all(self._has(name, '贝果-研究站') for name in ('对话人', '出发对话'))
-        if self._at_bagel_activity():
-            # 活动页也有「前往空洞」，点它进入选图页，不能停在这里。
-            return self.round_by_find_and_click_area(
-                self.last_screenshot, '贝果-研究站', '前往空洞',
-                until_find_all=[('贝果-选图', '前往备战')],
-                success_wait=1, retry_wait=1,
-            )
+        # 首次启动要重新传送，停在贝果页面时不再点「前往空洞」，传送前由插件退出。
+        if at_prepare or at_map or at_hub or at_activity:
+            return self.round_success('需要快捷手册入口')
         current = self.check_and_update_current_screen(self.last_screenshot)
         if current is None:
             current = self._ordinary_warehouse()
         # 现有贝果页面无法确定入场前位置，因此首次启动必须重新传送。
-        allowed = at_prepare or at_map or at_hub or at_dialog or current in {
+        allowed = at_dialog or current in {
             '大世界-普通', '大世界-勘域',
             '菜单', '菜单-更多功能', '快捷手册', '仓库-材料道具',
             '仓库-驱动仓库', '仓库-音擎仓库', '地图',
@@ -252,7 +257,12 @@ class BagelEnter(BagelOperation):
     @node_from(from_name='打开贝果主界面', status='需要快捷手册入口')
     @operation_node(name='传送录像店', screenshot_before_round=False)
     def transport_for_shortcut(self) -> OperationRoundResult:
-        """传送到「录像店－房间」，下一节点再打开快捷手册。"""
+        """先退出贝果界面，再传送到「录像店－房间」，下一节点再打开快捷手册。"""
+        leave = BagelLeavePages(self.ctx)
+        leave.timeout_seconds = min(30, max(0, self.timeout_seconds - self.operation_usage_time))
+        result = leave.execute()
+        if not result.success:
+            return self.round_by_op_result(result)
         operation = Transport(self.ctx, '录像店', '房间')
         operation.timeout_seconds = min(120, max(0, self.timeout_seconds - self.operation_usage_time))
         return self.round_by_op_result(operation.execute())
