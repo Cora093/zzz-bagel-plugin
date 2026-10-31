@@ -175,6 +175,27 @@ def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
     assert active, '空工作目录下没有初始化出任何开启路线，首次运行会直接判配置无效'
 
 
+def test_user_data_outside_plugin(empty_work_dir: Path) -> None:
+    """用户数据落在工作目录的 plugin_data/<app_id> 下，不进插件目录。
+
+    插件升级是整个目录替换，数据写在插件目录里会随旧版本一起删掉。
+    """
+    expected = empty_work_dir / 'plugin_data' / 'bagel'
+
+    store_module = importlib.import_module('bagel.route.bagel_route_store')
+    store = store_module.BagelRouteStore()
+    assert store.custom_dir.resolve() == (expected / 'routes').resolve()
+    assert store.settings_path.resolve() == (expected / 'route_settings.yml').resolve()
+    assert not store.custom_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
+
+    stats_module = importlib.import_module('bagel.route.bagel_route_stats')
+    records = stats_module.BagelRouteRecorder().path()
+    assert records.resolve() == (expected / 'route_records.jsonl').resolve()
+
+    shot_module = importlib.import_module('bagel.bagel_screenshot')
+    assert shot_module.screenshot_dir().resolve() == (expected / 'screenshots').resolve()
+
+
 def test_readme_images_exist() -> None:
     """README 引用的截图都随插件分发，避免说明里的图裂掉。"""
     readme = REPO_DIR / 'README.md'

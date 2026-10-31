@@ -1,6 +1,6 @@
 """贝果路线数据记录：每局一行写入本地文件，任务结束按出生点输出汇总表，不参与流程判断。
 
-记录放在 ``.log/bagel/route_records.jsonl``，所有实例写同一个文件，只保留近 7 天。
+记录放在 ``plugin_data/<app_id>/route_records.jsonl``，所有实例写同一个文件，只保留近 7 天。
 汇总表判断每个出生点跑路线好还是直接重开好，判据见 ``extra_hourly``。
 口径与限制见 ``docs/develop/zzz/application/bagel.md`` 的「路线数据记录」一节。
 """
@@ -14,9 +14,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
 
+from ..bagel_defs import get_plugin_data_dir
 from ..bagel_stats import (
     OUTCOME_SUCCESS,
     OUTCOME_UNSUPPORTED,
@@ -108,7 +108,7 @@ class BagelRouteRecorder:
     def path(self) -> Path:
         """记录文件路径；首次使用时创建目录。"""
         if self._path is None:
-            self._path = Path(os_utils.get_path_under_work_dir('.log', 'bagel')) / 'route_records.jsonl'
+            self._path = get_plugin_data_dir() / 'route_records.jsonl'
         return self._path
 
     def append(self, record: BagelRouteRecord) -> None:

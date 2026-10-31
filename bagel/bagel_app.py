@@ -9,7 +9,7 @@ from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 from zzz_od.application.zzz_application import ZApplication
 
-from . import bagel_const, bagel_stats, bagel_usage
+from . import bagel_const, bagel_screenshot, bagel_stats, bagel_usage
 from .bagel_stats import BagelRunStats, BagelSafeLedger
 from .operation.bagel_deposit import BagelDeposit
 from .operation.bagel_enter import BagelEnter
@@ -132,7 +132,7 @@ class BagelApp(ZApplication):
         try:
             if not result.success and self.last_screenshot is not None:
                 self.screenshot()
-                path = self.save_screenshot()
+                path = bagel_screenshot.save_screenshot(self.last_screenshot, 'BagelApp')
                 bagel_usage.log_screenshot(path)
             elif not result.success:
                 log.warning('没有可保存的现场截图。请查看相关日志。')
@@ -541,9 +541,12 @@ class BagelApp(ZApplication):
         release_flow_inputs(self.ctx)
         self._stats.set_outcome(bagel_stats.OUTCOME_FAILED)
         self._record_round_income(read_hud=False)
-        path = self.save_screenshot()
-        self.failure_history.append({'reason': self.failure_reason, 'screenshot': path,
-                                     'used': self.failure_retries_used})
+        path = bagel_screenshot.save_screenshot(self.last_screenshot, 'BagelApp')
+        self.failure_history.append({
+            'reason': self.failure_reason,
+            'screenshot': str(path) if path is not None else '',
+            'used': self.failure_retries_used,
+        })
         log.error('本局失败：%s。程序正在退出并处理仓库结算。本局不计成功。整体重试次数已用 %s/%s。',
                   self.failure_reason, self.failure_retries_used, self.config.max_failure_retries)
         bagel_usage.log_screenshot(path)
