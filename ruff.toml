@@ -1,0 +1,36 @@
+# 插件通过 importlib 以所在目录名作为包名加载，目录名可能被改，
+# 所以插件内一律用相对导入。ruff 的 TID252 要求改成绝对导入，
+# 与本插件的加载方式冲突，这里关闭。
+# 其余规则与主仓 pyproject.toml 保持一致。
+
+line-length = 88
+indent-width = 4
+target-version = "py311"
+
+# scripts/ 是官方 plugin-template 的原样拷贝，保持与上游一致，不套用本仓库的检查规则。
+extend-exclude = ["scripts"]
+
+[lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "C",      # mccabe
+    "B",      # bugbear
+    "UP",     # pyupgrade
+    "SIM",    # simplify
+    "TID",    # tidy imports
+]
+extend-ignore = [
+    "E501",   # line too long
+    "C901",   # method too complex
+    "SIM102", # nested if statements
+    "TID252", # relative imports from parent modules
+]
+
+[format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
