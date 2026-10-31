@@ -108,6 +108,6 @@ PR 里请写清楚：用的出生点、走法要点（为什么这么绕）、�
 
 ## 来源与许可
 
-贝果现有实现位于 Cora093/ZenlessZoneZero-OneDragon，主程序上游为 OneDragon-Anything/ZenlessZoneZero-OneDragon。
+主程序上游为 OneDragon-Anything/ZenlessZoneZero-OneDragon。
 
 本仓库采用 GNU GPL v3。后续迁入代码时保留原版权与许可证说明，并记录代码及素材来源。
