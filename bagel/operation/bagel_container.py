@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from ..vision.bagel_template import find_plugin_template_area
 from .bagel_operation import BagelOperation
 
 if TYPE_CHECKING:
@@ -76,7 +77,9 @@ def container_state(operation: BagelOperation, target: str) -> str:
     if not has('按键-普通攻击', '战斗画面'):
         return 'unknown'
     prompt = '武备箱交互' if target == 'box' else '电子保险箱交互'
-    return 'prompt' if has(prompt) and has('交互F键') else 'missing'
+    # 「交互F键」是插件模板，主程序模板加载器读不到，改由插件自行匹配。
+    key_f = find_plugin_template_area(operation.ctx, operation.last_screenshot, '贝果-局内', '交互F键')
+    return 'prompt' if has(prompt) and key_f else 'missing'
 
 
 class BagelContainerOperation(BagelOperation):

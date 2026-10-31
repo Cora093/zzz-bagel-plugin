@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import time
-from functools import cache
 from math import atan2, cos, degrees, floor, hypot, radians, sin
 from typing import TYPE_CHECKING
 
@@ -32,7 +31,6 @@ from one_dragon.utils import cal_utils, cv2_utils, str_utils
 from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 
-from ..bagel_defs import PLUGIN_DIR
 from ..bagel_stats import (
     BagelSafeLedger,
     format_value,
@@ -42,6 +40,7 @@ from ..operation.bagel_close_search import BagelCloseSearch
 from ..operation.bagel_operation import BagelOperation
 from ..operation.bagel_store import BagelStoreSafe
 from ..operation.bagel_unlock_safe import BagelUnlockSafe
+from ..vision.bagel_template import load_plugin_template
 from ..vision.map_locator import (
     MultiMapLocator,
     load_map_locators,
@@ -243,19 +242,6 @@ SURVEY_LINE_TOLERANCE: int = 6
 ICON_THRESHOLD: float = 0.8
 """交互图标与刷卡图标的模板匹配阈值；实测同类 1.0、异类 0.33。"""
 
-
-@cache
-def _load_icon_template(icon: str) -> tuple[MatLike, MatLike | None] | None:
-    """读插件自带的交互图标模板与原图掩码；缺图时返回 None。
-
-    插件不经过全局 TemplateLoader，模板跟着插件目录走，搬到别的环境也能用。
-    """
-    directory = PLUGIN_DIR / 'assets' / 'template' / 'bagel' / icon
-    raw = cv2_utils.read_image(str(directory / 'raw.png'))
-    if raw is None:
-        log.warning(f'缺少交互图标模板：{directory}')
-        return None
-    return raw, cv2_utils.read_image(str(directory / 'mask.png'))
 
 ENTRY_TEXT_MARGIN: int = 6
 """读取条目文字时，纵向向上下各留的像素。"""
@@ -660,7 +646,7 @@ class BagelRouteWalker(BagelOperation):
             return None
         best: tuple[int, str, str] | None = None
         for icon, kind in (('interact_icon', 'interact'), ('card_key_icon', 'card')):
-            template = _load_icon_template(icon)
+            template = load_plugin_template('bagel', icon)
             if template is None:
                 continue
             template_raw, template_mask = template
