@@ -52,7 +52,7 @@
 | `janus_construction` | 改建工程区 | `(602,30)` | 不开启 |
 | `janus_worksite_depths` | 工地深处 | `(255,829)` | 不开启，没有默认路线 |
 
-坐标取自录像定位，依据和限制见[出生点素材索引](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/ca466d36a404350f26a9847bc7de891dd6d00018/docs/game/screens/image/bagel_spawn_points/README.md)。清单只包含已观察到的出生位置，不能证明出生点已经全部登记。城郊幻境没有登记出生点。正式应用的入场地图范围不因编辑器显示城郊地图而改变。
+坐标取自录像定位。清单只包含已观察到的出生位置，不能证明出生点已经全部登记。城郊幻境没有登记出生点。正式应用的入场地图范围不因编辑器显示城郊地图而改变。
 
 #### 路线文件
 
@@ -174,7 +174,7 @@ active_routes:
 
 ### 出生位置资料
 
-已观察到的雅努斯出生位置、全局坐标和代表画面见[出生点素材索引](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/ca466d36a404350f26a9847bc7de891dd6d00018/docs/game/screens/image/bagel_spawn_points/README.md)。该索引区分录像定位坐标与旧路线首点，不表示出生点清单已经完整。出生点登记和路线开启规则见[贝果路线与出生点](#路线与出生点)。
+出生点清单不表示已经完整。出生点登记和路线开启规则见[贝果路线与出生点](#路线与出生点)。
 
 ### 来源与限制
 
@@ -205,7 +205,7 @@ active_routes:
 | 11 | 电子保险箱接近点 | (938, 357) | 途径点 |
 | 12 | 电子保险箱前 | (947, 358) | 电子保险箱 |
 
-点 2～4 是转换后在提交 `2ffd0a16` 中重新调整的：原转换结果的长廊口 `(1004,442)` 被替换，并补了两个途径点。其余点与转换结果一致。
+点 2～4 是转换后重新调整的：原转换结果的长廊口 `(1004,442)` 被替换，并补了两个途径点。其余点与转换结果一致。
 
 起点满足六昏街南站的路线开始条件，见[路线能否开始](#路线能否开始)。途径点仍按统一到达半径处理，旧步骤中的独立到达半径、越点半径和不停步设置不属于当前打点格式，不能认为已一并恢复。
 
@@ -224,7 +224,7 @@ active_routes:
 
 ### 来源与限制
 
-- 旧路线和地图来源：提交 `70bbb0aff8e94f68ec85400a54bcdc85d995a6a1` 的 [flow.yml](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/70bbb0aff8e94f68ec85400a54bcdc85d995a6a1/assets/game_data/bagel/janus_high_c/flow.yml)、[map.yml](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/70bbb0aff8e94f68ec85400a54bcdc85d995a6a1/assets/game_data/bagel/janus_high_c/map.yml)、[map.png](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/70bbb0aff8e94f68ec85400a54bcdc85d995a6a1/assets/game_data/bagel/janus_high_c/map.png)。
+- 旧路线和地图来源：内置版本 `janus_high_c` 的 `flow.yml`、`map.yml`、`map.png`。
 - 当前底图：[Custom.png](../bagel/assets/game_data/map_locator/layers/janus/Custom.png)，层原点为 `(0,0)`。
 - 原底图的建图原始输入未完整归档，不能仅凭历史元数据重建旧底图。
 - 坐标换算不证明实机可通行。出生锚定、长廊接近、机械箱交互及电子箱站位仍需分别核对；其它路线结束后如何接入该起点也不能由底图匹配保证。

@@ -69,7 +69,7 @@
 ## 功能限制
 
 - 入箱不按物品名称和等级筛选，也不记录按名单收集的进度。
-- 收集操作不拾取金币，不将携带货币计入已入仓物资。货币退出保留规则见[玩法文档](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/ca466d36a404350f26a9847bc7de891dd6d00018/docs/game/gameplay/贝果计划.md)。
+- 收集操作不拾取金币，不将携带货币计入已入仓物资。
 
 ## 正式任务的提示
 
