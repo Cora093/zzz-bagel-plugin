@@ -220,13 +220,16 @@ class BagelStoreSafe(BagelOperation):
                     return self.round_fail(self.STATUS_INTERRUPTED)
             else:
                 self._interrupt_rounds = 0
-        elif self._observe_panel():
-            centers = self._panel_guard.result_centers
-            assert centers is not None
-            self._result_centers = centers
-            self._panel_wait_rounds = 0
+        else:
+            # 面板已就绪就不算「连续被打断」，不管这一帧稳不稳：
+            # 否则「打断 → 就绪但未稳定 → 打断」会被当成两次连续打断而中止转存。
             self._interrupt_rounds = 0
-            return None
+            if self._observe_panel():
+                centers = self._panel_guard.result_centers
+                assert centers is not None
+                self._result_centers = centers
+                self._panel_wait_rounds = 0
+                return None
         if self._result_layout_changed:
             self._clear_pending()
             return self.round_recoverable_fail('结果格位置变化，无法沿用本次搜查登记')

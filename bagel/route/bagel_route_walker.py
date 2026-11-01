@@ -374,6 +374,11 @@ BACKTRACK_LANE_OFFSETS: tuple[float, ...] = (10.0, -16.0, 22.0)
 
 照原线重走必然在同一处再卡；相邻车道通常就能绕开掩码里没有的立体障碍。"""
 
+LANE_TAPER_DISTANCE: float = 30.0
+"""换道偏移的收尾距离（px）：进到离目标这么近时把偏移按比例衰减到 0。
+
+不衰减的话整条腿都走在平移后的平行线上，3px 到点判据（或线段穿过）永远不满足。"""
+
 
 RECOVER_SETTLE_SECONDS: float = 0.5
 """卡死后先松键停这么久再退：不松键的话角色还在顶那个障碍，回退也退不干净。"""
@@ -926,16 +931,18 @@ class BagelRouteWalker(BagelOperation):
             self.recover_stage = ''
             return None
         target = points[self.recover_point]
-        angle = self.player_angle()
-        if angle is None:
-            return self.round_wait('恢复：等视角读数', wait=0.05)
-        bearing = degrees(atan2(-(target.y - position[1]), target.x - position[0])) % 360
-        diff = cal_utils.angle_delta(angle, bearing)
+        # 先判超时再读朝向：读不到朝向时下面会直接返回等待，那会把放行时限跳过去，
+        # 一路等到这个点的 45 秒超时，本该 2.5 秒后就继续的路线被判失败。
         if time.monotonic() > self.recover_until:
             # 镜头收敛不下来也放行：这一步只是让接近更干净，不能把路线卡死。
             self.recover_stage = ''
             self._enter_point(self.route_index, self.recover_point)
             return self.round_wait('停稳对镜头：超时放行', wait=0.02)
+        angle = self.player_angle()
+        if angle is None:
+            return self.round_wait('恢复：等视角读数', wait=0.05)
+        bearing = degrees(atan2(-(target.y - position[1]), target.x - position[0])) % 360
+        diff = cal_utils.angle_delta(angle, bearing)
         self._submit_turn(bearing, deadband=TURN_DEADBAND_FAST)
         if abs(diff) <= RECOVER_AIM_DEG:
             self.recover_aim_frames += 1
@@ -2538,11 +2545,17 @@ class BagelRouteWalker(BagelOperation):
         """卡死回退后把这一腿的瞄准点整体横移，换一条车道重走。
 
         偏移量按目标点索引查表，命中就整条腿跟着平移——回退重走若照原线再走一遍，
-        必然在同一处再卡一次。
+        必然在同一处再卡一次。收尾段按距离把偏移衰减到 0：整条腿一直平移 22px 的话，
+        走到头也还在平行线上，3px 到点判据永远不满足，回退重走会以超时告终。
         """
         offset = self.lane_offsets.get(self.cursor, 0.0)
         if not offset:
             return aim
+        remain = hypot(point.x - position[0], point.y - position[1])
+        if remain < LANE_TAPER_DISTANCE:
+            offset *= remain / LANE_TAPER_DISTANCE
+            if abs(offset) < 0.5:
+                return aim
         origin = self._previous_point()
         base = origin if origin is not None else position
         dx, dy = point.x - base[0], point.y - base[1]
