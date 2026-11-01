@@ -168,6 +168,7 @@ class BagelOperation(ZOperation):
         活动页标题为「迷宫诡域：活动名」（如「迷宫诡域：古怪试炼」），
         与贝果主界面的「迷宫诡域贝果计划」不同，但两页都有「前往空洞」。
         活动页点「前往空洞」进入选图页，再进入主界面。
+        活动期间主界面标题也是「迷宫诡域：古怪试炼」，此时主界面同样返回 True。
         """
         area = self.ctx.screen_loader.get_area('贝果-研究站', '标题')
         if area is None:
