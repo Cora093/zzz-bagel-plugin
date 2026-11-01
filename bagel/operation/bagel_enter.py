@@ -26,7 +26,6 @@ from ..vision.bagel_screen import (
 from .bagel_clear_loadout import BagelClearLoadout
 from .bagel_exit import BagelExit
 from .bagel_investment import read_investment
-from .bagel_leave_pages import BagelLeavePages
 from .bagel_open_compendium import BagelOpenCompendium
 from .bagel_operation import BagelOperation
 from .bagel_return import BagelReturn
@@ -224,7 +223,7 @@ class BagelEnter(BagelOperation):
                     success_wait=1, retry_wait=1,
                 )
         at_dialog = all(self._has(name, '贝果-研究站') for name in ('对话人', '出发对话'))
-        # 首次启动要重新传送，停在贝果页面时不再点「前往空洞」，传送前由插件退出。
+        # 首次启动要重新传送，停在贝果页面时不再点「前往空洞」，由传送前的通用返回退出。
         if at_prepare or at_map or at_hub or at_activity:
             return self.round_success('需要快捷手册入口')
         current = self.check_and_update_current_screen(self.last_screenshot)
@@ -257,12 +256,7 @@ class BagelEnter(BagelOperation):
     @node_from(from_name='打开贝果主界面', status='需要快捷手册入口')
     @operation_node(name='传送录像店', screenshot_before_round=False)
     def transport_for_shortcut(self) -> OperationRoundResult:
-        """先退出贝果界面，再传送到「录像店－房间」，下一节点再打开快捷手册。"""
-        leave = BagelLeavePages(self.ctx)
-        leave.timeout_seconds = min(30, max(0, self.timeout_seconds - self.operation_usage_time))
-        result = leave.execute()
-        if not result.success:
-            return self.round_by_op_result(result)
+        """传送到「录像店－房间」，下一节点再打开快捷手册。"""
         operation = Transport(self.ctx, '录像店', '房间')
         operation.timeout_seconds = min(120, max(0, self.timeout_seconds - self.operation_usage_time))
         return self.round_by_op_result(operation.execute())

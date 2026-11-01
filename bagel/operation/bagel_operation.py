@@ -188,14 +188,6 @@ class BagelOperation(ZOperation):
             return True
         return self._has('前往备战', '贝果-选图')
 
-    def _at_bagel_page(self) -> bool:
-        """核对是否停在贝果的界面页：活动页、主界面、选图或备战。"""
-        return (
-            self._at_bagel_hub()
-            or self._at_bagel_activity()
-            or self._has('预设组合', '贝果-备战')
-        )
-
     def execute(self) -> OperationResult:
         """操作返回前完成事件清理。"""
         with bagel_run_events(self):
