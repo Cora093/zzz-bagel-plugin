@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 import zipfile
@@ -86,8 +87,6 @@ def test_manifest_matches_const() -> None:
     ``scripts/generate_const.py`` 会按 plugin.json 重写 const；
     手改 const 而不改 manifest，发版时会被校验判成 CONST_OUTDATED。
     """
-    import json
-
     manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
     assert manifest['id'] == PLUGIN_DIR.name
 
@@ -332,7 +331,8 @@ def test_plugin_metadata_declared(empty_work_dir: Path) -> None:
 
     info = manager.get_plugin_info('bagel')
     assert info is not None
-    assert info.version == '0.1.0'
+    manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
+    assert info.version == manifest['version']
     assert info.author.startswith('Cora')
     assert 'kawayiYokami' in info.author
     assert info.description
@@ -395,7 +395,8 @@ def test_store_zip_keeps_resources(tmp_path: Path) -> None:
 
     previews = service.preview_plugins_from_zip(zip_path)
     assert [item.plugin_name for item in previews] == ['bagel']
-    assert previews[0].version == '0.1.0'
+    manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
+    assert previews[0].version == manifest['version']
     assert previews[0].author.startswith('Cora')
 
     with zipfile.ZipFile(zip_path, 'r') as zf:

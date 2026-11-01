@@ -2,8 +2,8 @@
   "id": "bagel",
   "name": "贝果计划",
   "summary": "在高危雅努斯幻境按自录路线跑图、收集物品、清理仓库并结算的完整自动化流程。",
-  "version": "0.1.0",
-  "versionCode": 1,
+  "version": "0.2.0",
+  "versionCode": 2,
   "defaultGroup": false,
   "needNotify": true,
   "author": {
