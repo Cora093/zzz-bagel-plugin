@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 import zipfile
@@ -86,8 +87,6 @@ def test_manifest_matches_const() -> None:
     ``scripts/generate_const.py`` 会按 plugin.json 重写 const；
     手改 const 而不改 manifest，发版时会被校验判成 CONST_OUTDATED。
     """
-    import json
-
     manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
     assert manifest['id'] == PLUGIN_DIR.name
 
@@ -173,6 +172,27 @@ def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
     assert catalog.routes, '默认路线没有读出来'
     active = [ref for ref in catalog.active.values() if ref is not None]
     assert active, '空工作目录下没有初始化出任何开启路线，首次运行会直接判配置无效'
+
+
+def test_user_data_outside_plugin(empty_work_dir: Path) -> None:
+    """用户数据落在工作目录的 plugin_data/<app_id> 下，不进插件目录。
+
+    插件升级是整个目录替换，数据写在插件目录里会随旧版本一起删掉。
+    """
+    expected = empty_work_dir / 'plugin_data' / 'bagel'
+
+    store_module = importlib.import_module('bagel.route.bagel_route_store')
+    store = store_module.BagelRouteStore()
+    assert store.custom_dir.resolve() == (expected / 'routes').resolve()
+    assert store.settings_path.resolve() == (expected / 'route_settings.yml').resolve()
+    assert not store.custom_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
+
+    stats_module = importlib.import_module('bagel.route.bagel_route_stats')
+    records = stats_module.BagelRouteRecorder().path()
+    assert records.resolve() == (expected / 'route_records.jsonl').resolve()
+
+    shot_module = importlib.import_module('bagel.bagel_screenshot')
+    assert shot_module.screenshot_dir().resolve() == (expected / 'screenshots').resolve()
 
 
 def test_readme_images_exist() -> None:
@@ -311,7 +331,8 @@ def test_plugin_metadata_declared(empty_work_dir: Path) -> None:
 
     info = manager.get_plugin_info('bagel')
     assert info is not None
-    assert info.version == '0.1.0'
+    manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
+    assert info.version == manifest['version']
     assert info.author.startswith('Cora')
     assert 'kawayiYokami' in info.author
     assert info.description
@@ -374,7 +395,8 @@ def test_store_zip_keeps_resources(tmp_path: Path) -> None:
 
     previews = service.preview_plugins_from_zip(zip_path)
     assert [item.plugin_name for item in previews] == ['bagel']
-    assert previews[0].version == '0.1.0'
+    manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
+    assert previews[0].version == manifest['version']
     assert previews[0].author.startswith('Cora')
 
     with zipfile.ZipFile(zip_path, 'r') as zf:

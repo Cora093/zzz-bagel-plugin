@@ -87,12 +87,14 @@ PR 里请写清楚：用的出生点、走法要点（为什么这么绕）、�
 
 | 内容 | 位置 |
 | --- | --- |
-| 默认路线（只读，随插件分发） | `plugins/bagel/assets/game_data/bagel/routes/` |
-| 出生点清单 | `plugins/bagel/assets/game_data/bagel/spawn_points.yml` |
-| 你复制的自定义路线 | 工作目录 `config/bagel/routes/custom_*.route.json` |
-| 每个出生点当前开启的路线 | 工作目录 `config/bagel/route_settings.yml` |
+| 默认路线（只读，随插件分发） | `plugins/bagel/bagel/assets/game_data/bagel/routes/` |
+| 出生点清单 | `plugins/bagel/bagel/assets/game_data/bagel/spawn_points.yml` |
+| 你复制的自定义路线 | 工作目录 `plugin_data/bagel/routes/custom_*.route.json` |
+| 每个出生点当前开启的路线 | 工作目录 `plugin_data/bagel/route_settings.yml` |
+| 路线数据记录 | 工作目录 `plugin_data/bagel/route_records.jsonl` |
+| 失败现场截图 | 工作目录 `plugin_data/bagel/screenshots/` |
 
-自定义路线和开启选择跟着工作目录走，换一个工作目录就是一份新的。默认路线在插件里，插件升级时不会被覆盖掉你的自定义路线。
+运行期数据都放在工作目录的 `plugin_data/bagel/` 下，跟插件目录分开：插件升级会整个替换插件目录，数据放在里面会被一起删掉，放在外面就不会。默认路线在插件里，随插件分发，只读。
 
 ## 常见问题
 
@@ -103,7 +105,7 @@ PR 里请写清楚：用的出生点、走法要点（为什么这么绕）、�
 它是只读的。点「复制」，在副本上改。
 
 **换了工作目录，自定义路线不见了**
-自定义路线存在工作目录的 `config/bagel/routes/` 下，换目录前先把整个 `config/bagel/` 拷过去。
+自定义路线存在工作目录的 `plugin_data/bagel/routes/` 下，换目录前先把整个 `plugin_data/bagel/` 拷过去。
 
 **跑起来总是卡在墙角**
 这是路线偏保守之外的另一种情况：你的角色移速比录路线时快。把长直路段的途径点拉远一点，或者在拐角前多打一个点。

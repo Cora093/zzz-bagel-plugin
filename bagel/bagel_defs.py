@@ -6,8 +6,23 @@
 
 from pathlib import Path
 
+from one_dragon.utils import os_utils
+
+from .bagel_const import APP_ID
+
 PLUGIN_DIR: Path = Path(__file__).resolve().parent
 """插件根目录；模板、出生点、地图底图等自带资源都从这里取，不依赖工作目录。"""
+
+def get_plugin_data_dir() -> Path:
+    """插件运行期数据目录，存放自定义路线、开启选择、路线记录与现场截图。
+
+    放在插件目录之外，插件更新替换整个目录时用户数据不会被删掉。
+    每次调用按当前工作目录现算，不缓存。
+
+    Returns:
+        工作目录下的 ``plugin_data/<app_id>``。
+    """
+    return Path(os_utils.get_work_dir()).joinpath('plugin_data', APP_ID)
 
 RECOMMENDED_VALUE: str = '258000'
 

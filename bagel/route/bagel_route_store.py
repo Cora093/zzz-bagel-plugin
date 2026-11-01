@@ -1,10 +1,10 @@
 """贝果路线与出生点的存储：加载、写入保护与开启选择。
-文件布局（前两项随插件分发，后两项写在工作目录）：
+文件布局（前两项随插件分发，后两项写在插件数据目录）：
 
 - ``assets/game_data/bagel/spawn_points.yml``：出生点清单。
 - ``assets/game_data/bagel/routes/<标识>.sample.route.json``：默认路线，内容只读。
-- ``config/bagel/routes/custom_<标识>.route.json``：自定义路线。
-- ``config/bagel/route_settings.yml``：每个出生点当前开启的路线。
+- ``plugin_data/<app_id>/routes/custom_<标识>.route.json``：自定义路线。
+- ``plugin_data/<app_id>/route_settings.yml``：每个出生点当前开启的路线。
 
 开启选择每个出生点只存一个路线引用或 ``null``，天然保证同一出生点最多开启一条。
 路线文件不保存开关状态。界面、录制器和执行器都通过本模块读写，不自行拼路径。
@@ -22,10 +22,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
 
-from ..bagel_defs import PLUGIN_DIR
+from ..bagel_defs import PLUGIN_DIR, get_plugin_data_dir
 from .bagel_route_model import (
     SOURCE_CUSTOM,
     SOURCE_DEFAULT,
@@ -40,9 +39,6 @@ from .bagel_route_model import (
 
 SPAWN_FILE: tuple[str, ...] = ('assets', 'game_data', 'bagel', 'spawn_points.yml')
 """出生点清单相对插件目录的路径。"""
-
-CONFIG_DIR: tuple[str, ...] = ('config', 'bagel')
-"""路线配置目录相对工作目录的路径。"""
 
 SAMPLE_DIR: tuple[str, ...] = ('assets', 'game_data', 'bagel', 'routes')
 """默认路线目录相对插件目录的路径；默认路线随插件分发，不依赖工作目录。"""
@@ -128,16 +124,15 @@ class BagelRouteCatalog:
 class BagelRouteStore:
     """路线文件与开启选择的读写入口。"""
 
-    def __init__(self, work_dir: Path | None = None) -> None:
+    def __init__(self, data_dir: Path | None = None) -> None:
         """
         Args:
-            work_dir: 工作目录；None 表示使用程序工作目录。离线核对时可传临时目录。
+            data_dir: 数据目录；None 表示插件数据目录 plugin_data/<app_id>。离线核对时可传临时目录。
         """
-        self.work_dir: Path = work_dir if work_dir is not None else Path(os_utils.get_work_dir())
-        self.config_dir: Path = self.work_dir.joinpath(*CONFIG_DIR)
-        self.custom_dir: Path = self.config_dir / 'routes'
+        self.data_dir: Path = data_dir if data_dir is not None else get_plugin_data_dir()
+        self.custom_dir: Path = self.data_dir / 'routes'
         self.sample_dir: Path = PLUGIN_DIR.joinpath(*SAMPLE_DIR)
-        self.settings_path: Path = self.config_dir / 'route_settings.yml'
+        self.settings_path: Path = self.data_dir / 'route_settings.yml'
         self.spawn_path: Path = PLUGIN_DIR.joinpath(*SPAWN_FILE)
 
     # ---------- 读取 ----------
