@@ -54,7 +54,7 @@ area_list:
   lcs_percent: 0.9
 - area_name: 推荐价值
   pc_rect:
-  - 1300
+  - 1282
   - 925
   - 1450
   - 982

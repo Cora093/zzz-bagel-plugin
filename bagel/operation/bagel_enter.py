@@ -18,6 +18,7 @@ from ..vision.bagel_screen import (
     entry_warning,
     parse_capacity_pair,
     read_area,
+    read_coin_value,
     read_entry_warning_text,
     read_loadout,
     warehouse_sale_state,
@@ -25,7 +26,6 @@ from ..vision.bagel_screen import (
 )
 from .bagel_clear_loadout import BagelClearLoadout
 from .bagel_exit import BagelExit
-from .bagel_investment import read_investment
 from .bagel_open_compendium import BagelOpenCompendium
 from .bagel_operation import BagelOperation
 from .bagel_return import BagelReturn
@@ -321,7 +321,7 @@ class BagelEnter(BagelOperation):
     def choose_difficulty(self) -> OperationRoundResult:
         """选中后用对应推荐价值与地图名复核，不能只检测页签文字存在。"""
         selected = read_area(self.ctx, self.last_screenshot, '贝果-选图', '选中地图')
-        value = read_area(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
+        value = read_coin_value(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
         if selected == '雅努斯幻境' and value == RECOMMENDED_VALUE:
             self._resume_check = False
             return self.round_success()
@@ -341,7 +341,7 @@ class BagelEnter(BagelOperation):
         if self.round_by_find_area(self.last_screenshot, '贝果-备战', '预设组合').is_success:
             return self.round_success()
         selected = read_area(self.ctx, self.last_screenshot, '贝果-选图', '选中地图')
-        value = read_area(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
+        value = read_coin_value(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
         if (self._resume_check or selected == '城郊幻境'
                 or (selected == '雅努斯幻境' and value.isdecimal() and value != RECOMMENDED_VALUE)):
             return self.round_success('重新核对选图')
@@ -419,7 +419,7 @@ class BagelEnter(BagelOperation):
                 if self.operation_usage_time - self._investment_clicked_at >= _ENTRY_DIALOG_TIMEOUT_SECONDS:
                     return self.round_fail('零投资入场未生效，停止并保留现场')
                 return self.round_wait('等待零投资入场', wait=0.5)
-            amount = read_investment(self.ctx, self.last_screenshot)
+            amount = read_coin_value(self.ctx, self.last_screenshot, '贝果-入场确认', '投资金额')
             if amount != '0':
                 # WAIT 会重置框架重试次数，单独限次以防 MIN 无效时反复点击。
                 if self.investment_retries >= 3:
