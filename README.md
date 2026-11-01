@@ -1,7 +1,8 @@
 # 贝果计划
 
-在「高危雅努斯幻境」按自己画的路线自动跑图、开箱、结算，并按规则自动出售的独立应用。
-以插件形式安装，在「应用运行」里单独启动，不进一条龙默认流程。
+贝果计划自动跑刀。以插件形式安装，在「应用运行」里单独启动，支持自定义路线。
+
+[觉得插件好用的话，欢迎到 GitHub 点个 Star ⭐↗](https://github.com/Cora093/zzz-bagel-plugin)
 
 ## 安装
 
@@ -111,6 +112,6 @@ PR 里请写清楚：用的出生点、走法要点（为什么这么绕）、�
 
 ## 来源与许可
 
-贝果现有实现位于 Cora093/ZenlessZoneZero-OneDragon，主程序上游为 OneDragon-Anything/ZenlessZoneZero-OneDragon。
+主程序上游为 OneDragon-Anything/ZenlessZoneZero-OneDragon。
 
 本仓库采用 GNU GPL v3。后续迁入代码时保留原版权与许可证说明，并记录代码及素材来源。

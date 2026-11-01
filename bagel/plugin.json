@@ -1,7 +1,7 @@
 {
   "id": "bagel",
   "name": "贝果计划",
-  "summary": "在高危雅努斯幻境按自录路线跑图、收集物品、清理仓库并结算的完整自动化流程。",
+  "summary": "贝果计划自动跑刀：按自录路线跑图、收集物品、清理仓库并结算的完整自动化流程。",
   "version": "0.2.0",
   "versionCode": 2,
   "defaultGroup": false,
@@ -10,7 +10,7 @@
     "name": "Cora、kawayiYokami、ShadowLemoon、PoorKid1112、RRRR623、wusaqi、Ada、A-nony-mous",
     "url": "https://github.com/kawayiYokami"
   },
-  "homepage": "https://github.com/OneDragon-Anything/ZenlessZoneZero-OneDragon",
+  "homepage": "https://github.com/Cora093/zzz-bagel-plugin",
   "risk": [
     "automation",
     "ocr",
