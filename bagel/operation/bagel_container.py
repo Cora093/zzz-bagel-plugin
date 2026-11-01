@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from ..vision import bagel_template
 from .bagel_operation import BagelOperation
 
 if TYPE_CHECKING:
@@ -12,6 +13,9 @@ if TYPE_CHECKING:
 
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
     from zzz_od.context.zzz_context import ZContext
+
+INTERACT_KEY_THRESHOLD: float = 0.85
+"""交互 F 键模板的匹配阈值，沿用画面定义里原来的设置。"""
 
 
 class ContainerRecovery:
@@ -62,6 +66,15 @@ def container_state(operation: BagelOperation, target: str) -> str:
         """只读取当前截图。"""
         return operation._has(area, screen)
 
+    def has_interact_key() -> bool:
+        """读插件自带的 F 键模板；不经过主仓模板库。"""
+        area = operation.ctx.screen_loader.get_area('贝果-局内', '交互F键')
+        if area is None:
+            return False
+        return bagel_template.has_template(
+            operation.last_screenshot, area.pc_rect, 'interact_key_f', INTERACT_KEY_THRESHOLD,
+        )
+
     box = has('搜查容器标题')
     safe = has('电子保险箱标题')
     unlocking = has('大保险解锁提示')
@@ -76,7 +89,7 @@ def container_state(operation: BagelOperation, target: str) -> str:
     if not has('按键-普通攻击', '战斗画面'):
         return 'unknown'
     prompt = '武备箱交互' if target == 'box' else '电子保险箱交互'
-    return 'prompt' if has(prompt) and has('交互F键') else 'missing'
+    return 'prompt' if has(prompt) and has_interact_key() else 'missing'
 
 
 class BagelContainerOperation(BagelOperation):
