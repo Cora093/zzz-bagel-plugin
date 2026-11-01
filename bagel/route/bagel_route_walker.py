@@ -476,6 +476,8 @@ class BagelRouteWalker(BagelOperation):
         self.last_map_id: str | None = None
         self.last_good_position: tuple[float, float] | None = None
         """上一个可信定位，用于判单帧跳变。"""
+        self.position_jumped: bool = False
+        """上一帧定位刚接受了换区域跳变：这一帧不能拿旧坐标当走过的线段。"""
         self._jump_candidate: tuple[float, float] | None = None
         """当前怀疑是跳变的新位置。"""
         self._jump_candidate_frames: int = 0
@@ -689,6 +691,7 @@ class BagelRouteWalker(BagelOperation):
                     '贝果定位跳变 %.0fpx 已确认（连续 %s 帧，层 %s），按换区域接受',
                     jump, self._jump_candidate_frames, locator.map_id,
                 )
+                self.position_jumped = True
         self._jump_candidate = None
         self._jump_candidate_frames = 0
         self._jump_reject_since = None
@@ -1307,7 +1310,10 @@ class BagelRouteWalker(BagelOperation):
             )
         self.locate_misses = 0
         self.locate_miss_since = None
-        self.prev_position = self.last_position
+        # 换区域那一帧不能拿旧坐标到新坐标当「走过去的线段」：这段是瞬移，
+        # 「线段穿过」判据会把附近的途径点误判成已到点。所以跳变帧的 prev 置空。
+        self.prev_position = None if self.position_jumped else self.last_position
+        self.position_jumped = False
         self.last_position = position
         self.pos_history.append((time.monotonic(), position[0], position[1]))
         distance = hypot(point.x - position[0], point.y - position[1])
@@ -1650,6 +1656,9 @@ class BagelRouteWalker(BagelOperation):
     def _seed_turn_ratio(self) -> float:
         """取本局补偿比例初值：累积池够用就用池中位数，否则退回上一局的比例。
 
+        池里存的是「名义 / 实际」（1/r，用来乘 turn_dx），而转向线程的
+        ``turn_ratio`` 是「实际 / 名义」（r，用来除下发角），所以取池中位数的倒数。
+
         上一局存的是单局估计（局间方差约 ±5%），池中位数收敛得多，用它起步能省掉
         开局几笔大角的偏差。
 
@@ -1659,7 +1668,7 @@ class BagelRouteWalker(BagelOperation):
         turn_dx = self.ctx.game_config.turn_dx
         samples = self._load_turn_scale_samples(turn_dx)
         if len(samples) >= TURN_SCALE_SEED_SAMPLES:
-            seed = float(median(samples))
+            seed = float(median([1.0 / value for value in samples]))
             spread = _robust_spread(samples)
             min_scale, max_scale = TURN_SCALE_BOUNDS
             if spread <= TURN_SCALE_SEED_SPREAD and min_scale <= seed <= max_scale:
