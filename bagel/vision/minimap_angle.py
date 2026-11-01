@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -47,6 +48,23 @@ SECTOR_TWO_DIFF: float = 3.0
 
 SECTOR_GROUP_DEGREE: float = 4.0
 """稳定组半径：3 圈互差它以内即收敛取平均。"""
+
+
+@dataclass(frozen=True)
+class SectorTrace:
+    """一次分圈投票的完整过程，给离群帧排查用，不参与任何判定。"""
+
+    sector: float | None
+    """最终朝向；门内全空或计算异常时为 None。"""
+
+    branch: str
+    """取值来源：empty / error / two / group / fallback。"""
+
+    rings: tuple[tuple[int, float], ...]
+    """已计算的每个圈：(半径, 单圈估计)，按取圈顺序。"""
+
+    members: tuple[float, ...]
+    """参与最终平均的单圈估计。"""
 
 
 def _angle_delta(first: float, second: float) -> float:
@@ -127,6 +145,11 @@ def _sector_angle(
     Returns:
         镜头朝向角度；门内全空（小地图消失）时返回 None。
     """
+    return _trace(rgb, center_x, center_y).sector
+
+
+def _field(rgb: MatLike) -> np.ndarray | None:
+    """H 门内取 S，门外置零；全空（小地图消失）返回 None。"""
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     hue = hsv[:, :, 0].astype(np.float64)
     sat = hsv[:, :, 1].astype(np.float64)
@@ -134,26 +157,52 @@ def _sector_angle(
     field = np.where(yellow, sat, 0.0)
     if float(field.max()) <= 0.0:
         return None
+    return field
+
+
+def _ring_sequence(field: np.ndarray, center_x: float, center_y: float):
+    """按取圈顺序逐个给出单圈估计；懒惰求值，投票提前收就少算几圈。"""
+    for radius in SECTOR_RING_ORDER:
+        yield radius, _ring_estimate(field, center_x, center_y, float(radius))
+
+
+def _vote(rings) -> SectorTrace:
+    """对一串 (半径, 单圈估计) 做分圈投票：两圈差 3 度内直接收，否则凑 3 圈稳定组。"""
+    collected: list[tuple[int, float]] = []
+    values: list[float] = []
+    for radius, value in rings:
+        collected.append((radius, value))
+        values.append(value)
+        if len(values) == 2:
+            if abs(_angle_delta(values[0], values[1])) <= SECTOR_TWO_DIFF:
+                return SectorTrace(
+                    _circular_mean(values), 'two', tuple(collected), tuple(values),
+                )
+        elif len(values) >= 3:
+            for cand in values:
+                members = [
+                    v for v in values
+                    if abs(_angle_delta(v, cand)) <= SECTOR_GROUP_DEGREE
+                ]
+                if len(members) >= 3:
+                    return SectorTrace(
+                        _circular_mean(members), 'group', tuple(collected), tuple(members),
+                    )
+    if not values:
+        return SectorTrace(None, 'empty', tuple(collected), ())
+    return SectorTrace(_circular_mean(values), 'fallback', tuple(collected), tuple(values))
+
+
+def _trace(rgb: MatLike, center_x: float, center_y: float) -> SectorTrace:
+    """按分圈投票算朝向，同时留下每圈估计与取值来源。"""
+    field = _field(rgb)
+    if field is None:
+        return SectorTrace(None, 'empty', (), ())
     try:
-        values: list[float] = []
-        for radius in SECTOR_RING_ORDER:
-            values.append(_ring_estimate(field, center_x, center_y, float(radius)))
-            if len(values) == 2:
-                if abs(_angle_delta(values[0], values[1])) <= SECTOR_TWO_DIFF:
-                    return _circular_mean(values)
-            elif len(values) >= 3:
-                for cand in values:
-                    members = [
-                        v for v in values
-                        if abs(_angle_delta(v, cand)) <= SECTOR_GROUP_DEGREE
-                    ]
-                    if len(members) >= 3:
-                        return _circular_mean(members)
-        if not values:
-            return None
-        return _circular_mean(values)
+        return _vote(_ring_sequence(field, center_x, center_y))
     except Exception:
-        return None
+        return SectorTrace(None, 'error', (), ())
+
 
 
 def analyze(
@@ -179,3 +228,18 @@ def analyze(
 
     sector_value = _sector_angle(rgb, center_x, center_y)
     return None, None, sector_value, 0.0, center
+
+
+def explain(rgb: MatLike) -> SectorTrace:
+    """读朝向并附上分圈投票过程，给离群帧排查用。
+
+    Args:
+        rgb: 小地图 RGB 图，正方形。
+
+    Returns:
+        与 ``analyze`` 同一取值，外加每圈估计与取值来源。
+    """
+    height, width = rgb.shape[:2]
+    center_x = (width - 1) / 2 + SECTOR_CENTER_OFFSET[0]
+    center_y = (height - 1) / 2 + SECTOR_CENTER_OFFSET[1]
+    return _trace(rgb, center_x, center_y)
