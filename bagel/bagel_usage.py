@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from one_dragon.utils import debug_utils
 from one_dragon.utils.log_utils import log
 
 from .bagel_defs import (
@@ -247,14 +246,12 @@ def stop_guidance(status: str | None) -> str:
     return '程序已停止，请检查现场。请先处理上述原因，再决定是否重新启动任务。'
 
 
-def log_screenshot(name: str) -> None:
-    """截图接口返回文件名；只展示确实保存的文件路径。"""
+def log_screenshot(path: Path | None) -> None:
+    """只展示确实保存下来的现场截图路径。"""
     try:
-        if name:
-            path = Path(debug_utils.get_debug_image_path(name))
-            if path.is_file() and path.stat().st_size > 0:
-                log.info('现场截图：%s', path.resolve())
-                return
+        if path is not None and path.is_file() and path.stat().st_size > 0:
+            log.info('现场截图：%s', path.resolve())
+            return
     except OSError:
         log.warning('无法核对现场截图文件。', exc_info=True)
     log.warning('本次未确认保存现场截图。请查看相关日志。')

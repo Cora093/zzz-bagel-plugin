@@ -14,6 +14,8 @@ from one_dragon.utils.log_utils import log
 from pynput import mouse
 from zzz_od.operation.zzz_operation import ZOperation
 
+from .. import bagel_screenshot
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -201,7 +203,9 @@ class BagelOperation(ZOperation):
         """保存失败现场；截图写入异常不能阻止框架释放事件监听。"""
         try:
             if not result.success and self.last_screenshot is not None:
-                path = self.save_screenshot()
+                path = bagel_screenshot.save_screenshot(
+                    self.last_screenshot, self.__class__.__name__,
+                )
                 log.error(f'贝果操作停止：{result.status}；原因：{result.data}；现场截图：{path}')
         except Exception:
             log.error('保存贝果失败截图时发生异常', exc_info=True)
