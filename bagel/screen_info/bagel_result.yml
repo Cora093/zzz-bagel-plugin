@@ -11,7 +11,7 @@ area_list:
   - 165
   id_mark: true
   text: DEFEAT
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 地图
   pc_rect:
   - 625
@@ -19,7 +19,7 @@ area_list:
   - 865
   - 720
   text: 高危雅努斯幻境
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 继续
   pc_rect:
   - 830
@@ -27,4 +27,4 @@ area_list:
   - 1090
   - 1000
   text: 继续
-  lcs_percent: 0.9
+  lcs_percent: 0.7

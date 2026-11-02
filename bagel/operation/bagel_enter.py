@@ -14,23 +14,24 @@ from ..bagel_defs import (
     RECOMMENDED_VALUE,
 )
 from ..vision.bagel_screen import (
-    complete_loadout,
+    complete_containers,
     entry_warning,
     parse_capacity_pair,
     read_area,
     read_coin_value,
+    read_containers,
     read_entry_warning_text,
-    read_loadout,
     warehouse_sale_state,
-    zero_loadout,
+    zero_containers,
 )
-from .bagel_clear_loadout import BagelClearLoadout
+from .bagel_clear_loadout import LOADOUT_CENTERS, BagelClearLoadout
 from .bagel_exit import BagelExit
 from .bagel_open_compendium import BagelOpenCompendium
 from .bagel_operation import BagelOperation
 from .bagel_return import BagelReturn
 from .bagel_settle import BagelSettleWarehouse
 from .bagel_store_carried import read_carried_backpack
+from .bagel_transfer import carried_slot_state
 
 if TYPE_CHECKING:
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
@@ -361,17 +362,18 @@ class BagelEnter(BagelOperation):
             return self.round_success('重新核对选图')
         if not self.round_by_find_area(self.last_screenshot, '贝果-备战', '预设组合').is_success:
             return self.round_retry('未识别备战页', wait=1)
-        values = read_loadout(self.ctx, self.last_screenshot)
-        if not complete_loadout(values):
+        values = read_containers(self.ctx, self.last_screenshot)
+        states = [carried_slot_state(self.last_screenshot, center) for center in LOADOUT_CENTERS]
+        if not complete_containers(values) or None in states:
             self.loadout_misses += 1
             if self.loadout_misses < 5:
-                return self.round_wait(f'五项携带识别不完整，重新核对 {values}', wait=0.5)
-            return self.round_fail(f'无法完整识别五项携带，停止并保留现场 {values}')
+                return self.round_wait(f'携带识别不完整，重新核对 {values}，槽位 {states}', wait=0.5)
+            return self.round_fail(f'无法完整识别携带，停止并保留现场 {values}，槽位 {states}')
         self.loadout_misses = 0
-        if not zero_loadout(values):
+        if not zero_containers(values) or any(states):
             if self.allow_clear_loadout and not self.clear_attempted:
                 return self.round_success('需要清空启动战备')
-            return self.round_fail(f'无法确认零携带，请先清空武备、装备、道具、背包和安全箱；五项读数 {values}')
+            return self.round_fail(f'无法确认零携带，请先清空武备、装备、道具、背包和安全箱；容器 {values}，槽位 {states}')
         result = self.round_by_find_and_click_area(self.last_screenshot, '贝果-备战', '前往空洞')
         if result.is_success:
             self.zero_checked = True
@@ -383,7 +385,7 @@ class BagelEnter(BagelOperation):
     @node_from(from_name='核对零携带', status='需要清空启动战备')
     @operation_node(name='清空启动战备', screenshot_before_round=False)
     def clear_starting_loadout(self) -> OperationRoundResult:
-        """清空成功后重新截图核对五项，不能直接设置已核验或跳过投资。"""
+        """清空成功后重新截图核对携带，不能直接设置已核验或跳过投资。"""
         if not self.allow_clear_loadout or self.clear_attempted:
             return self.round_fail('本次入场不允许再次清空战备')
         self.clear_attempted = True

@@ -8,13 +8,13 @@ from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 
 from ..vision.bagel_screen import (
-    complete_loadout,
+    complete_containers,
     empty_capacity,
     parse_capacity_pair,
     prepare_detail_state,
     read_area,
-    read_loadout,
-    zero_loadout,
+    read_containers,
+    zero_containers,
 )
 from .bagel_store_carried import BagelStoreCarried
 from .bagel_transfer import (
@@ -29,9 +29,9 @@ if TYPE_CHECKING:
 
 # 只定位右侧已装备槽；左侧仓储候选列表不是清空对象。
 LOADOUT_GROUPS: tuple[tuple[str, tuple[Point, ...]], ...] = (
-    ('武备价值', (Point(1360, 306), Point(1360, 519), Point(1360, 727))),
-    ('装备价值', (Point(1520, 300), Point(1630, 300), Point(1740, 300))),
-    ('道具价值', (Point(1546, 518), Point(1710, 518), Point(1546, 650), Point(1710, 650))),
+    ('武备', (Point(1360, 306), Point(1360, 519), Point(1360, 727))),
+    ('装备', (Point(1520, 300), Point(1630, 300), Point(1740, 300))),
+    ('道具', (Point(1546, 518), Point(1710, 518), Point(1546, 650), Point(1710, 650))),
 )
 LOADOUT_CENTERS: tuple[Point, ...] = tuple(center for _, centers in LOADOUT_GROUPS for center in centers)
 # 候选列表与备战面板之间的空白，不点击详情内的搬运或出售按钮。
@@ -92,12 +92,9 @@ class BagelClearLoadout(BagelTransferOperation):
         if not self.at_prepare():
             self._stable_image = None
             return self._wait_unload('未识别备战主画面', unknown=True)
-        detail = prepare_detail_state(self.ctx, self.last_screenshot)
-        if detail is False:
+        if not prepare_detail_state(self.ctx, self.last_screenshot):
             return None
         self._stable_image = None
-        if detail is None:
-            return self._wait_unload('无法确认备战无遮挡', unknown=True)
         if self.pending and self.unload_generation != self.pause_generation:
             return self.transfer_fail('暂停后详情仍在，只核验结果，不补发关闭或双击')
         if self.detail_close_attempts >= 2:
@@ -114,15 +111,15 @@ class BagelClearLoadout(BagelTransferOperation):
 
     @operation_node(name='核对启动携带', is_start_node=True)
     def inspect_loadout(self) -> OperationRoundResult:
-        """识别完整五项及装备槽，决定是否需要清空。"""
+        """识别容器占用及装备槽，决定是否需要清空。"""
         result = self._require_clear_prepare()
         if result is not None:
             return result
-        values = read_loadout(self.ctx, self.last_screenshot)
-        self.observation = f'五项携带 {values}'
-        if not complete_loadout(values):
+        values = read_containers(self.ctx, self.last_screenshot)
+        self.observation = f'容器读数 {values}'
+        if not complete_containers(values):
             self._stable_image = None
-            return self.read_again(f'五项携带识别不完整 {values}')
+            return self.read_again(f'容器读数不完整 {values}')
         states = [carried_slot_state(self.last_screenshot, center) for center in LOADOUT_CENTERS]
         if None in states:
             self._stable_image = None
@@ -132,9 +129,7 @@ class BagelClearLoadout(BagelTransferOperation):
             return self.read_again('等待备战格子稳定')
         self.required_slots = sum(state is True for state in states)
         self.read_misses = 0
-        if zero_loadout(values):
-            if any(states):
-                return self.transfer_fail('五项为零但槽位仍有物品')
+        if zero_containers(values) and not any(states):
             return self.round_success('已是零携带')
         if all(parse_capacity_pair(values[name])[0] == 0 for name in ('背包数量', '安全箱数量')):
             return self.round_success('背包安全箱已空')
@@ -150,9 +145,9 @@ class BagelClearLoadout(BagelTransferOperation):
             return self.read_again('等待备战仓库打开')
         if self.node_clicked:
             return self.read_again('已点击前往仓库，等待切换')
-        if self.round_by_ocr(self.last_screenshot, '前往仓库', lcs_percent=1).is_success:
-            result = self.round_by_ocr_and_click(
-                self.last_screenshot, '前往仓库', lcs_percent=1,
+        if self.round_by_find_area(self.last_screenshot, '贝果-备战', '前往仓库').is_success:
+            result = self.round_by_find_and_click_area(
+                self.last_screenshot, '贝果-备战', '前往仓库',
                 success_wait=0.5, retry_wait=0.5,
             )
             if result.is_success:
@@ -206,7 +201,7 @@ class BagelClearLoadout(BagelTransferOperation):
     @node_from(from_name='仓库返回备战')
     @operation_node(name='逐格卸下战备')
     def unload_next(self) -> OperationRoundResult:
-        """先关闭详情，逐格核验占用；全部卸完后才重新读取三个价值。"""
+        """先关闭详情，逐格核验占用；全部槽位为空且稳定后结束。"""
         if self.pending:
             self.pending_checks += 1
         result = self._require_clear_prepare()
@@ -231,17 +226,8 @@ class BagelClearLoadout(BagelTransferOperation):
         if None in states:
             self._stable_image = None
             return self._wait_unload('卸装槽位状态不清', unknown=True)
-        values: dict[str, str] = {}
-        if not any(states):
-            values = read_loadout(self.ctx, self.last_screenshot)
-            self.observation += f'，五项携带 {values}'
-            if (not complete_loadout(values)
-                    or parse_capacity_pair(values['背包数量']) != backpack
-                    or parse_capacity_pair(values['安全箱数量']) != safe):
-                self._stable_image = None
-                return self._wait_unload('无法完整核对最终五项携带', unknown=True)
-        # 图标会闪动；稳定判据只用容器读数、槽位占用及最终五项读数。
-        if not self.stable_slots((), (*counts, *states, *values.values())):
+        # 图标会闪动；稳定判据只用容器读数和槽位占用。
+        if not self.stable_slots((), (*counts, *states)):
             return self._wait_unload('等待卸装结果稳定', unknown=True)
         self.read_misses = 0
         if self.pending:
@@ -270,8 +256,6 @@ class BagelClearLoadout(BagelTransferOperation):
                 return self.transfer_fail(f'卸装后容器容量变化异常 {self.before_counts} -> {counts}')
             self.finish_transfer()
         if not any(states):
-            if not zero_loadout(values):
-                return self.transfer_fail(f'槽位已空但五项未归零 {values}')
             return self.round_success('战备已全部清空', data={'moved': self.moved})
         offset = 0
         for group, centers in LOADOUT_GROUPS:
@@ -283,6 +267,6 @@ class BagelClearLoadout(BagelTransferOperation):
                     self.unload_retries = 0
                     self.unload_generation = self.pause_generation
                     self.detail_close_attempts = 0
-                    return self.double_click_item(center, f'{group.removesuffix("价值")}第 {index + 1} 格')
+                    return self.double_click_item(center, f'{group}第 {index + 1} 格')
             offset += len(centers)
         return self.transfer_fail('未找到可卸下的物品')

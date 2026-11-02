@@ -11,7 +11,7 @@ area_list:
   - 970
   id_mark: true
   text: 预设组合
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 前往空洞
   pc_rect:
   - 1550
@@ -20,28 +20,7 @@ area_list:
   - 970
   id_mark: true
   text: 前往空洞
-  lcs_percent: 0.9
-- area_name: 武备价值
-  pc_rect:
-  - 1020
-  - 188
-  - 1370
-  - 228
-  lcs_percent: 0.9
-- area_name: 装备价值
-  pc_rect:
-  - 1460
-  - 188
-  - 1808
-  - 228
-  lcs_percent: 0.9
-- area_name: 道具价值
-  pc_rect:
-  - 1460
-  - 405
-  - 1808
-  - 452
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 背包数量
   pc_rect:
   - 1493
@@ -56,3 +35,11 @@ area_list:
   - 1790
   - 849
   lcs_percent: 0.9
+- area_name: 前往仓库
+  pc_rect:
+  - 230
+  - 995
+  - 430
+  - 1055
+  text: 前往仓库
+  lcs_percent: 0.7
