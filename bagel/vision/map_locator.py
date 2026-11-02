@@ -17,7 +17,7 @@ import numpy as np
 from cv2.typing import MatLike
 from PIL import Image
 
-from ..bagel_defs import PLUGIN_DIR
+from ..defs import PLUGIN_DIR
 
 MINIMAP_INNER_RADIUS = 88
 """小地图圆形有效区半径。圆外只可能是 UI 装饰，不参与匹配。"""

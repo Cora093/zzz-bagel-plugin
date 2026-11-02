@@ -86,7 +86,7 @@ W(r) = 2 × [α − arcsin(k × sin(α) / r)]，k ≈ 2.83 像素，α ≈ 58.35
 
 ## 转向校准与截图时序
 
-校准逻辑在 `bagel/route/bagel_input_worker.py`，局末写回在同目录的 `bagel_route_walker.py`。
+校准逻辑在 `bagel/route/input_worker.py`，局末写回在同目录的 `route_walker.py`。
 
 ### 实时校准
 

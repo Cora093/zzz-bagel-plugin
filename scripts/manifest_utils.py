@@ -93,11 +93,11 @@ def const_path_for_app(
     package_dir: Path, manifest: dict[str, Any], app: dict[str, Any] | None = None
 ) -> Path:
     if app is None:
-        return package_dir / f"{plugin_id(manifest)}_const.py"
+        return package_dir / "const.py"
 
     app_id = str(app.get("id", ""))
     feature = app_id.removeprefix(f"{plugin_id(manifest)}_")
-    return package_dir / feature / f"{feature}_const.py"
+    return package_dir / feature / "const.py"
 
 
 def py_string(value: Any) -> str:

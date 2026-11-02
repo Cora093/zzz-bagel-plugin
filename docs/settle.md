@@ -114,7 +114,7 @@
 
 ### 次数与适用范围
 
-“整体重试次数”（`max_failure_retries`）表示正式应用因局内失败最多额外入场多少次。默认值和取值范围见[贝果配置表](overview.md#配置bagelconfig)。设置页显示的是累计失败上限，与内部重开次数的换算由 `bagel/gui/bagel_setting_interface.py` 实现；日志和运行记录仍使用内部重开次数。
+“整体重试次数”（`max_failure_retries`）表示正式应用因局内失败最多额外入场多少次。默认值和取值范围见[贝果配置表](overview.md#配置bagelconfig)。设置页显示的是累计失败上限，与内部重开次数的换算由 `bagel/gui/setting_interface.py` 实现；日志和运行记录仍使用内部重开次数。
 
 以下情况不消耗整体重试次数：
 
