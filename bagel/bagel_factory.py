@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class BagelFactory(ApplicationFactory):
-    """由插件发现机制注册；只是独立应用，不进一条龙默认应用组。"""
+    """由插件发现机制注册；进一条龙默认应用组，也可单独运行。"""
 
     def __init__(self, ctx: ZContext) -> None:
         """保存上下文，实例配置由工厂缓存管理。"""

@@ -1,7 +1,7 @@
 # Generated from plugin.json. Run scripts/generate_const.py after editing manifest.
 APP_ID = "bagel"
 APP_NAME = "贝果计划"
-DEFAULT_GROUP = False
+DEFAULT_GROUP = True
 NEED_NOTIFY = True
 
 PLUGIN_AUTHOR = "Cora、kawayiYokami、ShadowLemoon、PoorKid1112、RRRR623、wusaqi、Ada、A-nony-mous"
