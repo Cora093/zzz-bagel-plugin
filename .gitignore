@@ -3,3 +3,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+.install/
+.claude/
+CLAUDE.local.md
+.debug/
+.venv/
+.env
