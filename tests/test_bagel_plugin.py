@@ -339,13 +339,13 @@ def test_plugin_metadata_declared(empty_work_dir: Path) -> None:
     assert info.homepage
 
 
-def test_standalone_app_not_in_one_dragon(empty_work_dir: Path) -> None:
-    """贝果只是独立应用：不进一条龙默认应用组，也不限定只能由代码入口调用。"""
+def test_default_group_app(empty_work_dir: Path) -> None:
+    """贝果进一条龙默认应用组，同时不限定只能由代码入口调用。"""
     manager = ApplicationFactoryManager(None, [(PLUGINS_DIR, PluginSource.THIRD_PARTY)])
     manager.discover_factories()
 
     factory = next(item for item in manager.discover_factories() if item.app_id == 'bagel')
-    assert factory.default_group is False
+    assert factory.default_group is True
     assert factory.internal_app is False
 
 

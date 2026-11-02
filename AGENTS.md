@@ -42,9 +42,16 @@
 
 ## 应用定位
 
-- 贝果是**独立应用**，不进一条龙默认应用组：`plugin.json` 的 `defaultGroup` 必须保持 `false`，
-  也不要加 `PRIORITY`（那只在默认组里排序时有用）。它由用户在应用列表里单独运行。
-- `INTERNAL_APP` 也不要开：那会让应用只能由代码固定入口调用。
+- 贝果是一条龙**默认组应用**：`plugin.json` 的 `defaultGroup` 为 `true`；`internal_app` 保持
+  `False`，所以仍可从应用列表单独运行。
+- 首次进组时 `update_full_app_list` 给新应用建未持久化的 `enabled=False` 项并放在 `app_list`
+  **头部**，所以贝果会以**未勾选**状态出现在一条龙列表**最上面**，要用户手动打开才会执行。
+  `set_app_enable` 勾选时会持久化，勾完固定为首项，其余应用相对顺序不变。
+- 一条龙按 `run_record.is_done`（当日 `STATUS_SUCCESS`）跳过本应用：当天跑成功一次后，
+  再跑一条龙会显示「应用已完成 贝果计划」。独立应用运行不受此限。
+- 默认组注册顺序按 `PRIORITY` 升序。插件 manifest 没有该字段的出口，贝果不声明，
+  所以在注册顺序里排在声明了 `PRIORITY` 的应用之后；这不影响上面的界面列表位置。
+- `INTERNAL_APP` 不要开：那会让应用只能由代码固定入口调用。
 
 ## 插件机制约束
 
