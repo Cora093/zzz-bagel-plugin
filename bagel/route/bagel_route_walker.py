@@ -2557,8 +2557,13 @@ class BagelRouteWalker(BagelOperation):
             if abs(offset) < 0.5:
                 return aim
         origin = self._previous_point()
-        base = origin if origin is not None else position
-        dx, dy = point.x - base[0], point.y - base[1]
+        # 上一个点是 BagelRoutePoint（不是坐标元组），这里只能取 .x/.y；
+        # 取 base[0] 会抛 TypeError（实测：换道回退第一次自然触发就把整轮打停）。
+        if origin is not None:
+            base_x, base_y = origin.x, origin.y
+        else:
+            base_x, base_y = position[0], position[1]
+        dx, dy = point.x - base_x, point.y - base_y
         length = hypot(dx, dy)
         if length <= 0:
             return aim
