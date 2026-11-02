@@ -74,8 +74,10 @@ def _module_name(path: Path) -> str:
 def test_plugin_layout() -> None:
     """插件根第一层只允许一个工厂和一个常量文件，其余模块按职责放进子包。"""
     names = [path.name for path in ROOT_FILES]
-    assert [name for name in names if name.endswith('_factory.py')] == ['bagel_factory.py']
-    assert [name for name in names if name.endswith('_const.py')] == ['bagel_const.py']
+    assert 'factory.py' in names
+    assert 'const.py' in names
+    # 一条龙推荐固定文件名，旧的 前缀_factory.py / 前缀_const.py 只是兼容，不再使用
+    assert [n for n in names if n.endswith('_factory.py') or n.endswith('_const.py')] == []
     assert '__init__.py' in names
     # 模块数量不是契约：删掉不执行的旧流程后数量会变，这里只要求插件不是空壳。
     assert MODULE_FILES
@@ -90,7 +92,7 @@ def test_manifest_matches_const() -> None:
     manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
     assert manifest['id'] == PLUGIN_DIR.name
 
-    const_text = (PLUGIN_DIR / 'bagel_const.py').read_text(encoding='utf-8')
+    const_text = (PLUGIN_DIR / 'const.py').read_text(encoding='utf-8')
     expected = {
         'APP_ID': manifest['id'],
         'APP_NAME': manifest['name'],
@@ -118,8 +120,8 @@ def test_modules_importable() -> None:
 
 def test_app_identity() -> None:
     """应用标识来自生成的 const，插件根指向插件目录自身。"""
-    const = importlib.import_module('bagel.bagel_const')
-    defs = importlib.import_module('bagel.bagel_defs')
+    const = importlib.import_module('bagel.const')
+    defs = importlib.import_module('bagel.defs')
     assert const.APP_ID == 'bagel'
     assert Path(defs.PLUGIN_DIR).resolve() == PLUGIN_DIR.resolve()
 
@@ -161,7 +163,7 @@ def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
     这条守首次启动：默认路线若还留在工作目录，用户第一次跑就会得到
     「没有开启的贝果路线」，任务根本开不起来。
     """
-    store_module = importlib.import_module('bagel.route.bagel_route_store')
+    store_module = importlib.import_module('bagel.route.route_store')
     store = store_module.BagelRouteStore()
 
     assert store.sample_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
@@ -175,23 +177,23 @@ def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
 
 
 def test_user_data_outside_plugin(empty_work_dir: Path) -> None:
-    """用户数据落在工作目录的 plugin_data/<app_id> 下，不进插件目录。
+    """用户数据落在工作目录的 plugin_data/<仓库>/<APP_ID>/ 下，不进插件目录。
 
     插件升级是整个目录替换，数据写在插件目录里会随旧版本一起删掉。
     """
-    expected = empty_work_dir / 'plugin_data' / 'bagel'
+    expected = empty_work_dir / 'plugin_data' / 'zzz-bagel-plugin' / 'bagel'
 
-    store_module = importlib.import_module('bagel.route.bagel_route_store')
+    store_module = importlib.import_module('bagel.route.route_store')
     store = store_module.BagelRouteStore()
     assert store.custom_dir.resolve() == (expected / 'routes').resolve()
     assert store.settings_path.resolve() == (expected / 'route_settings.yml').resolve()
     assert not store.custom_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
 
-    stats_module = importlib.import_module('bagel.route.bagel_route_stats')
+    stats_module = importlib.import_module('bagel.route.route_stats')
     records = stats_module.BagelRouteRecorder().path()
     assert records.resolve() == (expected / 'route_records.jsonl').resolve()
 
-    shot_module = importlib.import_module('bagel.bagel_screenshot')
+    shot_module = importlib.import_module('bagel.screenshot')
     assert shot_module.screenshot_dir().resolve() == (expected / 'screenshots').resolve()
 
 
@@ -221,7 +223,7 @@ def test_map_layers_load_from_plugin() -> None:
 
 def test_item_badges_inside_plugin() -> None:
     """物品角标模板齐全，且不落到工作目录。"""
-    vision = importlib.import_module('bagel.vision.bagel_item_vision')
+    vision = importlib.import_module('bagel.vision.item_vision')
     badge_dir = Path(vision._badge_dir()).resolve()
     assert badge_dir.is_relative_to(PLUGIN_DIR.resolve())
     for _, stem in vision._BADGE_FILES:
@@ -230,7 +232,7 @@ def test_item_badges_inside_plugin() -> None:
 
 def test_safe_lock_template_readable() -> None:
     """保险箱挂锁模板能读出有效纹理，缺失时判空会全部失效。"""
-    slots = importlib.import_module('bagel.vision.bagel_slots')
+    slots = importlib.import_module('bagel.vision.slots')
     template = slots._safe_lock_template()
     assert template is not None
     assert template.shape == (56, 48)
@@ -238,7 +240,7 @@ def test_safe_lock_template_readable() -> None:
 
 def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
     """换一个空工作目录后，出生点、底图、角标、模板仍然读得到。"""
-    store_module = importlib.import_module('bagel.route.bagel_route_store')
+    store_module = importlib.import_module('bagel.route.route_store')
     store = store_module.BagelRouteStore()
     assert store.spawn_path.is_relative_to(PLUGIN_DIR.resolve())
     assert store.load_spawns()
@@ -246,10 +248,10 @@ def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
     locator = importlib.import_module('bagel.vision.map_locator')
     assert locator.load_map_locators()
 
-    vision = importlib.import_module('bagel.vision.bagel_item_vision')
+    vision = importlib.import_module('bagel.vision.item_vision')
     assert Path(vision._badge_dir()).is_relative_to(PLUGIN_DIR.resolve())
 
-    slots = importlib.import_module('bagel.vision.bagel_slots')
+    slots = importlib.import_module('bagel.vision.slots')
     assert slots._safe_lock_template() is not None
 
 
@@ -312,7 +314,7 @@ def test_setting_provider_registered() -> None:
         AppSettingProvider,
     )
 
-    provider_module = importlib.import_module('bagel.bagel_app_setting')
+    provider_module = importlib.import_module('bagel.app_setting')
     providers = [
         value for value in vars(provider_module).values()
         if isinstance(value, type)

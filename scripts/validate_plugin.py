@@ -234,7 +234,7 @@ def validate_package(
 
     required = [
         ("__init__.py", "INIT_MISSING"),
-        (f"{current_id}_factory.py", "FACTORY_MISSING"),
+        ("factory.py", "FACTORY_MISSING"),
     ]
     for name, code in required:
         if (package_dir / name).is_file():

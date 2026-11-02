@@ -31,7 +31,7 @@ def compare_or_write(repo: Path, path: Path, content: str, check: bool) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate *_const.py from plugin.json.")
+    parser = argparse.ArgumentParser(description="Generate const.py from plugin.json.")
     parser.add_argument("--repo", default=".", help="Plugin repository root.")
     parser.add_argument("--check", action="store_true", help="Compare only.")
     args = parser.parse_args()

@@ -12,11 +12,11 @@
 （仓库根）
 ├── bagel/                 # 插件目录，打包后就是 zip 的顶层目录
 │   ├── plugin.json        # 商店元数据，改这里再生成 const
-│   ├── bagel_const.py     # 生成物，不要手改
-│   ├── bagel_defs.py      # 业务常量与 PLUGIN_DIR
-│   ├── bagel_factory.py   # 必须在插件根第一层
-│   ├── bagel_app_setting.py
-│   ├── bagel_app.py / bagel_config.py / bagel_stats.py 等插件级模块
+│   ├── const.py           # 生成物，不要手改
+│   ├── defs.py            # 业务常量与 PLUGIN_DIR
+│   ├── factory.py         # 必须在插件根第一层
+│   ├── app.py             # 应用实现
+│   ├── app_setting.py / config.py / stats.py / usage.py 等插件级模块
 │   ├── operation/         # 局内操作节点
 │   ├── route/             # 路线模型、录制、存储、执行
 │   ├── vision/            # 画面识别与地图定位
@@ -56,14 +56,14 @@
 ## 插件机制约束
 
 - 扫描器只认**插件根第一层**的 `*.py`，不递归子目录：
-  - `*_factory.py` 只能有一个，放 `bagel/bagel_factory.py`
-  - `*_const.py` 只能有一个，放 `bagel/bagel_const.py`
-  - `*_app_setting.py` 同样只在第一层被扫到
+  - 工厂文件只能有一个，固定叫 `bagel/factory.py`（旧的后缀写法 `*_factory.py` 只为兼容保留，不要再用）
+  - 常量文件只能有一个，固定叫 `bagel/const.py`（同上，`*_const.py` 不再使用）
+  - 插件级模块（`app_setting.py`、`config.py` 等）同样只在第一层被扫到
 - 其余模块可以放子包，插件内一律用相对导入：
-  - 同包：`from .bagel_xxx import`
-  - 跨包：`from ..route.bagel_xxx import`
+  - 同包：`from .xxx import`
+  - 跨包：`from ..route.xxx import`
   - 不要出现 `from bagel.xxx import` 或 `zzz_od.application.bagel`，测试会拦下
-- `bagel/bagel_const.py` 是生成物。改应用名、版本、作者、简介要改 `bagel/plugin.json`，
+- `bagel/const.py` 是生成物。改应用名、版本、作者、简介要改 `bagel/plugin.json`，
   然后跑 `python scripts/generate_const.py --repo .`。
   手改 const 而不改 manifest，商店校验会判 `CONST_OUTDATED`。
 - `PLUGIN_AUTHOR` / `PLUGIN_HOMEPAGE` / `PLUGIN_VERSION` / `PLUGIN_DESCRIPTION`
@@ -76,9 +76,11 @@
 
 ## 本地运行
 
-仓库就住在主仓 `plugins/bagel`，插件代码在它下面的 `bagel/` 里。一条龙的扫描
-既认 `plugins/<插件>/`，也认 `plugins/<仓库>/<插件>/`——判据是子目录里有
-`plugin.json`。所以改完代码直接运行，不需要同步或复制。
+仓库住在主仓 `plugins/<仓库名>/`，插件代码在它下面的 `bagel/` 里。一条龙的扫描
+既认 `plugins/<插件>/`，也认 `plugins/<仓库>/<插件>/`——仓库布局下的判据是子目录里
+同时有工厂文件和常量文件，`plugin.json` 不参与判定。所以改完代码直接运行，不需要同步或复制。
+运行期数据写在主程序工作目录的 `plugin_data/zzz-bagel-plugin/bagel/`，仓库名取自
+`plugin.json` 的 homepage 末段。
 
 ## 发版
 
