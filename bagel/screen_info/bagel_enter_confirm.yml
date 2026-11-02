@@ -17,7 +17,7 @@ area_list:
   - 1250
   - 671
   text: 确认
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 投资标题
   pc_rect:
   - 885
@@ -25,7 +25,7 @@ area_list:
   - 1035
   - 697
   text: 投资金额
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 投资金额
   pc_rect:
   - 780
@@ -46,7 +46,7 @@ area_list:
   - 1230
   - 1018
   text: 前往空洞
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 投资最小值
   pc_rect:
   - 420
@@ -54,4 +54,12 @@ area_list:
   - 550
   - 905
   text: MIN
-  lcs_percent: 1.0
+  lcs_percent: 0.7
+- area_name: 投资风险提示
+  pc_rect:
+  - 1470
+  - 25
+  - 1790
+  - 75
+  text: 关卡有风险，投资需谨慎
+  lcs_percent: 0.7

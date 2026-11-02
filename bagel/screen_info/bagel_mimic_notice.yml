@@ -12,7 +12,7 @@ area_list:
   - 1228
   - 356
   text: 带出的拟态单质已失活，转化为惰性单质
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 确认
   area_type: text
   pc_rect:
@@ -21,4 +21,4 @@ area_list:
   - 1025
   - 862
   text: 确认
-  lcs_percent: 0.9
+  lcs_percent: 0.7

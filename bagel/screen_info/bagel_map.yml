@@ -11,7 +11,7 @@ area_list:
   - 990
   id_mark: true
   text: 前往备战
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 雅努斯
   pc_rect:
   - 250
@@ -19,7 +19,7 @@ area_list:
   - 470
   - 710
   text: 雅努斯幻境
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 城郊幻境
   pc_rect:
   - 260
@@ -27,7 +27,7 @@ area_list:
   - 440
   - 420
   text: 城郊幻境
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 选中地图
   pc_rect:
   - 630
@@ -35,7 +35,7 @@ area_list:
   - 900
   - 255
   text: 雅努斯幻境
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 常规
   pc_rect:
   - 1130
@@ -43,7 +43,7 @@ area_list:
   - 1310
   - 185
   text: 常规
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 困难
   pc_rect:
   - 1330
@@ -51,7 +51,7 @@ area_list:
   - 1480
   - 183
   text: 困难
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 推荐价值
   pc_rect:
   - 1282
@@ -66,4 +66,4 @@ area_list:
   - 1680
   - 183
   text: 高危
-  lcs_percent: 0.9
+  lcs_percent: 0.7

@@ -48,7 +48,7 @@ area_list:
   - 1660
   - 740
   text: 武备箱
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 搜查容器标题
   pc_rect:
   - 1290
@@ -56,7 +56,7 @@ area_list:
   - 1745
   - 195
   text: 箱
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 搜查容器标题_包
   pc_rect:
   - 1290
@@ -64,7 +64,7 @@ area_list:
   - 1745
   - 195
   text: 包
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 搜查容器标题_柜
   pc_rect:
   - 1290
@@ -72,7 +72,7 @@ area_list:
   - 1745
   - 195
   text: 柜
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 搜查完成
   pc_rect:
   - 1650
@@ -80,7 +80,7 @@ area_list:
   - 1810
   - 560
   text: 全部拾取
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 搜查进行中
   pc_rect:
   - 1650
@@ -88,7 +88,7 @@ area_list:
   - 1810
   - 560
   text: 全部拾取
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 全部拾取_单行
   pc_rect:
   - 1650
@@ -96,7 +96,7 @@ area_list:
   - 1810
   - 410
   text: 全部拾取
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 全部拾取_双行
   pc_rect:
   - 1650
@@ -104,7 +104,7 @@ area_list:
   - 1810
   - 560
   text: 全部拾取
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 电梯选项
   pc_rect:
   - 1370
@@ -118,7 +118,7 @@ area_list:
   - 330
   - 842
   text: 安全箱
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 搜查返回
   pc_rect:
   - 82
@@ -134,7 +134,7 @@ area_list:
   - 1710
   - 80
   text: 图例
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 大地图标题
   pc_rect:
   - 165
@@ -142,7 +142,7 @@ area_list:
   - 435
   - 68
   text: 雅努斯幻境
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 大地图返回
   pc_rect:
   - 82
@@ -160,7 +160,7 @@ area_list:
   - 1660
   - 740
   text: 电子保险箱
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 电子保险箱标题
   pc_rect:
   - 1265
@@ -168,7 +168,7 @@ area_list:
   - 1530
   - 180
   text: 电子保险箱
-  lcs_percent: 1.0
+  lcs_percent: 0.7
 - area_name: 大保险解锁提示
   pc_rect:
   - 800
@@ -176,7 +176,7 @@ area_list:
   - 1110
   - 195
   text: 精确点按
-  lcs_percent: 0.8
+  lcs_percent: 0.7
 - area_name: 交互F键
   pc_rect:
   - 1267

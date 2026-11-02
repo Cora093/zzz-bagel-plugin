@@ -11,7 +11,7 @@ area_list:
   - 575
   id_mark: true
   text: 仅保留安全箱内物资
-  lcs_percent: 0.9
+  lcs_percent: 0.7
 - area_name: 确认
   pc_rect:
   - 977
@@ -19,4 +19,4 @@ area_list:
   - 1250
   - 685
   text: 确认
-  lcs_percent: 0.9
+  lcs_percent: 0.7

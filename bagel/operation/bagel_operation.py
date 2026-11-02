@@ -167,11 +167,13 @@ class BagelOperation(ZOperation):
     def _at_bagel_activity(self) -> bool:
         """核对是否停在贝果活动页。
 
-        活动页标题为「迷宫诡域：活动名」（如「迷宫诡域：古怪试炼」），
-        与贝果主界面的「迷宫诡域贝果计划」不同，但两页都有「前往空洞」。
+        活动页标题为「迷宫诡域：活动名」（如「迷宫诡域：古怪试炼」）。
+        投资页标题「迷宫诡域：贝果计划」前缀相同，靠右上角的风险提示排除。
         活动页点「前往空洞」进入选图页，再进入主界面。
         活动期间主界面标题也是「迷宫诡域：古怪试炼」，此时主界面同样返回 True。
         """
+        if self._has('投资风险提示', '贝果-入场确认'):
+            return False
         area = self.ctx.screen_loader.get_area('贝果-研究站', '标题')
         if area is None:
             return False
@@ -179,7 +181,7 @@ class BagelOperation(ZOperation):
             image=self.last_screenshot, rect=area.rect,
         )
         title = ''.join(str_utils.remove_whitespace(item.data) for item in texts)
-        return title.startswith(gt('迷宫诡域', 'game')) and not title.startswith(gt('迷宫诡域贝果计划', 'game'))
+        return title.startswith(gt('迷宫诡域', 'game'))
 
     def _at_bagel_hub(self) -> bool:
         """核对是否已到达可继续的贝果页面。
