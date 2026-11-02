@@ -2,12 +2,12 @@
 
 记录贝果计划插件的版本变更。版本号与 `bagel/const.py` 里的 `PLUGIN_VERSION` 保持一致。
 
-## 未发布
+## 0.3.1 — 2026-11-03
 
 ### 变更
 
 - 工厂与常量文件名跟主仓插件规范统一：`bagel/bagel_factory.py` 改为 `bagel/factory.py`，
-  `bagel/bagel_const.py` 改为 `bagel/const.py`。
+  `bagel/bagel_const.py` 改为 `bagel/const.py`。其余模块一并去掉 `bagel_` 前缀。
 - 用户数据目录改为 `plugin_data/<仓库>/<插件>/`（当前是 `plugin_data/zzz-bagel-plugin/bagel/`），
   和插件代码在 `plugins/<仓库>/<插件>/` 的结构对齐。旧的 `plugin_data/bagel/` 不会自动搬家。
 

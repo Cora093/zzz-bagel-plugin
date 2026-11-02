@@ -2,8 +2,8 @@
   "id": "bagel",
   "name": "贝果计划",
   "summary": "贝果计划自动跑刀：按自录路线跑图、收集物品、清理仓库并结算的完整自动化流程。",
-  "version": "0.3.0",
-  "versionCode": 4,
+  "version": "0.3.1",
+  "versionCode": 5,
   "defaultGroup": true,
   "needNotify": true,
   "author": {
