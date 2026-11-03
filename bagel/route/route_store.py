@@ -3,8 +3,8 @@
 
 - ``assets/game_data/bagel/spawn_points.yml``：出生点清单。
 - ``assets/game_data/bagel/routes/<标识>.sample.route.json``：默认路线，内容只读。
-- ``plugin_data/<仓库>/<APP_ID>/routes/custom_<标识>.route.json``：自定义路线。
-- ``plugin_data/<仓库>/<APP_ID>/route_settings.yml``：每个出生点当前开启的路线。
+- ``plugin_data/<APP_ID>/routes/custom_<标识>.route.json``：自定义路线。
+- ``plugin_data/<APP_ID>/route_settings.yml``：每个出生点当前开启的路线。
 
 开启选择每个出生点只存一个路线引用或 ``null``，天然保证同一出生点最多开启一条。
 路线文件不保存开关状态。界面、录制器和执行器都通过本模块读写，不自行拼路径。
@@ -127,7 +127,7 @@ class BagelRouteStore:
     def __init__(self, data_dir: Path | None = None) -> None:
         """
         Args:
-            data_dir: 数据目录；None 表示插件数据目录 plugin_data/<仓库>/<APP_ID>。离线核对时可传临时目录。
+            data_dir: 数据目录；None 表示插件数据目录 plugin_data/<APP_ID>。离线核对时可传临时目录。
         """
         self.data_dir: Path = data_dir if data_dir is not None else get_plugin_data_dir()
         self.custom_dir: Path = self.data_dir / 'routes'

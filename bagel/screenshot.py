@@ -16,7 +16,7 @@ def screenshot_dir() -> Path:
     """现场截图目录；跟路线数据同在插件数据目录下。
 
     Returns:
-        工作目录下的 ``plugin_data/<仓库>/<APP_ID>/screenshots``。
+        工作目录下的 ``plugin_data/<APP_ID>/screenshots``。
     """
     return get_plugin_data_dir() / 'screenshots'
 

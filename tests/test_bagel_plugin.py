@@ -177,11 +177,11 @@ def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
 
 
 def test_user_data_outside_plugin(empty_work_dir: Path) -> None:
-    """用户数据落在工作目录的 plugin_data/<仓库>/<APP_ID>/ 下，不进插件目录。
+    """用户数据落在工作目录的 plugin_data/<APP_ID>/ 下，不进插件目录。
 
     插件升级是整个目录替换，数据写在插件目录里会随旧版本一起删掉。
     """
-    expected = empty_work_dir / 'plugin_data' / 'zzz-bagel-plugin' / 'bagel'
+    expected = empty_work_dir / 'plugin_data' / 'bagel'
 
     store_module = importlib.import_module('bagel.route.route_store')
     store = store_module.BagelRouteStore()
