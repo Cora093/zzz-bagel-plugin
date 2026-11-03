@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from one_dragon_qt.widgets.adapter_init_mixin import AdapterInitMixin
 from one_dragon_qt.widgets.multi_selection_combo_box import MultiSelectionComboBox
 from PySide6 import QtCore
@@ -47,29 +45,19 @@ from ..defs import (
     CLEAN_TYPES,
 )
 
-if TYPE_CHECKING:
-    from one_dragon_qt.widgets.setting_card.yaml_config_adapter import YamlConfigAdapter
-
 
 class CountSpinBox(SpinBox, AdapterInitMixin):
-    """句式中的计数输入；显示偏移只用于界面，不改变配置语义。"""
+    """句式中的计数输入。"""
 
-    def __init__(
-        self, minimum: int, maximum: int, parent: QWidget, display_offset: int = 0
-    ) -> None:
-        """设置范围，失败上限通过偏移 1 显示为累计失败次数。"""
+    def __init__(self, minimum: int, maximum: int, parent: QWidget) -> None:
+        """设置范围和宽度。"""
         SpinBox.__init__(self, parent)
         AdapterInitMixin.__init__(self)
-        self._display_offset: int = display_offset
         self.setRange(minimum, maximum)
         # Fluent 的两个步进按钮并排显示，须为四位数保留输入宽度。
         self.setFixedWidth(140)
         self.setKeyboardTracking(False)
         self.valueChanged.connect(self._save_value)
-
-    def _get_adapter_value(self, adapter: YamlConfigAdapter) -> int:
-        """读取后加上显示偏移。"""
-        return adapter.get_value() + self._display_offset
 
     def _set_value_from_adapter(self, value: int) -> None:
         """阻断初始化信号，防止加载时写回。"""
@@ -78,9 +66,9 @@ class CountSpinBox(SpinBox, AdapterInitMixin):
         self.setEnabled(True)
 
     def _save_value(self, value: int) -> None:
-        """用户修改后减去偏移，再即时保存。"""
+        """用户修改后即时保存。"""
         if self.adapter is not None:
-            self.adapter.set_value(value - self._display_offset)
+            self.adapter.set_value(value)
 
 
 class AutoSaleSwitch(SwitchButton, AdapterInitMixin):

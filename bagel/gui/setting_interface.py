@@ -168,7 +168,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         return widget
 
     def _make_end_conditions(self, parent: QWidget) -> QWidget:
-        """两个计数输入组成一句话，失败次数仅作显示换算。"""
+        """两个计数输入组成一句话。"""
         card = SimpleCardWidget(parent)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -176,19 +176,22 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         sentence = QHBoxLayout()
         sentence.setSpacing(8)
         self.success_count: CountSpinBox = CountSpinBox(0, 1000, card)
-        self.failure_count: CountSpinBox = CountSpinBox(1, 101, card, display_offset=1)
+        self.failure_count: CountSpinBox = CountSpinBox(1, 10, card)
         self.success_count.setAccessibleName('累计成功次数')
-        self.failure_count.setAccessibleName('累计失败次数')
+        self.failure_count.setAccessibleName('连续失败次数')
         sentence.addWidget(BodyLabel('累计成功', card))
         sentence.addWidget(self.success_count)
-        sentence.addWidget(BodyLabel('次 或 累计失败', card))
+        sentence.addWidget(BodyLabel('次 或 连续失败', card))
         sentence.addWidget(self.failure_count)
         sentence.addWidget(BodyLabel('次后结束任务', card))
         sentence.addStretch(1)
         layout.addLayout(sentence)
-        layout.addWidget(
-            CaptionLabel('成功次数为0表示无限循环直到仓库满，失败次数表示失败后自动重开次数', card)
+        hint = CaptionLabel(
+            '成功次数为0表示不限成功次数；全局或同一路线连续失败达到上限时结束。'
+            '成功入仓后，全局和本局路线的连续失败清零，其他路线的计数保留。', card,
         )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         return card
 
     def _make_sale_group(self, parent: QWidget) -> QWidget:
@@ -476,7 +479,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         )
         for control, field in (
             (self.success_count, 'max_success_rounds'),
-            (self.failure_count, 'max_failure_retries'),
+            (self.failure_count, 'max_consecutive_failures'),
             (self.sell_interval, 'sell_interval'),
             (self.auto_clean_switch, 'auto_clean_warehouse'),
             (self.clean_mode, 'clean_mode'),
