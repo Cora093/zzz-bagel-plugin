@@ -214,7 +214,7 @@ class BagelPointRecorder:
             self.failure = '没有打下任何点，未生成文件'
             return
         try:
-            self.saved_route = BagelRouteStore().create_custom_route(
+            self.saved_route = BagelRouteStore(self.ctx).create_custom_route(
                 self.name, self.spawn.spawn_id, points=list(self.route.points),
                 activate=self.activate, started_at=self.route.started_at,
             )

@@ -87,7 +87,7 @@ class BagelApp(ZApplication):
         """本局路线执行器的安全箱账本；本局没跑路线时为 None。"""
         self._round_survey: int = 0
         """本局调查收益的最后一次读数；零携带入场后为 0，路线执行器读到后更新。"""
-        self._route_recorder: BagelRouteRecorder = BagelRouteRecorder()
+        self._route_recorder: BagelRouteRecorder = BagelRouteRecorder(self.ctx)
         """路线数据记录：每局写一行，任务结束输出按出生点的汇总表。"""
         self._round_map_id: str | None = None
         self._round_spawn: BagelSpawnPoint | None = None
@@ -132,7 +132,7 @@ class BagelApp(ZApplication):
         try:
             if not result.success and self.last_screenshot is not None:
                 self.screenshot()
-                path = screenshot.save_screenshot(self.last_screenshot, 'BagelApp')
+                path = screenshot.save_screenshot(self.ctx, self.last_screenshot, 'BagelApp')
                 usage.log_screenshot(path)
             elif not result.success:
                 log.warning('没有可保存的现场截图。请查看相关日志。')
@@ -193,7 +193,7 @@ class BagelApp(ZApplication):
             return
         self._route_reported = True
         try:
-            catalog = BagelRouteStore().load_catalog()
+            catalog = BagelRouteStore(self.ctx).load_catalog()
             for line in route_stats.report_lines(self._route_recorder.load(), catalog):
                 log.info('贝果路线数据：%s', line)
         except Exception:
@@ -301,7 +301,7 @@ class BagelApp(ZApplication):
         """
         try:
             self.config.validate()
-            catalog = BagelRouteStore().load_catalog()
+            catalog = BagelRouteStore(self.ctx).load_catalog()
             problems = catalog.selection_problems()
             if problems:
                 raise ValueError('；'.join(problems))
@@ -541,7 +541,7 @@ class BagelApp(ZApplication):
         release_flow_inputs(self.ctx)
         self._stats.set_outcome(stats.OUTCOME_FAILED)
         self._record_round_income(read_hud=False)
-        path = screenshot.save_screenshot(self.last_screenshot, 'BagelApp')
+        path = screenshot.save_screenshot(self.ctx, self.last_screenshot, 'BagelApp')
         self.failure_history.append({
             'reason': self.failure_reason,
             'screenshot': str(path) if path is not None else '',
