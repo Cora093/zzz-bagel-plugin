@@ -206,7 +206,7 @@ class BagelOperation(ZOperation):
         try:
             if not result.success and self.last_screenshot is not None:
                 path = screenshot.save_screenshot(
-                    self.last_screenshot, self.__class__.__name__,
+                    self.ctx, self.last_screenshot, self.__class__.__name__,
                 )
                 log.error(f'贝果操作停止：{result.status}；原因：{result.data}；现场截图：{path}')
         except Exception:

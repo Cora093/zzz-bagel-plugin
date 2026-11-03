@@ -154,7 +154,7 @@ class BagelRouteEditor(QDialog):
         """
         super().__init__(parent)
         self.ctx: ZContext = ctx
-        self.store: BagelRouteStore = BagelRouteStore()
+        self.store: BagelRouteStore = BagelRouteStore(self.ctx)
         self.recorder: BagelPointRecorder | None = None
         self.thread: Any = None
         self.test_thread: Any = None
