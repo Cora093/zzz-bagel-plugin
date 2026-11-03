@@ -1644,6 +1644,10 @@ class BagelRouteWalker(BagelOperation):
         self.input_worker.submit_turn(None)
         super().handle_pause()
 
+    def is_failure_scene(self, result: OperationResult) -> bool:
+        """出生点没有可执行路线是正常的退出重开，不存图也不报错。"""
+        return super().is_failure_scene(result) and result.status != self.STATUS_ANCHOR_MISS
+
     def after_operation_done(self, result: OperationResult) -> None:
         """退出路径统一松键，含冲刺键，并停掉输入线程。"""
         self._stop_sprint()

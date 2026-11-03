@@ -2,7 +2,7 @@
 
 记录放在 ``plugin_data/<APP_ID>/route_records.jsonl``，所有实例写同一个文件，只保留近 7 天。
 汇总表判断每个出生点跑路线好还是直接重开好，判据见 ``extra_hourly``。
-口径与限制见 ``docs/develop/zzz/application/bagel.md`` 的「路线数据记录」一节。
+口径与限制见 ``docs/stats.md`` 的「路线数据记录」一节。
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ class BagelRouteRecorder:
     def __init__(self, path: Path | None = None) -> None:
         """
         Args:
-            path: 记录文件；None 表示 ``.log/bagel/route_records.jsonl``。
+            path: 记录文件；None 表示 ``plugin_data/<APP_ID>/route_records.jsonl``。
         """
         self._path: Path | None = path
 
