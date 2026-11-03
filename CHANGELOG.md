@@ -2,6 +2,15 @@
 
 记录贝果计划插件的版本变更。版本号与 `bagel/const.py` 里的 `PLUGIN_VERSION` 保持一致。
 
+## 0.3.2 — 2026-11-03
+
+### 修复
+
+- 用户数据目录回到 `plugin_data/bagel/`，走主程序按 APP_ID 分配的接口。
+  0.3.1 曾改成 `plugin_data/zzz-bagel-plugin/bagel/`，与主程序规定的 `plugin_data/<APP_ID>/`
+  不一致。升级后不会自动搬数据：从 0.3.1 升上来的，需要把
+  `plugin_data/zzz-bagel-plugin/bagel/` 整个改名回 `plugin_data/bagel/`。
+
 ## 0.3.1 — 2026-11-03
 
 ### 变更

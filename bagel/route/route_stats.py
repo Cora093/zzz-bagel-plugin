@@ -1,6 +1,6 @@
 """贝果路线数据记录：每局一行写入本地文件，任务结束按出生点输出汇总表，不参与流程判断。
 
-记录放在 ``plugin_data/<仓库>/<APP_ID>/route_records.jsonl``，所有实例写同一个文件，只保留近 7 天。
+记录放在 ``plugin_data/<APP_ID>/route_records.jsonl``，所有实例写同一个文件，只保留近 7 天。
 汇总表判断每个出生点跑路线好还是直接重开好，判据见 ``extra_hourly``。
 口径与限制见 ``docs/develop/zzz/application/bagel.md`` 的「路线数据记录」一节。
 """

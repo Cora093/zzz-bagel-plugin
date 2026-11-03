@@ -79,8 +79,7 @@
 仓库住在主仓 `plugins/<仓库名>/`，插件代码在它下面的 `bagel/` 里。一条龙的扫描
 既认 `plugins/<插件>/`，也认 `plugins/<仓库>/<插件>/`——仓库布局下的判据是子目录里
 同时有工厂文件和常量文件，`plugin.json` 不参与判定。所以改完代码直接运行，不需要同步或复制。
-运行期数据写在主程序工作目录的 `plugin_data/zzz-bagel-plugin/bagel/`，仓库名取自
-`plugin.json` 的 homepage 末段。
+运行期数据写在主程序工作目录的 `plugin_data/bagel/`，由主程序按 APP_ID 分配。
 
 ## 发版
 

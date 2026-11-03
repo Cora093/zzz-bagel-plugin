@@ -8,7 +8,7 @@ from pathlib import Path
 
 from one_dragon.utils import os_utils
 
-from .const import APP_ID, PLUGIN_HOMEPAGE
+from .const import APP_ID
 
 PLUGIN_DIR: Path = Path(__file__).resolve().parent
 """插件根目录；模板、出生点、地图底图等自带资源都从这里取，不依赖工作目录。"""
@@ -17,14 +17,13 @@ def get_plugin_data_dir() -> Path:
     """插件运行期数据目录，存放自定义路线、开启选择、路线记录与现场截图。
 
     放在插件目录之外，插件更新替换整个目录时用户数据不会被删掉。
-    路径是 ``plugin_data/<仓库>/<APP_ID>``，仓库名取 ``plugin.json`` 的 homepage 末段，
-    不随本地克隆目录名变化。每次调用按当前工作目录现算，不缓存。
+    路径是 ``plugin_data/<APP_ID>``，由主程序按 APP_ID 分配，插件代码装在哪里都不影响。
+    每次调用按当前工作目录现算，不缓存。
 
     Returns:
-        工作目录下的 ``plugin_data/<仓库>/<APP_ID>``。
+        工作目录下的 ``plugin_data/<APP_ID>``。
     """
-    repo_name = PLUGIN_HOMEPAGE.rstrip('/').rsplit('/', 1)[-1]
-    return Path(os_utils.get_work_dir()).joinpath('plugin_data', repo_name, APP_ID)
+    return Path(os_utils.get_path_under_work_dir('plugin_data', APP_ID))
 
 RECOMMENDED_VALUE: str = '258000'
 
