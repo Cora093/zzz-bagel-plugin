@@ -13,6 +13,11 @@ from .defs import (
     CLEAN_QUALITIES,
     CLEAN_TYPES,
     DEFAULT_CLEAN_FILTER_GROUPS,
+    DEFAULT_DIFFICULTY,
+    DIFFICULTIES,
+    DIFFICULTY_HARD,
+    DIFFICULTY_HAZARD,
+    DIFFICULTY_NORMAL,
 )
 
 
@@ -30,6 +35,21 @@ class BagelConfig(ApplicationConfig):
     def __init__(self, instance_idx: int, group_id: str) -> None:
         """加载当前账号和应用组的配置。"""
         super().__init__(APP_ID, instance_idx, group_id)
+
+    @property
+    def difficulty(self) -> str:
+        """挑战难度：高危、困难、常规；默认高危。"""
+        value = self.get('difficulty', DEFAULT_DIFFICULTY)
+        if value not in DIFFICULTIES:
+            return DEFAULT_DIFFICULTY
+        return value
+
+    @difficulty.setter
+    def difficulty(self, value: str) -> None:
+        """保存挑战难度。"""
+        if value not in DIFFICULTIES:
+            raise ValueError(f'difficulty 只能是 {"、".join(DIFFICULTIES)}')
+        self.update('difficulty', value)
 
     @property
     def max_success_rounds(self) -> int:
@@ -194,6 +214,8 @@ class BagelConfig(ApplicationConfig):
 
     def validate(self) -> None:
         """启动前校验配置。"""
+        if self.difficulty not in DIFFICULTIES:
+            raise ValueError(f'difficulty 只能是 {"、".join(DIFFICULTIES)}')
         interval = self.sell_interval
         if type(interval) is not int or not 1 <= interval <= 999:
             raise ValueError('sell_interval 必须是 1 至 999 的整数')
@@ -223,6 +245,14 @@ class BagelConfig(ApplicationConfig):
             and (not steps or any(not step.types or not step.qualities for step in steps))
         ):
             raise ValueError('自定义清理每一步都要同时选择类型和品质')
+
+
+class BagelDifficulty(Enum):
+    """挑战难度。"""
+
+    HAZARD = ConfigItem('高危', DIFFICULTY_HAZARD)
+    HARD = ConfigItem('困难', DIFFICULTY_HARD)
+    NORMAL = ConfigItem('常规', DIFFICULTY_NORMAL)
 
 
 class BagelCleanMode(Enum):

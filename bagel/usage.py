@@ -11,6 +11,7 @@ from .defs import (
     CLEAN_MODE_CUSTOM,
     CLEAN_QUALITIES,
     CLEAN_TYPES,
+    DIFFICULTY_HAZARD,
 )
 
 if TYPE_CHECKING:
@@ -165,7 +166,8 @@ def log_start(config: BagelConfig) -> None:
     """仅在配置和资源校验通过后说明本次将执行的动作。"""
     limit = str(config.max_success_rounds) if config.max_success_rounds else '不限'
     log.info(
-        '即将进入雅努斯高危。成功次数上限：%s。整体重试次数上限：%s。',
+        '即将进入雅努斯%s。成功次数上限：%s。整体重试次数上限：%s。',
+        config.difficulty,
         limit,
         config.max_failure_retries,
     )
@@ -202,7 +204,10 @@ def log_start(config: BagelConfig) -> None:
         '首次入场时，程序先传送到「录像店－房间」，再从快捷手册进入贝果。'
         '后续各局正常返回贝果主界面时，不重复传送。'
     )
-    log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
+    if config.difficulty == DIFFICULTY_HAZARD:
+        log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
+    else:
+        log.info('%s随后核对零携带。', LOADOUT_HINT)
     log.info(
         '出生点重选规则：只收集已在路线编辑器中开启路线的出生点；其他出生点退出重选，'
         '不计成功、不清理仓库、不消耗整体重试，重选次数不限；如需结束请手动停止。'

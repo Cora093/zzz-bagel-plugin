@@ -352,6 +352,7 @@ class BagelApp(ZApplication):
             prepare_shortcut_entry=allow_clear_loadout,
             recovery_auto_clean=self.config.auto_clean_warehouse,
             recovery_filter_groups=self.config.clean_filter_groups(),
+            difficulty=self.config.difficulty,
         ).execute()
         if retrying_failure and not result.success:
             return self._finish_failed_round(result, '额外入场')

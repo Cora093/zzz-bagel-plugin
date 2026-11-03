@@ -7,9 +7,10 @@ from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
 from one_dragon_qt.services.app_setting.app_setting_provider import GroupIdMixin
 from one_dragon_qt.utils.config_utils import get_prop_adapter
+from one_dragon_qt.widgets.setting_card.combo_box_setting_card import ComboBoxSettingCard
 from one_dragon_qt.widgets.setting_card.switch_setting_card import SwitchSettingCard
 from one_dragon_qt.widgets.vertical_scroll_interface import VerticalScrollInterface
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -39,10 +40,13 @@ from qfluentwidgets.components.widgets.card_widget import CardSeparator
 
 from .. import usage
 from ..const import APP_ID
+from ..config import BagelDifficulty
 from ..defs import (
     CLEAN_MODE_CUSTOM,
     CLEAN_TYPES,
     DEFAULT_CLEAN_STEPS,
+    DIFFICULTY_HARD,
+    DIFFICULTY_NORMAL,
 )
 from .setting_widgets import (
     AutoSaleSwitch,
@@ -116,6 +120,55 @@ class _UsageDialog(MessageBoxBase):
         self.hideCancelButton()
 
 
+class NonHazardNoticeDialog(MessageBoxBase):
+    """非高危难度路线切换提示弹窗，带 10 秒强制阅读倒计时。"""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.widget.setFixedWidth(520)
+        self.viewLayout.addWidget(SubtitleLabel('非高危难度路线提示', self))
+        content = BodyLabel(
+            '由于1高危以外的难度会有”助战物资“，导致路线卡住，'
+            '2天赋没升满导致裸装血量不够跑图，'
+            '请手动切换”录像店-非高危“，“白鸽工地站-非高危”并关闭所有其它出生点以及路线。',
+            self,
+        )
+        content.setWordWrap(True)
+        self.viewLayout.addWidget(content)
+        self.hideCancelButton()
+        self.setClosableOnMaskClicked(False)
+        self.remaining_seconds: int = 10
+        self.yesButton.setEnabled(False)
+        self.yesButton.setText(f'确定 ({self.remaining_seconds}s)')
+
+        self.timer: QTimer = QTimer(self)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self._on_tick)
+        self.timer.start()
+
+    def _on_tick(self) -> None:
+        self.remaining_seconds -= 1
+        if self.remaining_seconds > 0:
+            self.yesButton.setText(f'确定 ({self.remaining_seconds}s)')
+        else:
+            self.timer.stop()
+            self.yesButton.setEnabled(True)
+            self.yesButton.setText('确定')
+
+    def keyPressEvent(self, event) -> None:
+        if self.remaining_seconds > 0 and event.key() == Qt.Key.Key_Escape:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event) -> None:
+        if self.remaining_seconds > 0:
+            event.ignore()
+            return
+        self.timer.stop()
+        super().closeEvent(event)
+
+
 class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
     """贝果计划精简设置页，配置仍按账号和应用组即时保存。"""
 
@@ -130,6 +183,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         self.ctx: ZContext = ctx
         self.config: BagelConfig | None = None
         self.clean_step_cards: list[CleanStepCard] = []
+        self._config_loaded: bool = False
 
     def get_content_widget(self) -> QWidget:
         """显示结束条件、入箱优先级与自动出售，首次清空提示放入使用说明。"""
@@ -154,6 +208,16 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         layout.addLayout(header)
 
         layout.addWidget(self._make_end_conditions(widget))
+        self.difficulty_card: ComboBoxSettingCard = ComboBoxSettingCard(
+            icon=FluentIcon.GAME,
+            title='挑战难度',
+            content='选择进入的雅努斯幻境难度',
+            options_enum=BagelDifficulty,
+            parent=widget,
+        )
+        self.difficulty_card.setFixedHeight(88)
+        self.difficulty_card.value_changed.connect(self._on_difficulty_changed)
+        layout.addWidget(self.difficulty_card)
         self.blueprint_priority: SwitchSettingCard = SwitchSettingCard(
             icon=FluentIcon.DOCUMENT,
             title='蓝图优先',
@@ -466,6 +530,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
 
     def init_config(self) -> None:
         """加载时阻断保存信号，旧的异步加载由适配器代次机制丢弃。"""
+        self._config_loaded = False
         self.config = self.ctx.run_context.get_config(
             app_id=APP_ID,
             instance_idx=self.ctx.current_instance_idx,
@@ -473,6 +538,9 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         )
         self.blueprint_priority.init_with_adapter(
             get_prop_adapter(self.config, 'blueprint_priority'),
+        )
+        self.difficulty_card.init_with_adapter(
+            get_prop_adapter(self.config, 'difficulty'),
         )
         for control, field in (
             (self.success_count, 'max_success_rounds'),
@@ -484,3 +552,14 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             control.setEnabled(False)
             control.init_with_adapter(get_prop_adapter(self.config, field))
         self._rebuild_clean_steps()
+        self._config_loaded = True
+
+    def _on_difficulty_changed(self, index: int, value: object) -> None:
+        """用户在界面切换挑战难度时，若选择困难或常规，弹出 10 秒倒计时路线切换提醒。"""
+        if not self._config_loaded:
+            return
+        diff = value if isinstance(value, str) else getattr(value, 'value', str(value))
+        if diff in (DIFFICULTY_HARD, DIFFICULTY_NORMAL):
+            dialog = NonHazardNoticeDialog(self.window())
+            dialog.exec()
+            dialog.deleteLater()

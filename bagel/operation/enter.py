@@ -11,6 +11,9 @@ from zzz_od.operation.transport import Transport
 
 from ..defs import (
     DEFAULT_CLEAN_FILTER_GROUPS,
+    DEFAULT_DIFFICULTY,
+    DIFFICULTY_HAZARD,
+    DIFFICULTY_RECOMMENDED_VALUES,
     RECOMMENDED_VALUE,
 )
 from ..vision.screen import (
@@ -51,9 +54,13 @@ class BagelEnter(BagelOperation):
         allow_world_recovery: bool = False, prepare_shortcut_entry: bool = False,
         recovery_auto_clean: bool = False, recovery_filter_areas: tuple[str, ...] | None = None,
         recovery_filter_groups: tuple[tuple[str, ...], ...] | None = None,
+        difficulty: str = DEFAULT_DIFFICULTY,
     ) -> None:
         """正式应用首次入场允许清空并重建快捷手册入口；独立工具默认复用现有贝果页。"""
         super().__init__(ctx, op_name='贝果-零携带入场', timeout_seconds=660 if allow_clear_loadout else 240)
+        self.difficulty: str = difficulty
+        self.target_recommended_value: str = DIFFICULTY_RECOMMENDED_VALUES.get(difficulty, RECOMMENDED_VALUE)
+        self.need_investment: bool = (self.difficulty == DIFFICULTY_HAZARD)
         self.recovery_auto_clean: bool = recovery_auto_clean
         self.recovery_filter_groups: tuple[tuple[str, ...], ...] = (
             recovery_filter_groups if recovery_filter_groups is not None
@@ -318,24 +325,24 @@ class BagelEnter(BagelOperation):
         return result
 
     @node_from(from_name='选择雅努斯')
-    @operation_node(name='选择高危', timeout_seconds=15)
+    @operation_node(name='选择难度', timeout_seconds=15)
     def choose_difficulty(self) -> OperationRoundResult:
         """选中后用对应推荐价值与地图名复核，不能只检测页签文字存在。"""
         selected = read_area(self.ctx, self.last_screenshot, '贝果-选图', '选中地图')
         value = read_coin_value(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
-        if selected == '雅努斯幻境' and value == RECOMMENDED_VALUE:
+        if selected == '雅努斯幻境' and value == self.target_recommended_value:
             self._resume_check = False
             return self.round_success()
         if self.node_clicked or selected != '雅努斯幻境' or not value.isdecimal():
             return self.round_wait('等待核对雅努斯难度', wait=0.25)
         result = self.round_by_find_and_click_area(
-            self.last_screenshot, '贝果-选图', '高危', pre_delay=0.15, retry_wait=0.25,
+            self.last_screenshot, '贝果-选图', self.difficulty, pre_delay=0.15, retry_wait=0.25,
         )
         if result.is_success:
-            return self.round_wait('等待高危选择生效', wait=0.25)
+            return self.round_wait(f'等待{self.difficulty}选择生效', wait=0.25)
         return result
 
-    @node_from(from_name='选择高危')
+    @node_from(from_name='选择难度')
     @operation_node(name='打开备战', timeout_seconds=20)
     def open_prepare(self) -> OperationRoundResult:
         """地图和难度确认之后才打开备战。"""
@@ -344,9 +351,9 @@ class BagelEnter(BagelOperation):
         selected = read_area(self.ctx, self.last_screenshot, '贝果-选图', '选中地图')
         value = read_coin_value(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
         if (self._resume_check or selected == '城郊幻境'
-                or (selected == '雅努斯幻境' and value.isdecimal() and value != RECOMMENDED_VALUE)):
+                or (selected == '雅努斯幻境' and value.isdecimal() and value != self.target_recommended_value)):
             return self.round_success('重新核对选图')
-        if selected != '雅努斯幻境' or value != RECOMMENDED_VALUE:
+        if selected != '雅努斯幻境' or value != self.target_recommended_value:
             return self.round_wait('等待重新核对地图和难度', wait=0.25)
         return self.round_by_find_and_click_area(
             self.last_screenshot, '贝果-选图', '前往备战',
@@ -401,9 +408,9 @@ class BagelEnter(BagelOperation):
             return self.round_fail('入场暂停后需重新核对选图与携带，请从入口重新运行')
         if not self.zero_checked:
             return self.round_fail('尚未核对零携带，禁止确认入场')
-        if self.investment_confirmed and self.is_bagel_result():
+        if (not self.need_investment or self.investment_confirmed) and self.is_bagel_result():
             # 入场加载期间已经死亡也属于本局，让正式任务的出生检查进入失败结算。
-            return self.round_success('已进入雅努斯高危')
+            return self.round_success(f'已进入雅努斯{self.difficulty}')
         # 开局会自动弹出局内大地图；识别后主动关闭，不空等约 30 秒自动关掉。
         if self.round_by_find_area(self.last_screenshot, '贝果-局内', '大地图图例').is_success:
             result = self.round_by_click_area('贝果-局内', '大地图返回')
@@ -411,9 +418,9 @@ class BagelEnter(BagelOperation):
                 return self.round_wait('关闭开局大地图', wait=1)
             return self.round_retry('已识别开局大地图但未能关闭', wait=1)
         if self.round_by_find_area(self.last_screenshot, '战斗画面', '按键-普通攻击').is_success:
-            if not self.investment_confirmed:
-                return self.round_fail('未核对高危零投资，停止并保留现场')
-            return self.round_success('已进入雅努斯高危')
+            if self.need_investment and not self.investment_confirmed:
+                return self.round_fail(f'未核对{self.difficulty}零投资，停止并保留现场')
+            return self.round_success(f'已进入雅努斯{self.difficulty}')
         if self.round_by_find_area(self.last_screenshot, '贝果-入场确认', '投资标题').is_success:
             self._pending_warning = None
             if self.investment_confirmed:
@@ -445,7 +452,7 @@ class BagelEnter(BagelOperation):
                 return self.round_wait('等待零投资入场', wait=1)
             return result
         text = read_entry_warning_text(self.ctx, self.last_screenshot)
-        warning = entry_warning(text)
+        warning = entry_warning(text, self.target_recommended_value)
         if warning is not None:
             if warning == self._pending_warning:
                 elapsed = self.operation_usage_time - self._warning_started_at
@@ -473,6 +480,10 @@ class BagelEnter(BagelOperation):
             return self.round_fail('未知入场确认，停止并保留现场')
         if self._pending_warning is not None:
             # 慢机下一个弹窗可能出现得晚，只等待，由节点超时兜底。
+            # 无投资弹窗时，若已确认过提示且等待超过1秒，弹窗已关闭，直接转入等待加载
+            if not self.need_investment and self.operation_usage_time - self._warning_started_at >= 1.0:
+                self._pending_warning = None
+                return self.round_wait('等待贝果加载完成', wait=1)
             return self.round_wait('等待入场提示切换', wait=0.25)
         if (not self.confirmed_warnings and not self._entry_reclicked
                 and self.operation_usage_time - self._entry_clicked_at >= _ENTRY_RECLICK_SECONDS
