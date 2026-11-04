@@ -265,6 +265,7 @@ class BagelApp(ZApplication):
         self._route_rounds = 0
         self._route_reported = False
         self._route_recorder.prune()
+        screenshot.prune_screenshots()
 
     def _reset_round_route(self) -> None:
         """新的一局开始前清空地图、出生点和路线。"""
