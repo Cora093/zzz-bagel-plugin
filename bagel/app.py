@@ -270,6 +270,7 @@ class BagelApp(ZApplication):
         self._route_rounds = 0
         self._route_reported = False
         self._route_recorder.prune()
+        screenshot.prune_screenshots()
 
     def _reset_round_route(self) -> None:
         """新的一局开始前清空地图、出生点和路线。"""
@@ -382,6 +383,7 @@ class BagelApp(ZApplication):
             prepare_shortcut_entry=allow_clear_loadout,
             recovery_auto_clean=self.config.auto_clean_warehouse,
             recovery_filter_groups=self.config.clean_filter_groups(),
+            difficulty=self.config.difficulty,
         ).execute()
         if retrying_failure and not result.success:
             return self._finish_failed_round(result, '额外入场')

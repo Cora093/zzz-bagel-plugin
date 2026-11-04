@@ -11,6 +11,7 @@ from .defs import (
     CLEAN_MODE_CUSTOM,
     CLEAN_QUALITIES,
     CLEAN_TYPES,
+    DIFFICULTY_HAZARD,
 )
 
 if TYPE_CHECKING:
@@ -41,7 +42,19 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ('选择角色', ROLE_HINT),
             (
                 '核对设置',
-                '设置只用于当前账号和应用组。切换后，请核对次数、蓝图优先、自动出售和出售范围。',
+                '设置只用于当前账号和应用组。切换后，请核对挑战难度、次数、蓝图优先、自动出售和出售范围。',
+            ),
+            (
+                '挑战难度',
+                '默认高危。可选常规、困难、高危。'
+                '常规的推荐装备价值是 12000，困难是 72100，高危是 258000。',
+            ),
+            (
+                '非高危路线',
+                '切到困难或常规时会提示换路线，确定前需等待 10 秒。'
+                '请改开「录像店-非高危」和「白鸽工地站-非高危」，并关闭其他出生点。'
+                '点确定不会自动改开启选择，已有的开启选择也不会因新路线发布而改变。'
+                '高危路线在困难或常规里可能卡在助战物资上；天赋未满时，卸装后的血量也不够跑完较长路线。',
             ),
         ),
     ),
@@ -129,7 +142,8 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ),
             (
                 '每次入场前',
-                '程序核对已装备槽位为空，背包和安全箱占用、入场投资金额均为 0。'
+                '程序核对已装备槽位为空，背包和安全箱占用为 0。'
+                '高危再核对投资金额为 0。困难和常规不要求投资确认；若仍出现投资页，程序仍按零投资处理。'
                 '读数或提示不明时停止。后续局发现非零携带时停止，不再次清空。',
             ),
             ('从局内启动', '程序先退出，不继续当前局。退出只保留安全箱内物品。'),
@@ -166,7 +180,8 @@ def log_start(config: BagelConfig) -> None:
     """仅在配置和资源校验通过后说明本次将执行的动作。"""
     limit = str(config.max_success_rounds) if config.max_success_rounds else '不限'
     log.info(
-        '即将进入雅努斯高危。成功次数上限：%s。连续失败上限：%s。',
+        '即将进入雅努斯%s。成功次数上限：%s。连续失败上限：%s。',
+        config.difficulty,
         limit,
         config.max_consecutive_failures,
     )
@@ -203,7 +218,10 @@ def log_start(config: BagelConfig) -> None:
         '首次入场时，程序先传送到「录像店－房间」，再从快捷手册进入贝果。'
         '后续各局正常返回贝果主界面时，不重复传送。'
     )
-    log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
+    if config.difficulty == DIFFICULTY_HAZARD:
+        log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
+    else:
+        log.info('%s随后核对零携带。', LOADOUT_HINT)
     log.info(
         '出生点重选规则：只收集已在路线编辑器中开启路线的出生点；其他出生点退出重选，'
         '不计成功、不清理仓库、不计入连续失败，重选次数不限；如需结束请手动停止。'

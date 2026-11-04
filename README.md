@@ -93,8 +93,8 @@ PR 里请写清楚：用的出生点、走法要点（为什么这么绕）、�
 | 出生点清单 | `plugins/bagel/bagel/assets/game_data/bagel/spawn_points.yml` |
 | 你复制的自定义路线 | 工作目录 `plugin_data/bagel/routes/custom_*.route.json` |
 | 每个出生点当前开启的路线 | 工作目录 `plugin_data/bagel/route_settings.yml` |
-| 路线数据记录 | 工作目录 `plugin_data/bagel/route_records.jsonl` |
-| 失败现场截图 | 工作目录 `plugin_data/bagel/screenshots/` |
+| 路线数据记录（保留 7 天） | 工作目录 `plugin_data/bagel/route_records.jsonl` |
+| 失败现场截图（保留 3 天，总量不超过 500 MB） | 工作目录 `plugin_data/bagel/screenshots/` |
 
 运行期数据都放在工作目录的 `plugin_data/bagel/` 下，跟插件目录分开：插件升级会整个替换插件目录，数据放在里面会被一起删掉，放在外面就不会。默认路线在插件里，随插件分发，只读。
 
