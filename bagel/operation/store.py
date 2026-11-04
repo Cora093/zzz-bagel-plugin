@@ -519,7 +519,7 @@ class BagelStoreSafe(BagelOperation):
 
         返回的状态必须是 `贝果局内流程失败`：正式应用只对它有「退出本局再重开」的
         分支，其它自造状态会一路走到任务结束。原因放进 data，日志和现场截图都带上。
-        退出时游戏只保留安全箱物资，比把整个任务停在这里更划算；整体重试次数照常扣。
+        退出时游戏只保留安全箱物资，比把整个任务停在这里更划算；这一局照常计入连续失败。
         """
         return self.round_fail(self.STATUS_ROUND_FAILED, data=reason)
 

@@ -64,16 +64,16 @@ class BagelConfig(ApplicationConfig):
         self.update('max_success_rounds', value)
 
     @property
-    def max_failure_retries(self) -> int:
-        """本次任务因失败最多额外入场多少次；成功不清零。"""
-        return self.get('max_failure_retries', 5)
+    def max_consecutive_failures(self) -> int:
+        """全局或同一路线连续失败达到多少局时停止；成功入仓后清零。"""
+        return self.get('max_consecutive_failures', 5)
 
-    @max_failure_retries.setter
-    def max_failure_retries(self, value: int) -> None:
-        """保存累计失败重试上限，0 表示失败后只结算。"""
-        if type(value) is not int or not 0 <= value <= 100:
-            raise ValueError('max_failure_retries 必须是 0 至 100 的整数')
-        self.update('max_failure_retries', value)
+    @max_consecutive_failures.setter
+    def max_consecutive_failures(self, value: int) -> None:
+        """保存连续失败上限，1 表示首次失败结算后停止。"""
+        if type(value) is not int or not 1 <= value <= 10:
+            raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
+        self.update('max_consecutive_failures', value)
 
     @property
     def blueprint_priority(self) -> bool:
@@ -222,9 +222,9 @@ class BagelConfig(ApplicationConfig):
         value = self.max_success_rounds
         if type(value) is not int or not 0 <= value <= 1000:
             raise ValueError('max_success_rounds 必须是 0 至 1000 的整数')
-        retries = self.max_failure_retries
-        if type(retries) is not int or not 0 <= retries <= 100:
-            raise ValueError('max_failure_retries 必须是 0 至 100 的整数')
+        failures = self.max_consecutive_failures
+        if type(failures) is not int or not 1 <= failures <= 10:
+            raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
         if type(self.blueprint_priority) is not bool:
             raise ValueError('blueprint_priority 必须是布尔值')
         if type(self.auto_clean_warehouse) is not bool:
