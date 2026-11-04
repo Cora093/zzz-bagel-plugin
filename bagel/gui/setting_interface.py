@@ -11,6 +11,7 @@ from one_dragon_qt.widgets.setting_card.combo_box_setting_card import ComboBoxSe
 from one_dragon_qt.widgets.setting_card.switch_setting_card import SwitchSettingCard
 from one_dragon_qt.widgets.vertical_scroll_interface import VerticalScrollInterface
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -126,11 +127,14 @@ class NonHazardNoticeDialog(MessageBoxBase):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.widget.setFixedWidth(520)
-        self.viewLayout.addWidget(SubtitleLabel('非高危难度路线提示', self))
+        self.viewLayout.addWidget(SubtitleLabel('困难和常规需要换路线', self))
         content = BodyLabel(
-            '由于1高危以外的难度会有”助战物资“，导致路线卡住，'
-            '2天赋没升满导致裸装血量不够跑图，'
-            '请手动切换”录像店-非高危“，“白鸽工地站-非高危”并关闭所有其它出生点以及路线。',
+            '1. 困难和常规会刷出「助战物资」，沿用高危路线时可能卡在这些物资上。\n'
+            '2. 天赋未满时，卸下装备后的血量也不够跑完较长路线。\n'
+            '\n'
+            '请在路线编辑器中改开「录像店-非高危」和「白鸽工地站-非高危」，\n'
+            '并关闭其他出生点。\n'
+            '点确定不会自动切换路线。',
             self,
         )
         content.setWordWrap(True)
@@ -155,13 +159,13 @@ class NonHazardNoticeDialog(MessageBoxBase):
             self.yesButton.setEnabled(True)
             self.yesButton.setText('确定')
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.remaining_seconds > 0 and event.key() == Qt.Key.Key_Escape:
             event.ignore()
             return
         super().keyPressEvent(event)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self.remaining_seconds > 0:
             event.ignore()
             return
