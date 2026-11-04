@@ -10,7 +10,10 @@ from one_dragon.base.matcher.ocr import ocr_utils
 from one_dragon.base.screen import screen_utils
 from one_dragon.utils import cv2_utils, str_utils
 
-from ..defs import RECOMMENDED_VALUE
+from ..defs import (
+    DIFFICULTY_RECOMMENDED_VALUES,
+    RECOMMENDED_VALUE,
+)
 
 if TYPE_CHECKING:
     from cv2.typing import MatLike
@@ -45,8 +48,9 @@ def mask_coin_left(crop: MatLike) -> MatLike | None:
     if len(candidates) != 1:
         return None
     left, right = candidates[0]
-    # 金币必须位于全部白色金额左侧；定位不明时不能遮掉高位后误读成零。
-    if np.any(np.all(crop[:, :max(0, left - 2)] >= 180, axis=2)):
+    # 金币必须位于白色金额左侧；紧贴金币左侧有白色时怀疑高位被切，停止遮挡。
+    # 距离金币 6 像素以上的远端白色为前缀冒号或标题残渣，会被随后整体遮挡为 0，不影响数字识别。
+    if np.any(np.all(crop[:, max(0, left - 6):left] >= 180, axis=2)):
         return None
     masked = crop.copy()
     masked[:, :right] = 0
@@ -167,11 +171,11 @@ def _has_fragment(compact: str, fragment: str) -> bool:
     return str_utils.longest_common_subsequence_length(fragment, compact) >= len(fragment) - allowed_misses
 
 
-def entry_warning(text: str) -> str | None:
+def entry_warning(text: str, target_recommended_value: str | None = None) -> str | None:
     """区分已知入场弹窗；其他确认框不能自动确认。
 
     按关键片段识别，容忍 OCR 漏读、错读个别字或多读其他文字。
-    零装备价值提示中的推荐价值与高危明显不同时（如其他难度的 72100），按未知提示处理。
+    零装备价值提示中的推荐价值与指定难度（或已知难度之一）明显不同时，按未知提示处理。
     """
     compact = re.sub(r'[\s，,。？?：:（）()、]', '', text)
     for name, fragments in _ENTRY_WARNING_FRAGMENTS:
@@ -180,8 +184,11 @@ def entry_warning(text: str) -> str | None:
         if name == '零装备价值':
             # 只判断四位及以上的数字串，避免把装备价值 0 或断开的残缺数字当成推荐价值。
             value = max(re.findall(r'\d+', compact), key=len, default='')
-            if (len(value) >= 4 and str_utils.longest_common_subsequence_length(value, RECOMMENDED_VALUE)
-                    < len(RECOMMENDED_VALUE) - 1):
+            expected_list = (target_recommended_value,) if target_recommended_value else tuple(DIFFICULTY_RECOMMENDED_VALUES.values())
+            if len(value) >= 4 and not any(
+                str_utils.longest_common_subsequence_length(value, expected) >= len(expected) - 1
+                for expected in expected_list
+            ):
                 return None
         return name
     return None

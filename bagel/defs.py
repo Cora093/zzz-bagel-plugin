@@ -25,7 +25,20 @@ def get_plugin_data_dir() -> Path:
     """
     return Path(os_utils.get_path_under_work_dir('plugin_data', APP_ID))
 
-RECOMMENDED_VALUE: str = '258000'
+DIFFICULTY_NORMAL: str = '常规'
+DIFFICULTY_HARD: str = '困难'
+DIFFICULTY_HAZARD: str = '高危'
+DIFFICULTIES: tuple[str, ...] = (DIFFICULTY_NORMAL, DIFFICULTY_HARD, DIFFICULTY_HAZARD)
+DEFAULT_DIFFICULTY: str = DIFFICULTY_HAZARD
+
+# 各难度推荐装备价值：常规 12000，困难 72100，高危 258000
+DIFFICULTY_RECOMMENDED_VALUES: dict[str, str] = {
+    DIFFICULTY_NORMAL: '12000',
+    DIFFICULTY_HARD: '72100',
+    DIFFICULTY_HAZARD: '258000',
+}
+
+RECOMMENDED_VALUE: str = DIFFICULTY_RECOMMENDED_VALUES[DIFFICULTY_HAZARD]
 
 # 电子保险箱完成四轮点按后等待搜索结果，点按时机按光圈状态判断。
 SAFE_UNLOCK_HITS: int = 4
