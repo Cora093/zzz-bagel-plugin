@@ -12,7 +12,6 @@ from one_dragon.utils import cv2_utils, str_utils
 
 from ..defs import (
     DIFFICULTY_RECOMMENDED_VALUES,
-    RECOMMENDED_VALUE,
 )
 
 if TYPE_CHECKING:

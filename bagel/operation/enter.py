@@ -29,9 +29,9 @@ from ..vision.screen import (
 )
 from .clear_loadout import LOADOUT_CENTERS, BagelClearLoadout
 from .exit import BagelExit
+from .go_back import BagelReturn
 from .open_compendium import BagelOpenCompendium
 from .operation import BagelOperation
-from .go_back import BagelReturn
 from .settle import BagelSettleWarehouse
 from .store_carried import read_carried_backpack
 from .transfer import carried_slot_state

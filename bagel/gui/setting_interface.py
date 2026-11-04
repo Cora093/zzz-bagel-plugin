@@ -7,10 +7,12 @@ from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
 from one_dragon_qt.services.app_setting.app_setting_provider import GroupIdMixin
 from one_dragon_qt.utils.config_utils import get_prop_adapter
-from one_dragon_qt.widgets.setting_card.combo_box_setting_card import ComboBoxSettingCard
+from one_dragon_qt.widgets.setting_card.combo_box_setting_card import (
+    ComboBoxSettingCard,
+)
 from one_dragon_qt.widgets.setting_card.switch_setting_card import SwitchSettingCard
 from one_dragon_qt.widgets.vertical_scroll_interface import VerticalScrollInterface
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -40,8 +42,8 @@ from qfluentwidgets import (
 from qfluentwidgets.components.widgets.card_widget import CardSeparator
 
 from .. import usage
-from ..const import APP_ID
 from ..config import BagelDifficulty
+from ..const import APP_ID
 from ..defs import (
     CLEAN_MODE_CUSTOM,
     CLEAN_TYPES,
