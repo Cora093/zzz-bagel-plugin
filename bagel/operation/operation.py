@@ -201,10 +201,14 @@ class BagelOperation(ZOperation):
         """识别 DEFEAT，不以地图名称或单角色零血量判断失败结算。"""
         return is_bagel_result(self)
 
+    def is_failure_scene(self, result: OperationResult) -> bool:
+        """本次结果是否算失败现场；子类可把流程内正常的未成功结果排除。"""
+        return not result.success
+
     def after_operation_done(self, result: OperationResult) -> None:
         """保存失败现场；截图写入异常不能阻止框架释放事件监听。"""
         try:
-            if not result.success and self.last_screenshot is not None:
+            if self.is_failure_scene(result) and self.last_screenshot is not None:
                 path = screenshot.save_screenshot(
                     self.last_screenshot, self.__class__.__name__,
                 )

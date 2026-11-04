@@ -1,6 +1,6 @@
 # 路线、出生点与地图
 
-路线文件是打点路线与点位的唯一来源：默认路线随插件发布，自定义路线和开启选择保存在主程序工作目录的 `plugin_data/zzz-bagel-plugin/bagel/`，规则见[贝果路线与出生点](#路线与出生点)。`BagelApp` 用 `BagelRouteWalker` 识别出生点并执行开启的路线，外层应用负责入场、结算、清理和重开。
+路线文件是打点路线与点位的唯一来源：默认路线随插件发布，自定义路线和开启选择保存在主程序工作目录的 `plugin_data/bagel/`，规则见[贝果路线与出生点](#路线与出生点)。`BagelApp` 用 `BagelRouteWalker` 识别出生点并执行开启的路线，外层应用负责入场、结算、清理和重开。
 
 网页路线编辑器负责录制、试跑、编辑和开启选择，正式执行只读路线文件和开启选择。编辑器说明见[网页路线编辑器](editor.md)。地图资源和坐标规则见[分层小地图说明](#分层小地图)。
 
@@ -24,8 +24,8 @@
 | --- | --- | --- |
 | `bagel/assets/game_data/bagel/spawn_points.yml` | 插件包，只读 | 出生点清单，以及首次使用时开启的默认路线 |
 | `bagel/assets/game_data/bagel/routes/<标识>.sample.route.json` | 插件包，只读 | 默认路线 |
-| `plugin_data/zzz-bagel-plugin/bagel/routes/custom_<标识>.route.json` | 主程序工作目录 | 自定义路线 |
-| `plugin_data/zzz-bagel-plugin/bagel/route_settings.yml` | 主程序工作目录 | 开启选择 |
+| `plugin_data/bagel/routes/custom_<标识>.route.json` | 主程序工作目录 | 自定义路线 |
+| `plugin_data/bagel/route_settings.yml` | 主程序工作目录 | 开启选择 |
 
 插件更新会整体替换插件目录，所以用户写入的文件只放在主程序工作目录。
 
