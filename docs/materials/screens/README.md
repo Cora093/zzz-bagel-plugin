@@ -4,7 +4,7 @@
 
 ## 来源与限制
 
-- 本目录的帧全部采自同一次实机运行：插件 0.3.3 跑一局高危雅努斯幻境，采集时用 MCP 截图。
+- 本目录的帧全部采自同一次实机运行：插件 0.3.3 跑一局高危雅努斯幻境。多数帧用 MCP 截图采集；`hub_main`、`enter_investment_zero`、`prepare_cleared`、`warehouse_after_deposit` 四张取自同一次运行的录像（1080p 窗口录制，H.264 有损），带鼠标指针。这四个画面的 MCP 截图落在加载中间状态或带临时提示，所以改取录像中稳定的帧。
 - 这一次运行先在两个非支持出生点退出重开，第三次入场的出生点受支持，于是完成采集、主动退出、入仓，并按自定义方案分两步出售。
 - 所有图都是 1920×1080 原生分辨率，WebP q90 有损，只能作布局参考和区域坐标核对，不能作为模板裁剪源。
 - 右下角 UID 已遮挡。
@@ -13,11 +13,11 @@
 
 | 画面（screen_info） | 文件 | 画面状态 | 相关文档 |
 | --- | --- | --- | --- |
-| 贝果-研究站 | [hub_main.webp](hub_main.webp) | 研究站主界面 | [快捷手册入口与局间返回](../../entry.md#快捷手册入口与局间返回) |
+| 贝果-研究站 | [hub_main.webp](hub_main.webp) | 研究站主界面，加载完成；左下仓储枢纽总价值，右下「前往空洞」 | [快捷手册入口与局间返回](../../entry.md#快捷手册入口与局间返回) |
 | 贝果-选图 | [map_janus_high_risk.webp](map_janus_high_risk.webp) | 已选雅努斯幻境和「高危」页签，推荐装备价值 258000，右下「前往备战」 | [选图与难度](../../entry.md#选图与难度) |
 | 贝果-备战 | [prepare_carried.webp](prepare_carried.webp) | 清空前：代理人武备 63000、装备 138000、道具 63000；背包 0/50，安全箱 0/5 | [备战卸装](../../entry.md#备战卸装) |
 | 贝果-备战 | [prepare_item_detail.webp](prepare_item_detail.webp) | 道具详情；右侧有放入背包、放入安全箱、放入仓储枢纽、拆分、出售、前往获取 | [备战卸装](../../entry.md#备战卸装) |
-| 贝果-备战 | [prepare_cleared.webp](prepare_cleared.webp) | 清空后：三项价值都是 0，背包 0/20，安全箱 0/5；中部提示「已放入仓储枢纽」 | [入场与携带核验](../../entry.md#入场与携带核验) |
+| 贝果-备战 | [prepare_cleared.webp](prepare_cleared.webp) | 清空后：三项价值都是 0，背包 0/20，安全箱 0/5；左侧为背包、活动背包、安全箱视图，没有操作提示 | [入场与携带核验](../../entry.md#入场与携带核验) |
 | 贝果-入场确认 | [enter_confirm_low_value.webp](enter_confirm_low_value.webp) | 「当前装备价值为0，未达到推荐价值258000……是否继续前往？」 | [入场提示](../../entry.md#入场提示) |
 | 贝果-入场确认 | [enter_confirm_no_team_equip.webp](enter_confirm_no_team_equip.webp) | 「未穿戴队伍装备（异体刃、抗蚀器），是否直接出战？」 | [入场提示](../../entry.md#入场提示) |
 | 贝果-入场确认 | [enter_investment_zero.webp](enter_investment_zero.webp) | 高危投资页，投资金额 0 | [投资金额归零](../../entry.md#投资金额归零) |
@@ -32,10 +32,10 @@
 | 贝果-结算 | [result_exit_empty.webp](result_exit_empty.webp) | 非支持出生点主动退出：标题 DEFEAT，收益 0，时长 00:00:02 | [退出与结算提示](../../settle.md#退出与结算提示) |
 | 贝果-结算 | [result_exit_with_safe.webp](result_exit_with_safe.webp) | 采集后主动退出：标题仍是 DEFEAT，收益 245000，撤离点「无」，时长 00:00:56 | [退出与结算提示](../../settle.md#退出与结算提示) |
 | 贝果-仓库 | [warehouse_after_settle.webp](warehouse_after_settle.webp) | 结算后仓库：撤离奖励 1 件，安全箱 5 件，仓库 221/280 | [入仓核验](../../settle.md#入仓核验) |
+| 贝果-仓库 | [warehouse_after_deposit.webp](warehouse_after_deposit.webp) | 入仓后、出售前：背包和安全箱为空，仓库 226/280，左下「放入仓库」，右下「返回研究站」 | [入仓核验](../../settle.md#入仓核验) |
 | 贝果-仓库 | [sell_quick_select.webp](sell_quick_select.webp) | 批量出售的「快速选择」弹窗，未选条件，符合数量 0 | [筛选与出售等待](../../settle.md#筛选与出售等待) |
 | 贝果-仓库 | [sell_confirm.webp](sell_confirm.webp) | 「确认出售以下道具」，2 件，预估价值 230000 | [出售与结算核验](../../settle.md#出售与结算核验) |
 | 贝果-仓库 | [sell_gained.webp](sell_gained.webp) | 出售后「获得」230000 齿轮硬币 | [出售与结算核验](../../settle.md#出售与结算核验) |
-| 贝果-仓库 | [warehouse_after_sell.webp](warehouse_after_sell.webp) | 入仓和出售后：背包和安全箱为空，仓库 218/280，货币旁显示 +452000 | [最终核验](../../settle.md#最终核验) |
 
 「贝果-拟态单质提示」本次没有出现，参考帧见 [safe_and_notice](../safe_and_notice/README.md)。
 
@@ -51,3 +51,4 @@
 - 战斗失败或超时的结算
 - 满仓与撤离奖励提示弹窗
 - 启动恢复时的仓库转存
+- 出售后、不带「+货币」临时提示的仓库（本次运行出售后马上离开，没有稳定帧）

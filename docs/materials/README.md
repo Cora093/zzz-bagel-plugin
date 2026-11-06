@@ -10,7 +10,7 @@
 | [item_badges](item_badges/README.md) | 物品角标源图、局内参考帧、品质取样与模板重建参数 |
 | [minimap_heading](minimap_heading/README.md) | 小地图镜头朝向识别的离线对比基准 |
 | [safe_and_notice](safe_and_notice/README.md) | 安全箱锁定格、时钟空格与拟态单质提示 |
-| [spawn_points](spawn_points/README.md) | 雅努斯幻境出生位置代表帧与小地图定位对照 |
+| [spawn_points](spawn_points/README.md) | 出生位置代表帧与小地图定位对照 |
 | [misc](misc/README.md) | 不成专题的单张画面 |
 
 ## 素材规范

@@ -2,9 +2,9 @@
 
 本目录保存锁定格、时钟空格和拟态单质提示的代表画面。画面规则见主仓[贝果计划画面](https://github.com/Cora093/ZenlessZoneZero-OneDragon/blob/ca466d36/docs/game/screens/贝果计划.md)，分类与等待规则见[收集与对换](../../container.md#收集与对换)。
 
-## 锁定格
+## 第五格未解锁的样本
 
-[safe_four_locked.jpg](safe_four_locked.jpg) 原字节复制自 [Cora093/ZenlessZoneZero-OneDragon#69](https://github.com/Cora093/ZenlessZoneZero-OneDragon/issues/69) 的[附件](https://gist.githubusercontent.com/Cora093/7e1be2756ea39309bfb309a226e6fb20/raw/338c41e86dabb5385b7e561d7e9bc688082adfc4/issue-non5-safebox-lock.jpg)。文件为 1920×1080、RGB JPEG，色度采样为 4:2:0，不含 EXIF。附件已经遮挡右下账号标识，安全箱区域未遮挡。本目录未再次缩放或压缩。
+[safe_fifth_slot_locked.jpg](safe_fifth_slot_locked.jpg) 是安全箱第五格未解锁的样本：局内满箱画面中，安全箱前四格有物品，第五格显示挂锁和 `LOCK`，表示该格尚未解锁。它用来区分「挂锁（未解锁，不可用）」与「时钟图案（可用的空格）」。 原字节复制自 [Cora093/ZenlessZoneZero-OneDragon#69](https://github.com/Cora093/ZenlessZoneZero-OneDragon/issues/69) 的[附件](https://gist.githubusercontent.com/Cora093/7e1be2756ea39309bfb309a226e6fb20/raw/338c41e86dabb5385b7e561d7e9bc688082adfc4/issue-non5-safebox-lock.jpg)。文件为 1920×1080、RGB JPEG，色度采样为 4:2:0，不含 EXIF。附件已经遮挡右下账号标识，安全箱区域未遮挡。本目录未再次缩放或压缩。
 
 安全箱前四格有物品，第五格显示挂锁和 `LOCK`。附件正文声明原生 1080p；文件本身只能证明当前尺寸，不能独立核实上传前是否缩放。JPEG 有损像素可用于故障重现和压缩兼容核对，不能作为原始无损采集。现有挂锁模板继续使用项目原有文件，未从该 JPEG 重新裁取。
 
