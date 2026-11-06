@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
@@ -9,3 +9,4 @@ CLAUDE.local.md
 .debug/
 .venv/
 .env
+.pytest_tmp/
