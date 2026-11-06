@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from statistics import median
@@ -32,12 +33,15 @@ def parse_line(line: str) -> dict[str, str] | None:
 
 
 def quantile(values: list[float], ratio: float) -> float:
-    """取分位数（最近秩法）；空样本返回 0。"""
+    """取分位数（最近秩法：第 ceil(n*ratio) 个样本）；空样本返回 0。
+
+    不能用 int(n*ratio) 当下标：n=4 时 P75 会落到最大值上，样本少时把分位数算成 max。
+    """
     if not values:
         return 0.0
     ordered = sorted(values)
-    index = min(len(ordered) - 1, int(len(ordered) * ratio))
-    return ordered[index]
+    index = max(0, math.ceil(len(ordered) * ratio) - 1)
+    return ordered[min(index, len(ordered) - 1)]
 
 
 def _float(fields: dict[str, str], key: str) -> float | None:

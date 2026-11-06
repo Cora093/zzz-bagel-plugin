@@ -53,8 +53,8 @@ def test_fixed_v1_sample_still_parses() -> None:
     assert parsed == {'点': '3', '距': '12.4', '差': '-3.1', '偏': '2.2', '位置': '(830,351)'}
 
 
-def test_unknown_fields_are_ignored() -> None:
-    """追加字段不影响老解析器：只认认识的键。"""
+def test_extra_fields_are_kept_and_ignored_by_summarize() -> None:
+    """追加字段不影响老解析器：解析时保留，汇总时只取认识的键。"""
     parsed = parse_line(SAMPLE_LINE.replace('位置=(830,351)', '位置=(830,351) 墙=6.0'))
     assert parsed is not None
     assert parsed['偏'] == '2.2'

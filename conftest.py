@@ -6,20 +6,27 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 REPO_DIR = Path(__file__).resolve().parent
 TEMP_DIR = REPO_DIR / '.pytest_tmp'
 
 
-def pytest_configure(config) -> None:  # noqa: ANN001
-    """设置导入路径与临时目录；`--basetemp` 显式传入时不覆盖。"""
+def pytest_configure(config: pytest.Config) -> None:
+    """设置导入路径与临时目录；`--basetemp` 显式传入时不覆盖。
+
+    basetemp 按进程号分目录：pytest 对已存在的 basetemp 会先清空，并行或连续两次
+    运行会删掉另一次正在用的 tmp_path 树。
+    """
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     tempfile.tempdir = str(TEMP_DIR)
     if not getattr(config.option, 'basetemp', None):
-        config.option.basetemp = str(TEMP_DIR / 'basetemp')
+        config.option.basetemp = str(TEMP_DIR / f'basetemp-{os.getpid()}')
     entry = str(REPO_DIR)
     if entry not in sys.path:
         sys.path.insert(0, entry)
