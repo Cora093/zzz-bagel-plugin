@@ -349,6 +349,7 @@ def _make_input_worker(input_module: ModuleType, controller: _FakeController) ->
     worker._backward_down = False
     worker._stopping = False
     worker._action_epoch = 0
+    worker._instant_channel = _FakeInstantChannel()
     return worker
 
 
@@ -429,3 +430,95 @@ def test_release_all_continues_after_one_key_error(monkeypatch: pytest.MonkeyPat
     assert controller.state['a'] is False
     assert controller.state['d'] is False
     assert controller.state['f'] is False
+
+
+# ---------- 排队中的即时动作按入队 epoch 作废 ----------
+
+
+class _FakeInstantChannel:
+    """记录入队指令与清空次数。"""
+
+    def __init__(self) -> None:
+        self.commands: list[object] = []
+        self.cleared: int = 0
+
+    def put(self, command: object) -> None:
+        self.commands.append(command)
+
+    def clear(self) -> None:
+        self.cleared += 1
+
+
+def test_enqueue_stamps_epoch_and_release_clears_queue() -> None:
+    """入队时盖当前动作版本号；暂停作废会清空还没执行的队列。"""
+    input_module = _load_input_module()
+    worker = _make_input_worker(input_module, _FakeController())
+    channel = _FakeInstantChannel()
+    worker._instant_channel = channel
+
+    first = input_module._Command(input_module.RETREAT_STEP)
+    worker._enqueue(first)
+    assert first.epoch == 0
+    worker._action_epoch = 3
+    second = input_module._Command(input_module.RETREAT_STEP)
+    worker._enqueue(second)
+    assert second.epoch == 3
+    assert channel.commands == [first, second]
+
+    worker.release_all()
+    assert channel.cleared == 1
+
+
+def test_stale_retreat_and_side_step_do_not_press_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """入队后暂停过（epoch 变了），排队中的退让/侧移一个键都不按。"""
+    input_module = _load_input_module()
+    controller = _FakeController()
+    worker = _make_input_worker(input_module, controller)
+    monkeypatch.setattr(input_module, 'time', _Clock())
+    worker._action_epoch = 1
+
+    worker._run_retreat(input_module._Command(
+        input_module.RETREAT_STEP, duration=0.7, angle=1.0, side_duration=0.3,
+    ))
+    worker._run_side_step(input_module._Command(
+        input_module.SIDE_STEP, duration=0.2, angle=1.0,
+    ))
+
+    assert controller.history == []
+
+
+def test_retreat_runs_when_epoch_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """没暂停时退让照常按：后退 S 与横移 D 都按下再松开。"""
+    input_module = _load_input_module()
+    controller = _FakeController()
+    worker = _make_input_worker(input_module, controller)
+    monkeypatch.setattr(input_module, 'time', _Clock())
+
+    worker._run_retreat(input_module._Command(
+        input_module.RETREAT_STEP, duration=0.7, angle=1.0, side_duration=0.3,
+    ))
+
+    assert ('s', True) in controller.history
+    assert ('s', False) in controller.history
+    assert ('d', True) in controller.history
+    assert ('d', False) in controller.history
+
+
+def test_back_step_epoch_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """后退半步同样按入队 epoch 作废；没暂停时正常按 S。"""
+    input_module = _load_input_module()
+    controller = _FakeController()
+    worker = _make_input_worker(input_module, controller)
+    monkeypatch.setattr(input_module, 'time', _Clock())
+
+    worker._action_epoch = 1
+    worker._run_back_step(input_module._Command(input_module.BACK_STEP, duration=0.2))
+    assert controller.history == []
+
+    worker._run_back_step(input_module._Command(
+        input_module.BACK_STEP, duration=0.2, epoch=1,
+    ))
+    assert ('s', True) in controller.history
+    assert ('s', False) in controller.history

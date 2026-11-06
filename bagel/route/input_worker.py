@@ -141,7 +141,7 @@ class _Command:
 
     def __init__(
         self, kind: str, duration: float | None = None, angle: float = 0.0,
-        side_duration: float = 0.0,
+        side_duration: float = 0.0, epoch: int = 0,
     ) -> None:
         """
         Args:
@@ -149,11 +149,13 @@ class _Command:
             duration: 短按时长（秒），其它类型忽略。
             angle: 转向角度（度），仅转向使用。
             side_duration: 退让里横移那一段的时长（秒），仅 RETREAT_STEP 使用。
+            epoch: 入队时的动作版本号；暂停/停止推进版本后，排队的旧指令不再执行。
         """
         self.kind: str = kind
         self.duration: float | None = duration
         self.angle: float = angle
         self.side_duration: float = side_duration
+        self.epoch: int = epoch
 
 
 class _InstantChannel:
@@ -188,6 +190,11 @@ class _InstantChannel:
                 return
             self._queue.append(command)
         self._wake.set()
+
+    def clear(self) -> None:
+        """清空未执行的指令；正在执行的一条由动作自身的 epoch 校验收尾。"""
+        with self._lock:
+            self._queue.clear()
 
     def stop(self) -> None:
         """停止线程，丢掉未执行的指令。"""
@@ -639,13 +646,18 @@ class BagelInputWorker:
         """本局补偿比例原始样本，供局末峰值平均写回现有灵敏度字段。"""
         return list(self._turn_worker._scale_samples)
 
+    def _enqueue(self, command: _Command) -> None:
+        """入队时盖上当前动作版本号：暂停后排队中的旧指令不再执行。"""
+        command.epoch = self._action_epoch
+        self._instant_channel.put(command)
+
     def tap_interact(self, duration: float = 0.2) -> None:
         """点按交互键。
 
         Args:
             duration: 按住时长（秒）。
         """
-        self._instant_channel.put(_Command(TAP_INTERACT, duration=duration))
+        self._enqueue(_Command(TAP_INTERACT, duration=duration))
 
     def tap_center(self, duration: float = 0.08) -> None:
         """点一下屏幕中间，推进对话。
@@ -655,19 +667,19 @@ class BagelInputWorker:
         Args:
             duration: 按住时长（秒）。
         """
-        self._instant_channel.put(_Command(TAP_CENTER, duration=duration))
+        self._enqueue(_Command(TAP_CENTER, duration=duration))
 
     def hold_interact(self) -> None:
         """按住交互键不松，用于机械保险箱长按。"""
-        self._instant_channel.put(_Command(HOLD_INTERACT))
+        self._enqueue(_Command(HOLD_INTERACT))
 
     def release_interact(self) -> None:
         """松开交互键。"""
-        self._instant_channel.put(_Command(RELEASE_INTERACT))
+        self._enqueue(_Command(RELEASE_INTERACT))
 
     def dodge(self) -> None:
         """点一下闪避，用于维持冲刺。"""
-        self._instant_channel.put(_Command(DODGE))
+        self._enqueue(_Command(DODGE))
 
     def side_step(self, direction: int, duration: float = 0.2) -> None:
         """点一下侧移，用来从卡住的位置挪回路径线。
@@ -676,7 +688,7 @@ class BagelInputWorker:
             direction: -1 向左（A），1 向右（D）。
             duration: 按住时长（秒）。
         """
-        self._instant_channel.put(
+        self._enqueue(
             _Command(SIDE_STEP, duration=duration, angle=1.0 if direction > 0 else -1.0),
         )
 
@@ -688,7 +700,7 @@ class BagelInputWorker:
             back_duration: 后退按住时长（秒）。
             side_duration: 横移按住时长（秒）。
         """
-        self._instant_channel.put(
+        self._enqueue(
             _Command(
                 RETREAT_STEP, duration=back_duration,
                 angle=1.0 if direction > 0 else -1.0, side_duration=side_duration,
@@ -701,11 +713,12 @@ class BagelInputWorker:
         Args:
             duration: 按住时长（秒）；给短一点，退多了会退到墙里。
         """
-        self._instant_channel.put(_Command(BACK_STEP, duration=duration))
+        self._enqueue(_Command(BACK_STEP, duration=duration))
 
     def release_all(self) -> None:
         """作废正在执行的多段动作并立刻松开全部方向键（暂停/停止路径调用）。"""
         self._action_epoch += 1
+        self._instant_channel.clear()
         self.stop_forward()
         self.stop_backward()
         self._release_all_keys()
@@ -888,6 +901,8 @@ class BagelInputWorker:
             controller.click(SCREEN_CENTER, press_time=command.duration or 0.08)
             return
         if command.kind == HOLD_INTERACT:
+            if not self._action_valid(command.epoch):
+                return
             controller.interact(press=True)
             return
         if command.kind == RELEASE_INTERACT:
@@ -899,12 +914,7 @@ class BagelInputWorker:
             controller.dodge()
             return
         if command.kind == SIDE_STEP:
-            # 侧移方向由 angle 给出：-1 向左（A），1 向右（D）。
-            # 前进键保持按住，侧移变成斜向，能顺着墙滑出卡位。
-            key = controller.move_a if command.angle < 0 else controller.move_d
-            key(press=True)
-            time.sleep(command.duration or 0.0)
-            key(release=True)
+            self._run_side_step(command)
             return
         if command.kind == RETREAT_STEP:
             self._run_retreat(command)
@@ -912,10 +922,24 @@ class BagelInputWorker:
         if command.kind == BACK_STEP:
             self._run_back_step(command)
 
-    def _run_retreat(self, command: _Command) -> None:
-        """退让两段按键：每段之间检查是否已被暂停/停止作废，作废后不再按下一段。"""
+    def _run_side_step(self, command: _Command) -> None:
+        """侧移一下：入队时盖章，暂停后排队中的侧移不再按键。"""
+        if not self._action_valid(command.epoch):
+            return
         controller = self.ctx.controller
-        epoch = self._action_epoch
+        # 侧移方向由 angle 给出：-1 向左（A），1 向右（D）。
+        # 前进键保持按住，侧移变成斜向，能顺着墙滑出卡位。
+        key = controller.move_a if command.angle < 0 else controller.move_d
+        key(press=True)
+        time.sleep(command.duration or 0.0)
+        key(release=True)
+
+    def _run_retreat(self, command: _Command) -> None:
+        """退让两段按键：入队时盖章，暂停后排队中的退让不执行，执行中也逐段检查。"""
+        controller = self.ctx.controller
+        epoch = command.epoch
+        if not self._action_valid(epoch):
+            return
         self.stop_forward()
         if not self._wait_step(STEP_FORWARD_RELEASE_GRACE, epoch):
             return
@@ -934,9 +958,11 @@ class BagelInputWorker:
         key(release=True)
 
     def _run_back_step(self, command: _Command) -> None:
-        """后退半步：先松开前进键，否则 W+S 互相抵消。"""
+        """后退半步：入队时盖章，先松开前进键，否则 W+S 互相抵消。"""
         controller = self.ctx.controller
-        epoch = self._action_epoch
+        epoch = command.epoch
+        if not self._action_valid(epoch):
+            return
         self.stop_forward()
         if not self._wait_step(STEP_FORWARD_RELEASE_GRACE, epoch):
             return
