@@ -43,10 +43,13 @@ TYPE_RANK: dict[str, int] = {
 ACTION_FILL: str = 'fill'
 ACTION_SWAP: str = 'swap'
 
-# 相对已校准格心，36x36 搜索窗完整覆盖 24x24 / 24x26 模板并保留边缘余量。
+# 相对已校准格心，40x36 搜索窗完整覆盖 24x24 / 24x26 模板并保留边缘余量。
+# 宽度比高度多 4：第 1 列格心 x=1353，金币圆形角标右缘在 x≈1335，窗口右缘原为 1333，
+# 角标被截掉 2 像素，得分从 0.90 掉到 0.53，金币堆被读成「其他」而一直待确认。
 _BADGE_LEFT: int = 56
 _BADGE_TOP: int = 64
-_BADGE_SEARCH: int = 36
+_BADGE_SEARCH_W: int = 40
+_BADGE_SEARCH_H: int = 36
 _BADGE_MATCH_MIN: float = 0.75
 # OpenCV HSV：H 0–180。红=Z、金=S、紫=A、蓝=B、绿=C。
 _QUALITY_S_MIN: float = 40.0
@@ -239,8 +242,8 @@ def _badge_search_crop(screen: MatLike, center: Point) -> MatLike | None:
     """裁出格心左上的角标搜索窗。"""
     x1 = int(center.x) - _BADGE_LEFT
     y1 = int(center.y) - _BADGE_TOP
-    x2 = x1 + _BADGE_SEARCH
-    y2 = y1 + _BADGE_SEARCH
+    x2 = x1 + _BADGE_SEARCH_W
+    y2 = y1 + _BADGE_SEARCH_H
     if x1 < 0 or y1 < 0 or x2 > screen.shape[1] or y2 > screen.shape[0]:
         x1 = max(0, x1)
         y1 = max(0, y1)
