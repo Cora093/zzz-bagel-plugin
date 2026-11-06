@@ -116,6 +116,12 @@ SPRINT_DISTANCE: float = 30.0
 30px 外就冲刺，边跑边点闪避；30px 内不冲刺，松键改用走路逼近。
 """
 
+SPRINT_DODGE_INTERVAL: float = 0.3
+"""冲刺期间两次点闪避的最短间隔（秒，用户给定）。
+
+每轮都点时间隔约 37ms，游戏会当成按住闪避，触发星见雅等角色的长闪。
+"""
+
 BEACON_SLOW_RADIUS: float = 10.0
 """途径点慢步半径：进入它改用慢步走走停停，不再一路按住前进（用户给定）。"""
 
@@ -382,6 +388,8 @@ class BagelRouteWalker(BagelOperation):
         """最近一轮的决策文字，供执行态悬浮窗显示。"""
         self.sprinting: bool = False
         """当前是否在冲刺。"""
+        self.last_dodge_at: float | None = None
+        """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
         log.info(
             '贝果转向本局按 turn_dx=%.4f 起步，校准由转向线程自己学，局末写回同一字段',
             self.ctx.game_config.turn_dx,
@@ -1296,8 +1304,8 @@ class BagelRouteWalker(BagelOperation):
     def _set_sprint(self, distance: float) -> None:
         """按距离决定是否冲刺。
 
-        绝区零里冲刺是「按住方向键 + 连点闪避」，所以冲刺时持续点闪避，
-        不需要按住闪避键。
+        绝区零里冲刺是「按住方向键 + 点闪避」，冲刺时按 SPRINT_DODGE_INTERVAL
+        的间隔补点闪避，不需要按住闪避键。
 
         Args:
             distance: 距当前目标点的距离。
@@ -1310,7 +1318,11 @@ class BagelRouteWalker(BagelOperation):
             self._exit_sprint()
 
     def _dodge_tap(self) -> None:
-        """点一下闪避：冲刺期间每轮都点，维持冲刺状态。"""
+        """点一下闪避维持冲刺；距上次点不足 SPRINT_DODGE_INTERVAL 时跳过。"""
+        now = time.monotonic()
+        if self.last_dodge_at is not None and now - self.last_dodge_at < SPRINT_DODGE_INTERVAL:
+            return
+        self.last_dodge_at = now
         self.input_worker.dodge()
 
     def _exit_sprint(self) -> None:
