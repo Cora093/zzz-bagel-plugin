@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 import re
 import sys
-from statistics import median
 
 LINE_PATTERN = re.compile(r'贝果诊断 (?P<version>v\d+) · (?P<body>.+)$')
 SUPPORTED_VERSIONS = {'v1'}
@@ -61,7 +60,7 @@ def summarize(rows: list[dict[str, str]]) -> dict[str, object]:
     return {
         'frames': len(rows),
         'offset_samples': len(offsets),
-        'p50': median(offsets) if offsets else 0.0,
+        'p50': quantile(offsets, 0.50),
         'p75': quantile(offsets, 0.75),
         'p90': quantile(offsets, 0.90),
         'max': max(offsets) if offsets else 0.0,
