@@ -43,7 +43,7 @@ class BagelExit(BagelOperation):
             )
         )
 
-    @operation_node(name='打开贝果暂停菜单', is_start_node=True, timeout_seconds=30)
+    @operation_node(name='打开贝果暂停菜单', is_start_node=True, timeout_seconds=15)
     def open_menu(self) -> OperationRoundResult:
         """由调用方确认贝果流程；普通攻击按钮出现后打开菜单，再核对专用退出提示。"""
         if self._has('标题', '贝果-拟态单质提示'):
@@ -59,7 +59,9 @@ class BagelExit(BagelOperation):
         if self._panel_open():
             self.panel_close_tries += 1
             if self.panel_close_tries % 2 == 1:
-                self.round_by_click_area('贝果-局内', '搜查返回')
+                clicked = self.round_by_click_area('贝果-局内', '搜查返回')
+                if not clicked.is_success:
+                    return clicked
                 return self.round_wait('点击搜查返回关闭局内面板', wait=0.6)
             self.ctx.controller.btn_press('esc', press_time=0.1)
             return self.round_wait('ESC 关闭局内面板', wait=0.6)
