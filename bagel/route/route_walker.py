@@ -122,6 +122,13 @@ SPRINT_DODGE_INTERVAL: float = 0.3
 每轮都点时间隔约 37ms，游戏会当成按住闪避，触发星见雅等角色的长闪。
 """
 
+SPRINT_START_DELAY: float = 0.2
+"""W 实际按下后多久才点第一下闪避（秒，用户给定）。
+
+大幅转向后角色朝向还停在转向前，立刻点闪避会沿旧朝向冲出约 0.4 秒；
+实测约 90 度转向时先走 0.1 秒就已转过身，取 0.2 秒留余量。
+"""
+
 BEACON_SLOW_RADIUS: float = 10.0
 """途径点慢步半径：进入它改用慢步走走停停，不再一路按住前进（用户给定）。"""
 
@@ -1318,7 +1325,14 @@ class BagelRouteWalker(BagelOperation):
             self._exit_sprint()
 
     def _dodge_tap(self) -> None:
-        """点一下闪避维持冲刺；距上次点不足 SPRINT_DODGE_INTERVAL 时跳过。"""
+        """点一下闪避维持冲刺。
+
+        W 实际按住不足 SPRINT_START_DELAY，或距上次点不足
+        SPRINT_DODGE_INTERVAL 时跳过。
+        """
+        held = self.input_worker.forward_held_seconds()
+        if held is None or held < SPRINT_START_DELAY:
+            return
         now = time.monotonic()
         if self.last_dodge_at is not None and now - self.last_dodge_at < SPRINT_DODGE_INTERVAL:
             return
