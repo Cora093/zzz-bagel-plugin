@@ -51,6 +51,15 @@ DODGE: str = 'dodge'
 SIDE_STEP: str = 'side_step'
 """点一下侧移（A 或 D）；方向记在 angle 上，-1 向左、1 向右。"""
 
+RETREAT_STEP: str = 'retreat_step'
+"""退让：先按 S 后退一段，再朝一侧横移一段；两段之间检查是否已被停止作废。"""
+
+BACK_STEP: str = 'back_step'
+"""后退半步，用于侧移多次仍走不动时从墙角/箱子缝里退出来。"""
+
+STEP_FORWARD_RELEASE_GRACE: float = 0.06
+"""侧移/后退前松掉前进键后要等的时间（秒）：前进线程 10ms 一轮，留够它真的把 W 抬起来。"""
+
 SLEEP_SLICE: float = 0.01
 """等待轮询的切片时长（秒）。"""
 
@@ -132,16 +141,19 @@ class _Command:
 
     def __init__(
         self, kind: str, duration: float | None = None, angle: float = 0.0,
+        side_duration: float = 0.0,
     ) -> None:
         """
         Args:
             kind: 指令类型，取本模块的常量。
             duration: 短按时长（秒），其它类型忽略。
             angle: 转向角度（度），仅转向使用。
+            side_duration: 退让里横移那一段的时长（秒），仅 RETREAT_STEP 使用。
         """
         self.kind: str = kind
         self.duration: float | None = duration
         self.angle: float = angle
+        self.side_duration: float = side_duration
 
 
 class _InstantChannel:
@@ -519,6 +531,8 @@ class BagelInputWorker:
         """实际状态：S 键现在是否真的按着。"""
         self._backward_lock: threading.Lock = threading.Lock()
         self._stopping: bool = False
+        self._action_epoch: int = 0
+        """多段即时动作的版本号：暂停/停止时加一，作废还在跑的退让、侧移等动作。"""
 
         self._turn_worker: _TurnWorker = _TurnWorker(self._run_turn, self._sample_angle)
         self._instant_channel: _InstantChannel = _InstantChannel(
@@ -666,6 +680,57 @@ class BagelInputWorker:
             _Command(SIDE_STEP, duration=duration, angle=1.0 if direction > 0 else -1.0),
         )
 
+    def retreat_step(self, direction: int, back_duration: float, side_duration: float) -> None:
+        """退让：先按 S 后退，再往 side 一侧横移一下，最后交回正常巡航。
+
+        Args:
+            direction: -1 向左（A），1 向右（D）。
+            back_duration: 后退按住时长（秒）。
+            side_duration: 横移按住时长（秒）。
+        """
+        self._instant_channel.put(
+            _Command(
+                RETREAT_STEP, duration=back_duration,
+                angle=1.0 if direction > 0 else -1.0, side_duration=side_duration,
+            ),
+        )
+
+    def back_step(self, duration: float = 0.2) -> None:
+        """点一下后退，用于侧移多次仍走不动时把角色从原地挪出来。
+
+        Args:
+            duration: 按住时长（秒）；给短一点，退多了会退到墙里。
+        """
+        self._instant_channel.put(_Command(BACK_STEP, duration=duration))
+
+    def release_all(self) -> None:
+        """作废正在执行的多段动作并立刻松开全部方向键（暂停/停止路径调用）。"""
+        self._action_epoch += 1
+        self.stop_forward()
+        self.stop_backward()
+        self._release_all_keys()
+
+    def _release_all_keys(self) -> None:
+        """逐键松开本模块可能按下的键，含侧移的 A/D；一个键失败不影响其余键。"""
+        controller = self.ctx.controller
+        for release in (
+            controller.move_w, controller.move_s, controller.move_a,
+            controller.move_d, controller.interact,
+        ):
+            try:
+                release(release=True)
+            except Exception:
+                log.error('贝果输入线程松开按键失败', exc_info=True)
+
+    def _action_valid(self, epoch: int) -> bool:
+        """多段动作是否仍有效：暂停/停止会推进 epoch 并立即松键。"""
+        return not self._stopping and epoch == self._action_epoch
+
+    def _wait_step(self, seconds: float, epoch: int) -> bool:
+        """按完一段后等它走完；返回这段结束后动作是否仍然有效。"""
+        time.sleep(seconds)
+        return self._action_valid(epoch)
+
     def shutdown(self) -> None:
         """停止全部通道并松开前进；退出路径必须调用。"""
         self._stopping = True
@@ -674,12 +739,7 @@ class BagelInputWorker:
         self._backward_thread.join(timeout=1.0)
         self._turn_worker.stop()
         self._instant_channel.stop()
-        try:
-            self.ctx.controller.move_w(release=True)
-            self.ctx.controller.move_s(release=True)
-            self.ctx.controller.interact(release=True)
-        except Exception:
-            log.error('贝果输入线程退出时松开按键失败', exc_info=True)
+        self._release_all_keys()
 
     # ---------- 前进通道 ----------
 
@@ -845,3 +905,43 @@ class BagelInputWorker:
             key(press=True)
             time.sleep(command.duration or 0.0)
             key(release=True)
+            return
+        if command.kind == RETREAT_STEP:
+            self._run_retreat(command)
+            return
+        if command.kind == BACK_STEP:
+            self._run_back_step(command)
+
+    def _run_retreat(self, command: _Command) -> None:
+        """退让两段按键：每段之间检查是否已被暂停/停止作废，作废后不再按下一段。"""
+        controller = self.ctx.controller
+        epoch = self._action_epoch
+        self.stop_forward()
+        if not self._wait_step(STEP_FORWARD_RELEASE_GRACE, epoch):
+            return
+        controller.move_s(press=True)
+        if not self._wait_step(command.duration or 0.0, epoch):
+            controller.move_s(release=True)
+            return
+        controller.move_s(release=True)
+        if command.side_duration <= 0 or not self._action_valid(epoch):
+            return
+        key = controller.move_a if command.angle < 0 else controller.move_d
+        key(press=True)
+        if not self._wait_step(command.side_duration, epoch):
+            key(release=True)
+            return
+        key(release=True)
+
+    def _run_back_step(self, command: _Command) -> None:
+        """后退半步：先松开前进键，否则 W+S 互相抵消。"""
+        controller = self.ctx.controller
+        epoch = self._action_epoch
+        self.stop_forward()
+        if not self._wait_step(STEP_FORWARD_RELEASE_GRACE, epoch):
+            return
+        controller.move_s(press=True)
+        if not self._wait_step(command.duration or 0.0, epoch):
+            controller.move_s(release=True)
+            return
+        controller.move_s(release=True)
