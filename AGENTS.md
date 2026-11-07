@@ -22,7 +22,7 @@
 │   ├── vision/            # 画面识别与地图定位
 │   ├── gui/               # 界面、浮层与线程包装
 │   └── assets/ screen_info/ web/
-├── docs/                  # 开发文档，不进 zip
+├── docs/                  # 开发文档与画面素材（docs/materials/），不进 zip
 ├── scripts/               # 官方打包与校验脚本，与 plugin-template 保持一致
 ├── tests/
 └── README.md / CHANGELOG.md / LICENSE
@@ -31,6 +31,8 @@
 ## 开发文档
 
 改动或排查游戏流程（入场、导航、转向、开箱、入箱、结算、出售、统计、路线）前，先按 [docs/README.md](docs/README.md) 的索引读对应阶段文档；改了行为就同步改该文档。
+
+新增或替换画面素材前，先读 [docs/materials/README.md](docs/materials/README.md) 的素材规范。
 
 ## 边界
 
