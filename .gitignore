@@ -9,3 +9,4 @@ CLAUDE.local.md
 .debug/
 .venv/
 .env
+.pytest_tmp/
