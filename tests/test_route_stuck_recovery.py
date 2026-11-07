@@ -118,6 +118,10 @@ def _make_walker(
     walker.recover_point = 0
     walker.recover_until = 0.0
     walker.recover_aim_frames = 0
+    walker.recover_actions = 0
+    walker.recover_ref_distance = None
+    walker.recover_progress_baseline = None
+    walker.recover_started_at = None
     walker.steps = 0
     walker.last_input_frame = None
     walker.last_screenshot_time = 0.0
@@ -522,3 +526,113 @@ def test_back_step_epoch_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     ))
     assert ('s', True) in controller.history
     assert ('s', False) in controller.history
+
+
+
+def test_recover_livelock_reaches_backtrack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """恢复动作自身造成的位移不能再清零恢复计数：第 7 个动作后换道。
+
+    每轮动作之间沿垂直方向挪 3px：旧实现把这段位移当成「有位移」，每轮清零
+    stuck_steps，永远到不了 STUCK_STEP_LIMIT；新实现按实际动作累计，第 7 个动作后
+    下一次判定进入 _backtrack_point。
+    """
+    module = _load_walker_module()
+    clock = _Clock()
+    input_worker = _FakeInputWorker()
+    walker = _make_walker(module, clock, input_worker)
+    monkeypatch.setattr(module, 'time', clock)
+    point = walker._current_point()
+    pos = POSITION
+
+    walker._check_stuck(pos, point, angle=0.0)  # 登记卡位起点
+    actions = 0
+    for _ in range(30):
+        pos = (pos[0], pos[1] + 3.0)
+        clock.now += 3.5
+        walker._check_stuck(pos, point, angle=0.0)  # 旧实现会在这里清零 stuck_steps
+        clock.now += 3.5
+        result = walker._check_stuck(pos, point, angle=0.0)
+        if result is None:
+            continue
+        if walker.backtracks:
+            break
+        actions += 1
+        # 动作后卡位计时清零：下一轮动作前先登记新起点。
+        walker._check_stuck(pos, point, angle=0.0)
+
+    assert walker.backtracks == 1
+    assert walker.recover_stage == 'settle'
+    assert walker.recover_point == 1
+    assert walker.lane_offsets[1] == module.BACKTRACK_LANE_OFFSETS[0]
+    assert actions == module.RECOVER_ACTION_LIMIT
+
+
+def test_recover_progress_resets_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """到点距离真实改善时清空整轮恢复累计，并以新距离重新起算。"""
+    module = _load_walker_module()
+    clock = _Clock()
+    walker = _make_walker(module, clock, _FakeInputWorker())
+    monkeypatch.setattr(module, 'time', clock)
+    point = walker._current_point()
+
+    walker.recover_actions = 3
+    walker.retreats = 2
+    walker.stuck_steps = 4
+    walker.recover_ref_distance = 100.0
+    walker.recover_progress_baseline = 100.0
+    walker.recover_started_at = clock.now
+    pos = (90.0, 0.0)  # 到点距离 10px，改善 90px
+
+    walker._check_stuck(pos, point, angle=0.0)
+    clock.now += 3.5
+    assert walker._check_stuck(pos, point, angle=0.0) is None
+
+    assert walker.recover_actions == 0
+    assert walker.retreats == 0
+    assert walker.stuck_steps == 0
+    assert walker.recover_ref_distance == pytest.approx(10.0)
+    assert walker.recover_progress_baseline == pytest.approx(10.0)
+    assert walker.recover_started_at is None
+
+
+def test_recover_threshold_relative_near_distance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """近距离阈值相对化：ref≈8px 时阈值 4px，改善 5px 即复位。"""
+    module = _load_walker_module()
+    clock = _Clock()
+    walker = _make_walker(module, clock, _FakeInputWorker())
+    monkeypatch.setattr(module, 'time', clock)
+    point = walker._current_point()
+
+    walker.recover_ref_distance = 8.0
+    assert walker._recover_threshold() == pytest.approx(module.RECOVER_PROGRESS_MIN_PX)
+
+    walker.recover_actions = 2
+    walker.recover_progress_baseline = 8.0
+    walker.recover_started_at = clock.now
+    pos = (97.0, 0.0)  # 到点距离 3px，改善 5px
+
+    walker._check_stuck(pos, point, angle=0.0)
+    clock.now += 3.5
+    assert walker._check_stuck(pos, point, angle=0.0) is None
+
+    assert walker.recover_actions == 0
+    assert walker.recover_ref_distance == pytest.approx(3.0)
+    assert walker.recover_progress_baseline == pytest.approx(3.0)
+
+
+def test_recover_wall_clock_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """单点恢复总时长超过 RECOVER_MAX_SECONDS → 松键 + 可恢复失败。"""
+    module = _load_walker_module()
+    clock = _Clock()
+    walker = _make_walker(module, clock, _FakeInputWorker())
+    monkeypatch.setattr(module, 'time', clock)
+    point = walker._current_point()
+    walker.recover_started_at = clock.now - (module.RECOVER_MAX_SECONDS + 1.0)
+
+    walker._check_stuck(POSITION, point, angle=0.0)
+    clock.now += 3.5
+    result = walker._check_stuck(POSITION, point, angle=0.0)
+
+    assert result.result == OperationRoundResultEnum.FAIL
+    assert isinstance(result.data, _load_operation_module().BagelRecoverableFailure)
+    assert walker.stuck_since is None

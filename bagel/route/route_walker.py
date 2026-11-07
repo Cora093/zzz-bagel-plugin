@@ -216,6 +216,21 @@ STUCK_BACKSTEP_AFTER: int = 2
 RETREAT_LIMIT: int = 2
 """同一个点最多退让几次；退两次还过不去就落到侧移阶梯，再不行回退换道。"""
 
+RECOVER_ACTION_LIMIT: int = RETREAT_LIMIT + STUCK_STEP_LIMIT
+"""一次卡位 episode 的恢复动作上限；到上限就换道回退。"""
+
+RECOVER_MAX_SECONDS: float = 120.0
+"""单点卡位恢复的总墙钟上限。"""
+
+RECOVER_PROGRESS_MAX_PX: float = 8.0
+"""判定「有进展」的最大到点改善量。"""
+
+RECOVER_PROGRESS_MIN_PX: float = 4.0
+"""判定「有进展」的最小到点改善量。"""
+
+RECOVER_PROGRESS_RATIO: float = 0.3
+"""判定「有进展」的改善比例（相对 episode 起点距离）。"""
+
 RETREAT_BACK_SECONDS: float = 0.7
 """退让的后退时长（秒）：约退 10px，够离开墙缝又不至于退回上一个点。"""
 
@@ -450,6 +465,14 @@ class BagelRouteWalker(BagelOperation):
         """松键停稳 / 等视角的截止时刻（单调时钟）。"""
         self.recover_aim_frames: int = 0
         """视角已在阈值内的连续帧数。"""
+        self.recover_actions: int = 0
+        """本次卡位 episode 已真正执行的恢复动作数（退让/侧移/后退半步）。"""
+        self.recover_ref_distance: float | None = None
+        """episode 起点到点距离，用于相对化进展阈值。"""
+        self.recover_progress_baseline: float | None = None
+        """episode 内最近一次确认进展时的到点距离。"""
+        self.recover_started_at: float | None = None
+        """episode 起始墙钟，用于单点恢复总时长兜底。"""
         self.target_wait_since: float | None = None
         self.electronic_small_steps: bool = False
         """当前电子保险箱已进入短步阶段，定位回到半径外时也不恢复长步。"""
@@ -561,6 +584,8 @@ class BagelRouteWalker(BagelOperation):
             parts.append(f'位置 ({self.position[0]:.0f},{self.position[1]:.0f})')
         if self.current_kind is not None:
             parts.append(f'提示 {self.current_kind}')
+        if self.recover_actions > 0:
+            parts.append(f'恢复 {self.recover_actions}/{RECOVER_ACTION_LIMIT}')
         log.info('贝果执行 %s', ' · '.join(parts))
 
     def _game_in_foreground(self) -> bool:
@@ -1574,10 +1599,28 @@ class BagelRouteWalker(BagelOperation):
             return aim
         return (aim[0] - dy / length * offset, aim[1] + dx / length * offset)
 
+    def _reset_recover_state(self) -> None:
+        """清空本次卡位 episode 的恢复累计。"""
+        self.recover_actions = 0
+        self.recover_ref_distance = None
+        self.recover_progress_baseline = None
+        self.recover_started_at = None
+
+    def _recover_threshold(self) -> float:
+        """按 episode 起点距离相对化「有进展」的阈值，近距离不用绝对 8px。"""
+        if self.recover_ref_distance is None:
+            return RECOVER_PROGRESS_MIN_PX
+        return min(RECOVER_PROGRESS_MAX_PX,
+                   max(RECOVER_PROGRESS_MIN_PX, RECOVER_PROGRESS_RATIO * self.recover_ref_distance))
+
     def _check_stuck(
         self, position: tuple[float, float], point: BagelRoutePoint, angle: float,
     ) -> OperationRoundResult | None:
-        """按住前进却走不动时的恢复阶梯：退让 → 侧移/后退半步 → 回退换道 → 失败。"""
+        """按住前进却走不动时的恢复阶梯：退让 → 侧移/后退半步 → 回退换道 → 失败。
+
+        恢复动作自身也会造成位移：计数只在真实动作时增加，以到点距离改善判进展。
+        """
+        distance = hypot(point.x - position[0], point.y - position[1])
         if self.stuck_since is None:
             self.stuck_since = (position, time.monotonic())
             return None
@@ -1589,29 +1632,56 @@ class BagelRouteWalker(BagelOperation):
             return None
         origin, started = self.stuck_since
         if hypot(position[0] - origin[0], position[1] - origin[1]) >= STUCK_DISTANCE:
+            # 恢复动作自身也会挪位置：这里只重置卡位窗口，恢复累计不能清。
             self.stuck_since = (position, time.monotonic())
             self.stuck_steps = 0
             return None
         if time.monotonic() - started < STUCK_SECONDS:
             return None
+
+        if self.recover_started_at is None:
+            self.recover_started_at = time.monotonic()
+        if self.recover_ref_distance is None:
+            self.recover_ref_distance = distance
+            self.recover_progress_baseline = distance
+        if (
+            self.recover_progress_baseline is not None
+            and distance <= self.recover_progress_baseline - self._recover_threshold()
+        ):
+            # 真实进展：清空整轮恢复状态，以当前位置重新起算。
+            self._reset_recover_state()
+            self.recover_ref_distance = distance
+            self.recover_progress_baseline = distance
+            self.retreats = 0
+            self.stuck_steps = 0
+            self.stuck_since = None
+            return None
+        if time.monotonic() - self.recover_started_at > RECOVER_MAX_SECONDS:
+            self._release_forward()
+            return self.round_recoverable_fail('卡死恢复超时，未能在限定时间内脱离')
+
         if self.retreats < RETREAT_LIMIT:
             self._start_retreat(position, point, angle)
+            self.recover_actions += 1
+            progress = f'{self.retreats}次，恢复 {self.recover_actions}/{RECOVER_ACTION_LIMIT}'
             return self.round_wait(
-                f'前进受阻，后退一步重新对准（第{self.retreats}次）',
+                f'前进受阻，后退一步重新对准（{progress}）',
                 wait=RETREAT_BACK_SECONDS + RETREAT_SIDE_SECONDS + 0.2,
             )
-        if self.stuck_steps >= STUCK_STEP_LIMIT:
+        if self.recover_actions >= RECOVER_ACTION_LIMIT:
             self._release_forward()
             return self._backtrack_point()
         direction = self._path_side(position, point, angle)
         self.stuck_steps += 1
         self.stuck_since = None
+        self.recover_actions += 1
+        progress = f'恢复 {self.recover_actions}/{RECOVER_ACTION_LIMIT}'
         if self.stuck_steps >= STUCK_BACKSTEP_AFTER:
             # 侧移多次还没挪动，说明卡进墙角/箱子缝：继续往同一侧顶没用，先退半步。
             self.input_worker.back_step(SIDE_STEP_SECONDS)
             self._record_input()
             return self.round_wait(
-                f'前进受阻，后退半步重新对准（第{self.stuck_steps}次）',
+                f'前进受阻，后退半步重新对准（第{self.stuck_steps}次，{progress}）',
                 wait=SIDE_STEP_SECONDS + 0.1,
             )
         if direction is None:
@@ -1620,7 +1690,7 @@ class BagelRouteWalker(BagelOperation):
         self.input_worker.side_step(direction, SIDE_STEP_SECONDS)
         self._record_input()
         return self.round_wait(
-            f'前进受阻，往路径线{"右" if direction > 0 else "左"}侧移动一步',
+            f'前进受阻，往路径线{"右" if direction > 0 else "左"}侧移动一步（{progress}）',
             wait=SIDE_STEP_SECONDS + 0.1,
         )
 
@@ -1634,9 +1704,11 @@ class BagelRouteWalker(BagelOperation):
         self.point_backtracks[self.cursor] = tries + 1
         self.lane_offsets[self.cursor] = lane_offset(tries)
         log.warning(
-            '贝果第 %s 点（%s）卡死，退回第 %s 点换车道重走（第 %s/%s 次，横移 %+.0fpx）',
+            '贝果第 %s 点（%s）卡死，退回第 %s 点换车道重走'
+            '（第 %s/%s 次，横移 %+.0fpx，恢复动作 %s/%s）',
             self.cursor + 1, self._current_kind_name(), target + 1,
             self.backtracks, BACKTRACK_LIMIT, self.lane_offsets[self.cursor],
+            self.recover_actions, RECOVER_ACTION_LIMIT,
         )
         stuck_index = self.cursor
         self._enter_point(self.route_index, target)
@@ -1827,6 +1899,7 @@ class BagelRouteWalker(BagelOperation):
         self.stuck_since = None
         self.stuck_steps = 0
         self.retreats = 0
+        self._reset_recover_state()
         self.elevator_phase = None
         self.elevator_since = None
 
@@ -1897,6 +1970,7 @@ class BagelRouteWalker(BagelOperation):
         这里主动清一次，不等那 1 秒，避免暂停瞬间按旧目标转镜头。
         """
         self._release_forward()
+        self._reset_recover_state()
         self.input_worker.release_all()
         self.input_worker.submit_turn(None)
         super().handle_pause()
