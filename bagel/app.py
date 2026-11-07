@@ -34,6 +34,7 @@ from .route.route_store import (
     BagelRouteStore,
 )
 from .route.route_walker import BagelRouteWalker
+from .screens import ensure_screens
 from .stats import BagelRunStats, BagelSafeLedger
 from .vision import screen
 from .vision.slots import safe_occupied_indices
@@ -249,6 +250,7 @@ class BagelApp(ZApplication):
     def handle_init(self) -> None:
         """新任务重置计数；子操作切换和暂停恢复不调用此初始化。"""
         super().handle_init()
+        ensure_screens(self.ctx.screen_loader)
         self.attempts = 0
         self.success_rounds = 0
         self.rounds_since_sell = 0
