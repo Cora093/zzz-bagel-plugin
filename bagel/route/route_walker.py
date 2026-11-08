@@ -221,6 +221,22 @@ SIDE_STEP_SECONDS: float = 0.2
 STUCK_STEP_LIMIT: int = 5
 """同一个点连续侧移的上限；挪这么多步还脱不了身，说明不是偏线而是真走不通。"""
 
+SLOW_STUCK_SECONDS: float = 5.0
+"""慢步或短步逼近时，位置连续这么久变化不足 ``STUCK_DISTANCE`` 就算受阻。"""
+
+RETREAT_LIMIT: int = 2
+"""同一个点受阻后最多退回上一个点重走几次；用完再受阻就按失败处理。"""
+
+RETREAT_ARRIVE_RADIUS: float = 1.9
+"""退回上一个点时的到点判据，比途径点的 3px 严。
+
+受阻多半是提前 3px 判到点、还没绕过拐角就转向了；退回时要站到录制位置上，
+重走才有意义。定位是整数像素，小于 1.9 即落在录制点或其上下左右、斜对角一格内。
+"""
+
+RETREAT_SECONDS: float = 10.0
+"""退回上一个点的时限；到时还没站上就从当前位置重走。"""
+
 POINT_TIMEOUT: dict[str, float] = {BEACON: 45.0, 'default': 75.0}
 """单点超时（秒）：途径点 45，箱类 75。"""
 
@@ -449,6 +465,13 @@ class BagelRouteWalker(BagelOperation):
         self.stuck_since: tuple[tuple[float, float], float] | None = None
         self.stuck_steps: int = 0
         """当前点已经侧移了几次，进入新点时清零。"""
+        self.slow_stuck_since: tuple[tuple[float, float], float] | None = None
+        """慢步段位置开始停滞的位置与时刻；慢步每步都松键，不能用 ``stuck_since``。"""
+        self.retreat_point: BagelRoutePoint | None = None
+        """受阻后正在退回的上一个点；只走到它的坐标，不重做它的交互。"""
+        self.retreat_since: float | None = None
+        self.retreats: int = 0
+        """当前点已经退回重走的次数，进入新点时清零。"""
         self.target_wait_since: float | None = None
         self.electronic_small_steps: bool = False
         """当前电子保险箱已进入短步阶段，定位回到半径外时也不恢复长步。"""
@@ -1440,6 +1463,8 @@ class BagelRouteWalker(BagelOperation):
             )
         if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
             return self.round_wait('等待动作后的新截图', wait=0.05)
+        if self.retreat_point is not None:
+            return self._retreat(position)
         if distance <= SPRINT_DISTANCE and self.sprinting:
             self._exit_sprint()
         if point.kind == BEACON:
@@ -1763,6 +1788,9 @@ class BagelRouteWalker(BagelOperation):
             # 大偏差：松键停车等转向线程转到位，不短按前进。
             self._release_forward()
             return self.round_wait(f'{action}停车等转向 {angle_diff:.0f}度')
+        blocked = self._check_slow_stuck(position)
+        if blocked is not None:
+            return blocked
         limited = self._fail_if_action_limit()
         if limited is not None:
             return limited
@@ -1804,8 +1832,7 @@ class BagelRouteWalker(BagelOperation):
         if time.monotonic() - started < STUCK_SECONDS:
             return None
         if self.stuck_steps >= STUCK_STEP_LIMIT:
-            self._release_forward()
-            return self.round_recoverable_fail('持续前进但位置未变化，侧移多次仍无法脱离')
+            return self._blocked('持续前进但位置未变化，侧移多次仍无法脱离')
         direction = self._path_side(position, point, angle)
         self.stuck_steps += 1
         self.stuck_since = None
@@ -1818,6 +1845,85 @@ class BagelRouteWalker(BagelOperation):
             f'前进受阻，往路径线{"右" if direction > 0 else "左"}侧移动一步',
             wait=SIDE_STEP_SECONDS + 0.1,
         )
+
+    def _check_slow_stuck(self, position: tuple[float, float]) -> OperationRoundResult | None:
+        """慢步或短步逼近时，位置停滞满 ``SLOW_STUCK_SECONDS`` 就按受阻处理。
+
+        慢步只在离点 10px 内用，按住前进的侧移判卡位管不到这里；
+        不单独判的话，顶着扶手原地踏步要等单点超时才停。
+        """
+        now = time.monotonic()
+        if self.slow_stuck_since is not None:
+            origin, started = self.slow_stuck_since
+            if hypot(position[0] - origin[0], position[1] - origin[1]) < STUCK_DISTANCE:
+                if now - started < SLOW_STUCK_SECONDS:
+                    return None
+                return self._blocked('慢步前进但位置未变化')
+        self.slow_stuck_since = (position, now)
+        return None
+
+    def _blocked(self, reason: str) -> OperationRoundResult:
+        """当前点走不通：先退回上一个点再重走，次数用完或退回途中受阻才判失败。
+
+        受阻常见于拐角：途径点 3px 内就判到点，角色还没绕过扶手或家具就转向
+        下一个点，直线顶上去。退回上一个点站准了再走，走的就是录制时的线。
+        上一个点是电梯时不退：电梯跨层，走不回去。
+        """
+        self._release_forward()
+        point = self._current_point()
+        origin = self._previous_point()
+        if (
+            self.retreat_point is None and origin is not None and origin.kind != ELEVATOR
+            and self.retreats < RETREAT_LIMIT
+        ):
+            self.retreats += 1
+            self.retreat_point = origin
+            self.retreat_since = time.monotonic()
+            self.point_started_at = self.retreat_since
+            self._clear_stuck()
+            log.warning(
+                '贝果第 %s 点（%s）%s，位置 %s，退回上一个点 (%.0f,%.0f) 重走（第 %s/%s 次）',
+                self.cursor + 1, point.kind if point is not None else '无', reason,
+                self.last_position, origin.x, origin.y, self.retreats, RETREAT_LIMIT,
+            )
+            return self.round_wait('受阻，退回上一个点', wait=0.1)
+        if self.retreat_point is not None:
+            reason = f'退回上一个点途中{reason}'
+        elif self.retreats:
+            reason = f'{reason}（已退回重走 {self.retreats} 次）'
+        return self.round_recoverable_fail(reason)
+
+    def _retreat(self, position: tuple[float, float]) -> OperationRoundResult:
+        """朝上一个点的坐标走，站准（或到时限）后回到当前点重走。"""
+        target = self.retreat_point
+        distance = hypot(target.x - position[0], target.y - position[1])
+        overdue = self.retreat_since is not None and time.monotonic() - self.retreat_since >= RETREAT_SECONDS
+        if distance < RETREAT_ARRIVE_RADIUS or overdue:
+            self._release_forward()
+            log.info(
+                '贝果第 %s 点：%s上一个点 (%.0f,%.0f)，距 %.1fpx，位置 %s，重走本点',
+                self.cursor + 1, '已退回' if not overdue else f'{RETREAT_SECONDS:.0f}s 内没站准',
+                target.x, target.y, distance, position,
+            )
+            self.retreat_point = None
+            self.retreat_since = None
+            self.point_started_at = time.monotonic()
+            self.steps = 0
+            self.electronic_small_steps = False
+            self.small_step_since = None
+            self.target_wait_since = None
+            self._clear_stuck()
+            return self.round_wait('已退回上一个点，重走本点', wait=0.1)
+        if distance <= SPRINT_DISTANCE and self.sprinting:
+            self._exit_sprint()
+        if distance <= BEACON_SLOW_RADIUS:
+            return self._slow_step(target, position, short_press=distance <= ARRIVE_RADIUS)
+        return self._cruise(target, position)
+
+    def _clear_stuck(self) -> None:
+        self.stuck_since = None
+        self.stuck_steps = 0
+        self.slow_stuck_since = None
 
     def _path_side(
         self, position: tuple[float, float], point: BagelRoutePoint, angle: float,
@@ -1923,6 +2029,10 @@ class BagelRouteWalker(BagelOperation):
         self.steps = 0
         self.stuck_since = None
         self.stuck_steps = 0
+        self.slow_stuck_since = None
+        self.retreat_point = None
+        self.retreat_since = None
+        self.retreats = 0
         self.elevator_phase = None
         self.elevator_since = None
 
