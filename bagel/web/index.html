@@ -142,7 +142,7 @@
     <div id="routeSummary"></div>
     <div id="detailList"></div>
     <div id="nodeForm"></div>
-    <div class="save-bar"><span id="saveStatus"></span><button id="saveButton" class="primary" disabled>保存</button></div>
+    <div class="save-bar"><span id="saveStatus"></span><button id="undoButton" class="small" title="撤销（Ctrl+Z）" disabled>撤销</button><button id="redoButton" class="small" title="重做（Ctrl+Y 或 Ctrl+Shift+Z）" disabled>重做</button><button id="saveButton" class="primary" disabled>保存</button></div>
   </div>
 </div>
 <div id="pointMenu"></div>
@@ -199,7 +199,18 @@ const state = {
   insertAfter: -1,
   mouseMap: null,
   selectedPoint: -1,
-  manageFilter: 'all'
+  manageFilter: 'all',
+  // 撤销与重做：只记当前草稿的点位快照，换路线或放弃修改时清空。
+  history: null,
+  // 拖点：按下时的鼠标位置与点原坐标；移动超过阈值才算拖动。
+  dragOrigin: null,
+  // 按下时命中的全部点（按距离排序），以及按下前它们里是否已有选中点。
+  pressHits: [],
+  pressWasSelected: false,
+  // 连续微调同一个点时合并成一步撤销。
+  lastNudge: null,
+  // 光标所在的全局坐标，显示在状态行。
+  hoverMap: null
 };
 
 const POINT_HIT_RADIUS = 12;
@@ -210,6 +221,19 @@ const LINE_HIT_RADIUS = 7;
 
 const SPAWN_HIT_RADIUS = 14;
 // 点选出生点标记的命中半径（屏幕像素）。
+
+const MAX_SCALE = 32;
+// 最大缩放：每个地图像素 32 屏幕像素。室内房间只有几十个地图像素宽，
+// 相距 1px 的点要放到这个倍数才分得开。
+
+const DRAG_THRESHOLD = 4;
+// 按下节点后鼠标移动超过这么多屏幕像素才算拖动，避免点一下就把点带偏。
+
+const HISTORY_LIMIT = 100;
+// 撤销最多记这么多步。
+
+const NUDGE_MERGE_MS = 1000;
+// 连续微调同一个点、两次间隔不超过这个毫秒数时，合并成一步撤销。
 
 const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
@@ -293,9 +317,53 @@ function hasUnsavedEdits() {
   return JSON.stringify(state.draft.points) !== JSON.stringify(saved.points);
 }
 
-function resetDraft() {
+// keepHistory：保存成功后重建草稿时保留撤销记录，撤销会让草稿重新变成未保存。
+function resetDraft(keepHistory) {
   const saved = savedRoute();
   state.draft = isCustom(saved) ? { key: routeKey(saved), points: clone(saved.points) } : null;
+  if (!keepHistory || !state.draft || !state.history || state.history.key !== state.draft.key) state.history = null;
+  state.lastNudge = null;
+}
+
+// ---------- 撤销与重做 ----------
+
+function historyOfDraft() {
+  const key = state.draft ? state.draft.key : null;
+  if (!state.history || state.history.key !== key) state.history = { key, undo: [], redo: [] };
+  return state.history;
+}
+
+// 改草稿之前调用：记下改之前的点位。新的修改会清空重做记录。
+function recordHistory() {
+  if (!state.draft) return;
+  const h = historyOfDraft();
+  h.undo.push(clone(state.draft.points));
+  if (h.undo.length > HISTORY_LIMIT) h.undo.shift();
+  h.redo = [];
+  state.lastNudge = null;
+}
+
+function canUndo() { return canEdit() && !!state.draft && historyOfDraft().undo.length > 0; }
+function canRedo() { return canEdit() && !!state.draft && historyOfDraft().redo.length > 0; }
+
+function undoEdit() {
+  if (!canUndo()) return;
+  const h = historyOfDraft();
+  h.redo.push(clone(state.draft.points));
+  state.draft.points = h.undo.pop();
+  state.lastNudge = null;
+  if (state.selectedPoint >= state.draft.points.length) state.selectedPoint = -1;
+  afterEdit();
+}
+
+function redoEdit() {
+  if (!canRedo()) return;
+  const h = historyOfDraft();
+  h.undo.push(clone(state.draft.points));
+  state.draft.points = h.redo.pop();
+  state.lastNudge = null;
+  if (state.selectedPoint >= state.draft.points.length) state.selectedPoint = -1;
+  afterEdit();
 }
 
 function nextName(base) {
@@ -337,7 +405,7 @@ async function saveDraft() {
   if (!canEdit() || !state.draft || !hasUnsavedEdits()) return true;
   const result = await call('save', { route_id: saved.route_id, points: state.draft.points });
   if (!result.ok) return false;
-  resetDraft();
+  resetDraft(true);
   renderAll();
   return true;
 }
@@ -572,7 +640,7 @@ function zoomMap(factor) {
   const x = rect.width / 2, y = rect.height / 2;
   const bx = (x - state.offsetX) / state.scale;
   const by = (y - state.offsetY) / state.scale;
-  state.scale = Math.min(Math.max(state.scale * factor, 0.05), 12);
+  state.scale = Math.min(Math.max(state.scale * factor, 0.05), MAX_SCALE);
   state.offsetX = x - bx * state.scale;
   state.offsetY = y - by * state.scale;
   state.autoFit = false;
@@ -954,6 +1022,7 @@ function renderDetail() {
     startInsert(state.selectedPoint >= 0 ? state.selectedPoint : route.points.length - 1);
   };
   box.innerHTML = '';
+  let selectedRow = null;
   route.points.forEach((d, index) => {
     const row = document.createElement('div');
     row.className = 'row' + (index === state.selectedPoint ? ' selected' : '');
@@ -978,6 +1047,7 @@ function renderDetail() {
       });
       sel.onclick = (ev) => ev.stopPropagation();
       sel.onchange = () => {
+        recordHistory();
         const p = state.draft.points[index];
         p.kind = sel.value;
         if (p.kind === 'elevator') {
@@ -1010,7 +1080,9 @@ function renderDetail() {
       row.appendChild(locate);
     }
     box.appendChild(row);
+    if (index === state.selectedPoint) selectedRow = row;
   });
+  if (selectedRow) selectedRow.scrollIntoView({ block: 'nearest' });
   if (editable && state.selectedPoint >= 0 && route.points[state.selectedPoint]) renderNodeForm(route);
   renderSaveBar();
 }
@@ -1032,6 +1104,7 @@ function renderNodeForm(route) {
     const x = Number(document.getElementById('pointX').value);
     const y = Number(document.getElementById('pointY').value);
     if (!Number.isFinite(x) || !Number.isFinite(y)) { notify('请填写有效的节点坐标', true); return; }
+    recordHistory();
     state.draft.points[index].x = Math.round(x);
     state.draft.points[index].y = Math.round(y);
     afterEdit();
@@ -1040,10 +1113,12 @@ function renderNodeForm(route) {
   if (del) del.onclick = () => deletePoint(index);
   if (p.kind === 'elevator') {
     document.getElementById('elevOption').onchange = (ev) => {
+      recordHistory();
       state.draft.points[index].elevator_option = ev.target.value.trim();
       afterEdit();
     };
     document.getElementById('elevExit').onchange = (ev) => {
+      recordHistory();
       state.draft.points[index].elevator_exit = ev.target.value;
       afterEdit();
     };
@@ -1056,6 +1131,8 @@ function renderSaveBar() {
   const route = savedRoute();
   const dirty = hasUnsavedEdits();
   button.disabled = !canEdit() || !dirty;
+  document.getElementById('undoButton').disabled = !canUndo();
+  document.getElementById('redoButton').disabled = !canRedo();
   status.classList.toggle('dirty', dirty);
   if (!route) status.textContent = '';
   else if (!isCustom(route)) status.textContent = '默认路线只读，复制后再修改';
@@ -1130,14 +1207,62 @@ function visibleRoutePoints() {
   return out;
 }
 
+// 命中半径内的全部点，按距离由近到远排。几个点叠在一起时靠它轮流选中。
+function hitPoints(mx, my) {
+  return visibleRoutePoints()
+    .map(it => ({ index: it.index, d: Math.hypot(it.s[0] - mx, it.s[1] - my) }))
+    .filter(it => it.d <= POINT_HIT_RADIUS)
+    .sort((a, b) => a.d - b.d)
+    .map(it => it.index);
+}
+
 function hitPoint(mx, my) {
-  let best = -1;
-  let bestDist = POINT_HIT_RADIUS;
-  visibleRoutePoints().forEach(it => {
-    const d = Math.hypot(it.s[0] - mx, it.s[1] - my);
-    if (d <= bestDist) { bestDist = d; best = it.index; }
-  });
-  return best;
+  const hits = hitPoints(mx, my);
+  return hits.length ? hits[0] : -1;
+}
+
+// 按下节点：已选中的点在命中里就继续用它（好拖动），否则取最近的点。
+function pressPoint(mx, my) {
+  const hits = hitPoints(mx, my);
+  state.pressHits = hits;
+  state.pressWasSelected = hits.includes(state.selectedPoint);
+  if (!hits.length) return -1;
+  return state.pressWasSelected ? state.selectedPoint : hits[0];
+}
+
+// 点了已选中的点而没拖动：如果这里叠着别的点，就切到下一个。
+function cycleOverlap(index) {
+  const hits = state.pressHits;
+  if (!state.pressWasSelected || hits.length < 2) return index;
+  const next = hits[(hits.indexOf(index) + 1) % hits.length];
+  notify('这里叠着 ' + hits.length + ' 个点，已切到第 ' + (next + 1) + ' 点');
+  return next;
+}
+
+// 把全局坐标夹到当前地图范围内。
+function clampToMap(x, y) {
+  const m = state.maps[state.activeMap];
+  if (!m) return [x, y];
+  return [Math.min(Math.max(x, m.x0), m.x1), Math.min(Math.max(y, m.y0), m.y1)];
+}
+
+// 方向键微调选中点；连续微调同一点合并成一步撤销。
+function nudgePoint(dx, dy) {
+  const index = state.selectedPoint;
+  const p = state.draft && state.draft.points[index];
+  if (!canEdit() || !p) return;
+  const now = Date.now();
+  const merge = state.lastNudge && state.lastNudge.index === index && now - state.lastNudge.time <= NUDGE_MERGE_MS;
+  if (!merge) recordHistory();
+  state.lastNudge = { index, time: now };
+  [p.x, p.y] = clampToMap(p.x + dx, p.y + dy);
+  afterEdit();
+}
+
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || el.isContentEditable;
 }
 
 function hitSpawn(mx, my) {
@@ -1186,6 +1311,7 @@ function insertPointAfter(index, gx, gy) {
   if (!canEdit()) return -1;
   const ref = state.draft.points[index];
   if (!ref) return -1;
+  recordHistory();
   state.draft.points.splice(index + 1, 0, { x: gx, y: gy, layer: ref.layer, kind: 'beacon' });
   return index + 1;
 }
@@ -1193,6 +1319,7 @@ function insertPointAfter(index, gx, gy) {
 // 起点不能删：路线必须从出生点附近的途径点开始。
 function deletePoint(index) {
   if (!canEdit() || index <= 0 || index >= state.draft.points.length) return;
+  recordHistory();
   state.draft.points.splice(index, 1);
   state.selectedPoint = -1;
   afterEdit();
@@ -1313,7 +1440,10 @@ function draw() {
       ctx.lineTo(sb[0], sb[1]);
       ctx.stroke();
     }
-    pts.forEach(it => {
+    // 选中点最后画，几个点叠在一起时它在最上面。
+    const ordered = pts.filter(it => it.order - 1 !== state.selectedPoint)
+      .concat(pts.filter(it => it.order - 1 === state.selectedPoint));
+    ordered.forEach(it => {
       const s = globalToScreen(it.p.x, it.p.y);
       if (!s) return;
       if (it.order - 1 === state.selectedPoint) {
@@ -1413,17 +1543,27 @@ function draw() {
     }
   }
 
+  renderHud();
+}
+
+// 地图左上角的状态行；鼠标移动时只刷新这一行，不重画地图。
+function renderHud() {
+  const route = state.recording ? null : shownRoute();
   const spawn = getSpawn(state.activeSpawnId);
+  const cursor = state.hoverMap ? ' · 光标 (' + state.hoverMap[0] + ', ' + state.hoverMap[1] + ')' : '';
   if (state.recording) {
     hud.textContent = '录制中 · 1 途径点 2 电子箱 3 机械箱 4 普通箱 5 门 6 电梯 · 退格 删上一个点';
+  } else if (state.dragPoint >= 0 && state.dragMoved && route && route.points[state.dragPoint]) {
+    const p = route.points[state.dragPoint];
+    hud.textContent = '拖动第 ' + (state.dragPoint + 1) + ' 点 → (' + p.x + ', ' + p.y + ')';
   } else if (state.insertAfter >= 0) {
-    hud.textContent = '插入模式 · 点击地图落下第 ' + (state.insertAfter + 2) + ' 点（途径点） · Esc 取消';
+    hud.textContent = '插入模式 · 点击地图落下第 ' + (state.insertAfter + 2) + ' 点（途径点） · Esc 取消' + cursor;
   } else {
     const mode = !route ? '未选择路线'
-      : canEdit() ? '拖点移动 · 点连线插点 · 点节点弹菜单'
+      : canEdit() ? '拖点移动 · 点连线插点 · 方向键微调 · Del 删点 · Ctrl+Z 撤销'
         : isCustom(route) ? busyReason() : '默认路线只读';
-    hud.textContent = state.activeMap + (spawn && spawn.map_id === state.activeMap ? ' · 出生点 ' + spawn.name : '')
-      + ' · ' + mode + ' · 滚轮缩放 / 空白处拖动';
+    hud.textContent = state.activeMap + cursor
+      + (spawn && spawn.map_id === state.activeMap ? ' · 出生点 ' + spawn.name : '') + ' · ' + mode;
   }
 }
 
@@ -1444,10 +1584,12 @@ wrap.addEventListener('mousedown', (e) => {
       }
       return;
     }
-    const hit = hitPoint(mx, my);
+    const hit = pressPoint(mx, my);
     if (hit >= 0) {
+      const p = state.draft.points[hit];
       state.dragPoint = hit;
       state.dragMoved = false;
+      state.dragOrigin = { mx, my, x: p.x, y: p.y };
       state.selectedPoint = hit;
       draw();
       return;
@@ -1461,8 +1603,9 @@ wrap.addEventListener('mousedown', (e) => {
       return;
     }
   } else if (!state.recording) {
-    const hit = hitPoint(mx, my);
+    let hit = pressPoint(mx, my);
     if (hit >= 0) {
+      hit = cycleOverlap(hit);
       state.selectedPoint = hit;
       renderDetail();
       draw();
@@ -1487,24 +1630,32 @@ wrap.addEventListener('mousemove', (e) => {
   const [mx, my] = localMouse(e);
 
   if (state.dragPoint >= 0 && canEdit()) {
-    const g = toGlobal(mx, my);
-    const p = g ? state.draft.points[state.dragPoint] : null;
-    if (p) {
-      p.x = g[0];
-      p.y = g[1];
+    const o = state.dragOrigin;
+    const p = state.draft.points[state.dragPoint];
+    if (!p || !o) return;
+    if (!state.dragMoved) {
+      if (Math.hypot(mx - o.mx, my - o.my) < DRAG_THRESHOLD) return;
+      recordHistory();
       state.dragMoved = true;
-      draw();
     }
+    // 按鼠标位移移动，不把点吸到光标上：从点边缘按下也不会先跳一下。
+    [p.x, p.y] = clampToMap(
+      o.x + Math.round((mx - o.mx) / state.scale),
+      o.y + Math.round((my - o.my) / state.scale)
+    );
+    draw();
     return;
   }
 
+  state.hoverMap = toGlobal(mx, my);
   if (state.insertAfter >= 0) {
-    state.mouseMap = toGlobal(mx, my);
+    state.mouseMap = state.hoverMap;
     draw();
     return;
   }
 
   if (state.dragging) return;
+  renderHud();
 
   if (canEdit() && hitPoint(mx, my) >= 0) { wrap.style.cursor = 'move'; return; }
   if (canEdit() && hitSegment(mx, my)) { wrap.style.cursor = 'copy'; return; }
@@ -1516,14 +1667,18 @@ wrap.addEventListener('mousemove', (e) => {
 // 挂在画布上会收不到 mouseup，点位就一直跟着鼠标走。
 window.addEventListener('mouseup', (e) => {
   if (state.dragPoint >= 0) {
-    const index = state.dragPoint;
     const moved = state.dragMoved;
+    let index = state.dragPoint;
     state.dragPoint = -1;
     state.dragMoved = false;
+    state.dragOrigin = null;
     if (moved) {
       afterEdit();
     } else if (e.button === 0) {
+      index = cycleOverlap(index);
+      state.selectedPoint = index;
       renderDetail();
+      draw();
       showPointMenu(index, e.clientX, e.clientY);
     }
     return;
@@ -1550,10 +1705,40 @@ window.addEventListener('keydown', (e) => {
     if (modalOpen()) { closeModal(); return; }
     cancelInsert();
     hidePointMenu();
+    return;
+  }
+  // 输入框和下拉框里的按键留给它们自己（比如在坐标框里撤销输入）。
+  if (modalOpen() || isTypingTarget(e.target)) return;
+  const key = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
+    e.preventDefault();
+    redoEdit();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && key === 'z') {
+    e.preventDefault();
+    undoEdit();
+    return;
+  }
+  if (!canEdit() || state.selectedPoint < 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+  const step = e.shiftKey ? 5 : 1;
+  const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (moves[e.key]) {
+    e.preventDefault();
+    hidePointMenu();
+    nudgePoint(moves[e.key][0], moves[e.key][1]);
+    return;
+  }
+  if (e.key === 'Delete' && state.selectedPoint > 0) {
+    e.preventDefault();
+    hidePointMenu();
+    deletePoint(state.selectedPoint);
   }
 });
 
 wrap.addEventListener('mouseleave', () => {
+  state.hoverMap = null;
+  renderHud();
   if (state.insertAfter >= 0) {
     state.mouseMap = null;
     draw();
@@ -1574,7 +1759,7 @@ wrap.addEventListener('wheel', (e) => {
   const my = e.clientY - rect.top;
   const before = [(mx - state.offsetX) / state.scale, (my - state.offsetY) / state.scale];
   const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  state.scale = Math.min(Math.max(state.scale * factor, 0.05), 12);
+  state.scale = Math.min(Math.max(state.scale * factor, 0.05), MAX_SCALE);
   state.autoFit = false;
   state.offsetX = mx - before[0] * state.scale;
   state.offsetY = my - before[1] * state.scale;
@@ -1583,6 +1768,8 @@ wrap.addEventListener('wheel', (e) => {
 
 window.addEventListener('resize', resizeCanvas);
 document.getElementById('saveButton').onclick = () => saveDraft();
+document.getElementById('undoButton').onclick = () => undoEdit();
+document.getElementById('redoButton').onclick = () => redoEdit();
 
 // ---------- 供 Python 侧调用 ----------
 window.bagelEditor = {
@@ -1669,6 +1856,7 @@ window.bagelEditor = {
   // 用定位结果替换第 index 个点的坐标：只改草稿，保存后才写入文件。
   setPointPosition(index, layerName, globalXY) {
     if (!canEdit() || !state.draft || index < 0 || index >= state.draft.points.length || !globalXY) return;
+    recordHistory();
     const p = state.draft.points[index];
     p.x = Math.round(globalXY[0]);
     p.y = Math.round(globalXY[1]);
