@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 from one_dragon.utils.log_utils import log
 
+from ..screenshot import save_screenshot
 from ..vision.keycard_pick import (
+    FILTER_ALL_POS,
+    FILTER_KEYCARD_POS,
+    GRID_RECT,
     GRID_SCROLL_POS,
+    LOCK_CONFIRM_RECT,
     PAGE_CENTERS,
     TOOLTIP_SAFE_BUTTON_RECT,
     TOOLTIP_TITLE_RECT,
@@ -21,6 +27,7 @@ from ..vision.keycard_pick import (
     scroll_overlap,
     title_matches,
 )
+from ..vision.screen import read_area
 from ..vision.slots import safe_occupied_indices
 from ..vision.template import load_template
 from .operation import BagelOperation
@@ -32,17 +39,19 @@ if TYPE_CHECKING:
     from zzz_od.context.zzz_context import ZContext
 
 CANDIDATE_SCORE_MIN: float = 0.85
-"""有图标模板时，相似度不低于它的格子才点开核对。录屏里同款卡约 0.99，
-相近的 D 卡 0.965、红条卡 0.946，非门禁卡物品 0.7 左右。"""
-COUNT_SCORE_MIN: float = 0.98
+"""有图标模板时，相似度不低于它的格子才点开核对。实机同款卡 0.98 以上，
+同图案不同字母的 D 卡约 0.90，同字母不同底色的卡约 0.86，其他门禁卡更低。"""
+COUNT_SCORE_MIN: float = 0.95
 """按保留张数清点时，图标相似度不低于它才算一张本房间的卡；清点不点开浮窗。
-取在录屏里同款卡（约 0.99）与相近 D 卡（0.965）之间，实机尚未标定。"""
+取在实机同款卡（0.98 以上）与最接近的别款卡（约 0.90）之间。"""
 CANDIDATE_LIMIT: int = 8
 """每一屏最多点开核对的格子数；卡按种类扎堆，排在前面的足够覆盖。"""
 SCROLL_NOTCHES: int = 5
 """每次向下滚动的滚轮格数。"""
 SCROLL_TOP_NOTCHES: int = 20
 """切页后回到顶部时，每次向上滚动的滚轮格数。"""
+FILTER_CHECKS: int = 4
+"""切换类型筛选后最多点几次，直到仓库标题显示对应类型。"""
 PLACE_CHECKS: int = 4
 """点「放入安全箱」后最多看几帧确认安全箱第 1 格有了物品。"""
 
@@ -89,6 +98,16 @@ class BagelPickKeycard(BagelOperation):
         self.near_scores: list[float] = []
         """清点时相似度在候选线与计数线之间的格子，写进日志供标定。"""
         self.prev_strips: list[MatLike] = []
+        self.count_crops: list[MatLike] = []
+        """清点时每屏的网格截图；按保留张数结束时拼成一张存下，供核对数得对不对。"""
+        self.filter_clicks: int = 0
+        """已点「门禁卡」筛选的次数；标题显示门禁卡后不再点。"""
+        self.filter_ready: bool = False
+        self.lock_hit: bool = False
+        """刚点到锁定分页并关掉了解锁提示。"""
+        self.result: OperationRoundResult | None = None
+        """挑卡已有结论，正在把筛选切回「全部」；切回后返回它。"""
+        self.restore_clicks: int = 0
         self.to_top: bool = False
         self.top_signature: MatLike | None = None
         self.page: int = 0
@@ -108,6 +127,12 @@ class BagelPickKeycard(BagelOperation):
         self.counted = None
         self.near_scores = []
         self.prev_strips = []
+        self.count_crops = []
+        self.filter_clicks = 0
+        self.filter_ready = False
+        self.lock_hit = False
+        self.result = None
+        self.restore_clicks = 0
         self.to_top = False
         self.top_signature = None
         self.page = 0
@@ -173,9 +198,21 @@ class BagelPickKeycard(BagelOperation):
     @node_from(from_name='核对挑卡安全箱')
     @operation_node(name='查找门禁卡', timeout_seconds=420)
     def find_card(self) -> OperationRoundResult:
-        """一轮只做一步：翻页、滚动、清点一屏、点开一格或核对一格浮窗，便于暂停与超时。"""
+        """一轮只做一步：筛选、翻页、滚动、清点一屏、点开一格或核对一格浮窗，便于暂停与超时。"""
         if not self._at_warehouse():
+            if self._ocr(LOCK_CONFIRM_RECT).find('确认') >= 0:
+                self.ctx.controller.click(LOCK_CONFIRM_RECT.center, press_time=0.05)
+                self.lock_hit = True
+                return self.round_wait('分页未解锁，关闭解锁提示', wait=0.8)
             return self.round_retry('等待仓库画面', wait=0.5)
+        if self.result is not None:
+            return self._restore_filter()
+        if not self.filter_ready:
+            return self._apply_filter()
+        if self.lock_hit:
+            self.lock_hit = False
+            self.page_signature = None
+            return self._pages_done(f'第 {self.page + 1} 页未解锁')
         if self.placing_checks is not None:
             return self._check_placed()
         if self.pending is not None:
@@ -215,6 +252,41 @@ class BagelPickKeycard(BagelOperation):
             cells = [cell for cell in cells if cell.score >= CANDIDATE_SCORE_MIN][:CANDIDATE_LIMIT]
         return next((cell for cell in cells if cell.center.tuple() not in self.tried), None)
 
+    def _header(self) -> str:
+        return read_area(self.ctx, self.last_screenshot, '贝果-仓库', '仓库数量')
+
+    def _apply_filter(self) -> OperationRoundResult:
+        """点网格上方的「门禁卡」类型筛选，标题显示门禁卡后开始找。"""
+        header = self._header()
+        if '门禁' in header:
+            log.info('贝果挑卡：已切到门禁卡筛选（%s）', header)
+            self.filter_ready = True
+            return self.round_wait('已切到门禁卡筛选', wait=0.05)
+        if self.filter_clicks >= FILTER_CHECKS:
+            log.warning('贝果挑卡：点了 %s 次门禁卡筛选，标题仍是「%s」，按当前筛选继续找', self.filter_clicks, header)
+            self.filter_ready = True
+            return self.round_wait('门禁卡筛选未确认，继续', wait=0.05)
+        self.filter_clicks += 1
+        self.ctx.controller.click(FILTER_KEYCARD_POS, press_time=0.05)
+        return self.round_wait('点击门禁卡筛选', wait=0.8)
+
+    def _finish(self, result: OperationRoundResult) -> OperationRoundResult:
+        """记下结论，先把类型筛选切回「全部」再返回；结算仓库的数量读数依赖「全部」。"""
+        self.result = result
+        return self.round_wait('挑卡结束，切回全部筛选', wait=0.05)
+
+    def _restore_filter(self) -> OperationRoundResult:
+        header = self._header()
+        if '全部' in header or self.filter_clicks == 0 or self.restore_clicks >= FILTER_CHECKS:
+            if '全部' not in header and self.filter_clicks > 0:
+                log.warning('贝果挑卡：没能切回全部筛选，标题「%s」', header)
+            result = self.result
+            self.result = None
+            return result
+        self.restore_clicks += 1
+        self.ctx.controller.click(FILTER_ALL_POS, press_time=0.05)
+        return self.round_wait('点击全部筛选', wait=0.8)
+
     def _scroll_top(self) -> OperationRoundResult:
         """切页后向上滚到网格不再变化为止。"""
         signature = grid_signature(self.last_screenshot)
@@ -233,7 +305,8 @@ class BagelPickKeycard(BagelOperation):
         skip = scroll_overlap(self.prev_strips, strips) if self.prev_strips else 0
         fresh = set(rows[skip:])
         found = 0
-        for cell in grid_cells(self.last_screenshot, self.template_id):
+        cells = grid_cells(self.last_screenshot, self.template_id)
+        for cell in cells:
             if cell.center.y not in fresh:
                 continue
             if cell.score >= COUNT_SCORE_MIN:
@@ -241,8 +314,11 @@ class BagelPickKeycard(BagelOperation):
             elif cell.score >= CANDIDATE_SCORE_MIN:
                 self.near_scores.append(cell.score)
         self.counted = (self.counted or 0) + found
-        log.debug('贝果挑卡清点：第 %s 页本屏 %s 行（与上屏重叠 %s 行），数到 %s 张，累计 %s 张',
-                  self.page + 1, len(rows), skip, found, self.counted)
+        self.count_crops.append(
+            self.last_screenshot[GRID_RECT.y1:GRID_RECT.y2, GRID_RECT.x1:GRID_RECT.x2].copy())
+        top = '、'.join(f'{cell.score:.3f}' for cell in cells[:6]) or '无'
+        log.info('贝果挑卡清点：第 %s 页本屏 %s 行（与上屏重叠 %s 行）、%s 格有物，数到 %s 张，累计 %s 张；最高相似度 %s',
+                 self.page + 1, len(rows), skip, len(cells), found, self.counted, top)
         self.prev_strips = strips
         self.scroll_signature = grid_signature(self.last_screenshot)
         self.ctx.controller.scroll(SCROLL_NOTCHES, GRID_SCROLL_POS)
@@ -259,7 +335,10 @@ class BagelPickKeycard(BagelOperation):
                  reason, self.room_name, counted, COUNT_SCORE_MIN, self.reserve,
                  CANDIDATE_SCORE_MIN, COUNT_SCORE_MIN, near)
         if counted <= self.reserve:
-            return self.round_fail(self.STATUS_RESERVE)
+            if self.count_crops:
+                path = save_screenshot(np.vstack(self.count_crops), 'BagelKeycardCount')
+                log.info('贝果挑卡：清点的各屏网格已拼图保存：%s', path)
+            return self._finish(self.round_fail(self.STATUS_RESERVE))
         self.counting = False
         self.page = 0
         self.need_page_click = True
@@ -289,7 +368,7 @@ class BagelPickKeycard(BagelOperation):
         log.info('贝果挑卡：%s，共点开 %s 格，没有找到「%s」的门禁卡', reason, self.opened, self.room_name)
         if self.counted:
             return self.round_fail(f'清点到 {self.counted} 张却没挑到，停止并保留现场')
-        return self.round_fail(self.STATUS_NO_CARD)
+        return self._finish(self.round_fail(self.STATUS_NO_CARD))
 
     def _check_tooltip(self) -> OperationRoundResult:
         """核对浮窗标题和类型；对上就点「放入安全箱」。"""
@@ -313,7 +392,7 @@ class BagelPickKeycard(BagelOperation):
         occupied = safe_occupied_indices(self.last_screenshot)
         if occupied:
             log.info('贝果挑卡：「%s」的门禁卡已放入安全箱，共点开 %s 格', self.room_name, self.opened)
-            return self.round_success(self.STATUS_PICKED)
+            return self._finish(self.round_success(self.STATUS_PICKED))
         self.placing_checks = (self.placing_checks or 0) + 1
         if self.placing_checks >= PLACE_CHECKS:
             return self.round_fail('点了放入安全箱，安全箱仍为空，停止并保留现场')

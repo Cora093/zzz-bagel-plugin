@@ -1,6 +1,7 @@
 """仓库挑门禁卡用到的画面几何与识别。
 
-坐标取自用户录屏（1920×1080，城郊幻境高危备战仓库），录屏是有损编码。
+坐标取自用户录屏（1920×1080，城郊幻境高危备战仓库），录屏是有损编码；
+相似度和行比对阈值按实机清点拼图标定。
 挑卡时图标模板只给候选格排序，挑哪张以点开浮窗后 OCR 到的标题为准；
 按保留张数清点时只看图标，不点开。
 """
@@ -30,6 +31,12 @@ GRID_SCROLL_POS: Point = Point(1432, 570)
 """在网格上滚动鼠标滚轮的位置。"""
 PAGE_CENTERS: tuple[Point, ...] = tuple(Point(x, 143) for x in (1100, 1211, 1321, 1432, 1542, 1653, 1763))
 """仓库分页页签 1–7 的中心；录屏里 6、7 页是锁定的。"""
+FILTER_ALL_POS: Point = Point(1100, 50)
+"""网格上方类型筛选的「全部」。"""
+FILTER_KEYCARD_POS: Point = Point(1655, 50)
+"""类型筛选的「门禁卡」（门形图标），在「贵重物品」与「其他」之间。"""
+LOCK_CONFIRM_RECT: Rect = Rect(880, 635, 1090, 700)
+"""点锁定分页弹出「可通过以下途径解锁仓储枢纽容量」，这是它的「确认」按钮。"""
 
 TOOLTIP_TITLE_RECT: Rect = Rect(605, 228, 862, 268)
 """点开物品后浮窗的标题（物品名）。浮窗位置固定，不随点的格子移动。"""
@@ -49,10 +56,18 @@ _ROW_CENTER_OFFSET: int = -2
 """卡片底色中线到格心的偏移；录屏里底色 y≈404–481，格心取 442。"""
 _ICON_MARGIN: int = 10
 """图标排序时在模板四周多留的搜索边距，容许行心估计有几像素偏差。"""
-_STRIP_HALF_HEIGHT: int = 36
-"""比较滚动前后行内容时，每行取格心上下各这么多像素。"""
-_STRIP_DIFF_MAX: float = 6.0
-"""两行缩略灰度图的平均差不超过它，算同一行。"""
+_ICON_BLUR: float = 1.5
+"""整张卡面比对前的高斯模糊；不模糊时同款卡因所在行不同，相似度在 0.93–0.99 间浮动。"""
+_LETTER_RECT: tuple[int, int, int, int] = (12, 4, 32, 28)
+"""卡面左上的字母徽标在模板里的范围 (x1, y1, x2, y2)，各房间的卡在这里区分 A–E。"""
+_LETTER_BLUR: float = 1.0
+_LETTER_MARGIN: int = 6
+_STRIP_HALF_HEIGHT: int = 24
+"""比较滚动前后行内容时，每行取格心上下各这么多像素；滚到顶边的行会被裁掉一截，所以只取中段。"""
+_STRIP_SHIFT: int = 8
+"""比较两行时容许的上下错位；被裁掉一截的行，行心估计会偏几像素。"""
+_STRIP_DIFF_MAX: float = 6.5
+"""两行灰度图错位对齐后的平均差不超过它，算同一行。实机同一行 2–6，相邻不同行 7 以上。"""
 
 
 @dataclass(frozen=True)
@@ -109,31 +124,51 @@ def grid_cells(screen: MatLike, template_id: str | None) -> list[GridCell]:
 
 
 def _icon_score(screen: MatLike, center: Point, raw: MatLike | None) -> float:
-    """格子图标与模板的最大相关系数；在格心周围多留 ``_ICON_MARGIN`` 像素容许偏移。"""
+    """格子图标与模板的相似度：整张卡面与字母徽标两项取较低者。
+
+    整张卡面分得开底色和图案不同的卡，但分不开只差字母的卡（如 B 卡与 D 卡同为橙色跑人）；
+    字母徽标分得开字母，分不开同字母不同图案的卡。两项都高才算同款。
+    """
     if raw is None:
         return 0.0
     h, w = raw.shape[:2]
-    x1 = max(0, center.x - w // 2 - _ICON_MARGIN)
-    y1 = max(0, center.y - h // 2 - _ICON_MARGIN)
-    region = screen[y1:y1 + h + 2 * _ICON_MARGIN, x1:x1 + w + 2 * _ICON_MARGIN]
-    if region.shape[0] < h or region.shape[1] < w:
+    origin = Point(center.x - w // 2, center.y - h // 2)
+    whole = _match(screen, raw, origin, (0, 0, w, h), _ICON_MARGIN, _ICON_BLUR)
+    letter = _match(screen, raw, origin, _LETTER_RECT, _LETTER_MARGIN, _LETTER_BLUR)
+    return min(whole, letter)
+
+
+def _match(screen: MatLike, raw: MatLike, origin: Point, part: tuple[int, int, int, int],
+           margin: int, blur: float) -> float:
+    """模板的 ``part`` 部分在格子对应位置四周 ``margin`` 像素内的最大相关系数，两边先同样模糊。"""
+    x1, y1, x2, y2 = part
+    template = raw[y1:y2, x1:x2]
+    left = origin.x + x1 - margin
+    top = origin.y + y1 - margin
+    if left < 0 or top < 0:
         return 0.0
-    return float(cv2.matchTemplate(region, raw, cv2.TM_CCOEFF_NORMED).max())
+    region = screen[top:top + (y2 - y1) + 2 * margin, left:left + (x2 - x1) + 2 * margin]
+    if region.shape[0] < template.shape[0] or region.shape[1] < template.shape[1]:
+        return 0.0
+    template = cv2.GaussianBlur(template, (0, 0), blur)
+    region = cv2.GaussianBlur(region, (0, 0), blur)
+    return float(cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED).max())
 
 
 def row_strips(screen: MatLike, rows: list[int]) -> list[MatLike]:
-    """各行网格的缩略灰度图，用来认出滚动前后重复出现的行。"""
+    """各行网格的灰度图（上下多留 ``_STRIP_SHIFT`` 像素供错位对齐），用来认出滚动前后重复出现的行。"""
+    half = _STRIP_HALF_HEIGHT + _STRIP_SHIFT
     strips: list[MatLike] = []
     for y in rows:
-        crop = screen[y - _STRIP_HALF_HEIGHT:y + _STRIP_HALF_HEIGHT, GRID_RECT.x1:GRID_RECT.x2]
-        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-        strips.append(cv2.resize(gray, (gray.shape[1] // 4, gray.shape[0] // 4), interpolation=cv2.INTER_AREA))
+        crop = screen[y - half:y + half, GRID_RECT.x1:GRID_RECT.x2]
+        strips.append(cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY).astype(np.float32))
     return strips
 
 
 def scroll_overlap(before: list[MatLike], after: list[MatLike]) -> int:
     """滚动前最后 k 行与滚动后最前 k 行一一相同，返回最大的 k；没有重叠为 0。
 
+    滚动不按整行对齐，前后两屏同一行的行心可差十几像素，所以按各自的行心取条带再比。
     相邻几行内容完全相同时可能多认重叠、少数几张卡；少数只会让清点偏保守。
     """
     for k in range(min(len(before), len(after)), 0, -1):
@@ -143,9 +178,13 @@ def scroll_overlap(before: list[MatLike], after: list[MatLike]) -> int:
 
 
 def _strip_same(a: MatLike, b: MatLike) -> bool:
+    """a 的中段在 b 里上下错位不超过 ``_STRIP_SHIFT`` 时，最小平均差不超过阈值。"""
     if a.shape != b.shape:
         return False
-    return float(np.abs(a.astype(np.float32) - b.astype(np.float32)).mean()) <= _STRIP_DIFF_MAX
+    height = 2 * _STRIP_HALF_HEIGHT
+    core = a[_STRIP_SHIFT:_STRIP_SHIFT + height]
+    diff = min(float(np.abs(core - b[dy:dy + height]).mean()) for dy in range(2 * _STRIP_SHIFT + 1))
+    return diff <= _STRIP_DIFF_MAX
 
 
 def grid_signature(screen: MatLike) -> MatLike:
