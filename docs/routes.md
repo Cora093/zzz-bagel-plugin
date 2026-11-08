@@ -164,7 +164,7 @@ active_routes:
 
 出生识别、路线执行、网页编辑器共用同一套分层底图。应用流程见[流程总览](overview.md)，编辑操作见[网页路线编辑器](editor.md)。
 
-资源位于 `bagel/assets/game_data/map_locator/`，共 22 层：雅努斯幻境 10 层，城郊幻境 12 层。
+资源位于 `bagel/assets/game_data/map_locator/`，共 23 层：雅努斯幻境 10 层，城郊幻境 13 层。
 
 | 文件 | 用途 |
 | --- | --- |
