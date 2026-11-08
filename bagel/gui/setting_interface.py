@@ -7,11 +7,9 @@ from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
 from one_dragon_qt.services.app_setting.app_setting_provider import GroupIdMixin
 from one_dragon_qt.utils.config_utils import get_prop_adapter
-from one_dragon_qt.widgets.setting_card.combo_box_setting_card import (
-    ComboBoxSettingCard,
-)
 from one_dragon_qt.widgets.setting_card.switch_setting_card import SwitchSettingCard
 from one_dragon_qt.widgets.vertical_scroll_interface import VerticalScrollInterface
+from PySide6 import QtCore
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
@@ -25,6 +23,7 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
+    ComboBox,
     FluentIcon,
     FluentStyleSheet,
     IconWidget,
@@ -42,7 +41,7 @@ from qfluentwidgets import (
 from qfluentwidgets.components.widgets.card_widget import CardSeparator
 
 from .. import usage
-from ..config import BagelDifficulty
+from ..config import BagelDifficulty, BagelMap, BagelMode
 from ..const import APP_ID
 from ..defs import (
     CLEAN_MODE_CUSTOM,
@@ -50,9 +49,15 @@ from ..defs import (
     DEFAULT_CLEAN_STEPS,
     DIFFICULTY_HARD,
     DIFFICULTY_NORMAL,
+    MODE_DIFFICULTIES,
+    MODE_KEYCARD,
+    MODE_MAPS,
 )
+from ..route.route_store import BagelRouteConfigError, BagelRouteStore
+from ..vision.template import template_exists
 from .setting_widgets import (
     AutoSaleSwitch,
+    ChoiceSegment,
     CleanStepCard,
     CountSpinBox,
     SaleModeSelector,
@@ -213,17 +218,10 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             header.addWidget(editor_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
 
+        layout.addWidget(self._make_target_card(widget))
+        self.keycard_card: QWidget = self._make_keycard_card(widget)
+        layout.addWidget(self.keycard_card)
         layout.addWidget(self._make_end_conditions(widget))
-        self.difficulty_card: ComboBoxSettingCard = ComboBoxSettingCard(
-            icon=FluentIcon.GAME,
-            title='挑战难度',
-            content='选择进入的雅努斯幻境难度',
-            options_enum=BagelDifficulty,
-            parent=widget,
-        )
-        self.difficulty_card.setFixedHeight(88)
-        self.difficulty_card.value_changed.connect(self._on_difficulty_changed)
-        layout.addWidget(self.difficulty_card)
         self.blueprint_priority: SwitchSettingCard = SwitchSettingCard(
             icon=FluentIcon.DOCUMENT,
             title='蓝图优先',
@@ -236,6 +234,172 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         layout.addStretch(1)
         self._refresh_clean_options()
         return widget
+
+    def _make_target_card(self, parent: QWidget) -> QWidget:
+        """模式、地图、难度三行；当前模式用不到的选项置灰，原因写在右侧。"""
+        card = SimpleCardWidget(parent)
+        grid = QGridLayout(card)
+        grid.setContentsMargins(20, 16, 20, 16)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        grid.setColumnStretch(2, 1)
+        self.mode_segment: ChoiceSegment = ChoiceSegment(
+            [(item.value.value, item.value.ui_text) for item in BagelMode], '运行模式', card,
+        )
+        self.map_segment: ChoiceSegment = ChoiceSegment(
+            [(item.value.value, item.value.ui_text) for item in BagelMap], '地图', card,
+        )
+        self.difficulty_segment: ChoiceSegment = ChoiceSegment(
+            [(item.value.value, item.value.ui_text) for item in BagelDifficulty], '挑战难度', card,
+        )
+        self.map_hint: CaptionLabel = CaptionLabel(card)
+        self.difficulty_hint: CaptionLabel = CaptionLabel(card)
+        for row, (label, segment, hint) in enumerate((
+            ('模式', self.mode_segment, None),
+            ('地图', self.map_segment, self.map_hint),
+            ('难度', self.difficulty_segment, self.difficulty_hint),
+        )):
+            grid.addWidget(BodyLabel(label, card), row, 0)
+            grid.addWidget(segment, row, 1)
+            if hint is not None:
+                grid.addWidget(hint, row, 2)
+        self.mode_segment.currentItemChanged.connect(self._on_mode_changed)
+        self.map_segment.currentItemChanged.connect(self._on_map_changed)
+        self.difficulty_segment.currentItemChanged.connect(self._on_difficulty_changed)
+        return card
+
+    def _make_keycard_card(self, parent: QWidget) -> QWidget:
+        """开房卡专属：房间、路线就绪情况、保留张数。只在开房卡模式显示。"""
+        card = SimpleCardWidget(parent)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        room_row = QHBoxLayout()
+        room_row.setSpacing(12)
+        room_row.addWidget(BodyLabel('房间', card))
+        self.room_box: ComboBox = ComboBox(card)
+        self.room_box.setMinimumWidth(ChoiceSegment.WIDTH)
+        self.room_box.setAccessibleName('开房卡房间')
+        self.room_box.currentIndexChanged.connect(self._on_room_changed)
+        room_row.addWidget(self.room_box)
+        room_row.addStretch(1)
+        layout.addLayout(room_row)
+        self.keycard_status: CaptionLabel = CaptionLabel(card)
+        self.keycard_status.setWordWrap(True)
+        layout.addWidget(self.keycard_status)
+        reserve_row = QHBoxLayout()
+        reserve_row.setSpacing(8)
+        self.keycard_reserve: CountSpinBox = CountSpinBox(0, 999, card)
+        self.keycard_reserve.setAccessibleName('保留张数')
+        self.keycard_reserve.setToolTip('仓库里这个房间的卡不多于这个数就结束任务；0 表示用到没卡为止')
+        self.keycard_reserve.valueChanged.connect(lambda _value: self._refresh_keycard_status())
+        reserve_row.addWidget(BodyLabel('仓库保留', card))
+        reserve_row.addWidget(self.keycard_reserve)
+        reserve_row.addWidget(BodyLabel('张门禁卡', card))
+        reserve_row.addStretch(1)
+        layout.addLayout(reserve_row)
+        return card
+
+    def _refresh_target(self) -> None:
+        """按配置刷新三组按钮的选中、置灰和开房卡卡片的显示。"""
+        if self.config is None:
+            return
+        mode = self.config.mode
+        mode_name = BagelMode.KEYCARD.value.ui_text if mode == MODE_KEYCARD else BagelMode.RUN.value.ui_text
+        maps = MODE_MAPS[mode]
+        difficulties = MODE_DIFFICULTIES[mode]
+        self.mode_segment.set_value(mode)
+        self.map_segment.set_value(self.config.map_name)
+        self.difficulty_segment.set_value(self.config.run_difficulty)
+        map_reason = f'{mode_name}仅支持{"、".join(maps)}'
+        self.map_segment.set_allowed(maps, map_reason)
+        self.map_hint.setText(map_reason if len(maps) < len(BagelMap) else '')
+        difficulty_reason = f'{mode_name}固定{"、".join(difficulties)}'
+        self.difficulty_segment.set_allowed(difficulties, difficulty_reason)
+        self.difficulty_hint.setText(difficulty_reason if len(difficulties) < len(BagelDifficulty) else '')
+        self.keycard_card.setVisible(self.config.is_keycard)
+        if self.config.is_keycard:
+            self._refresh_keycard_status()
+
+    def _load_rooms(self) -> None:
+        """读房间清单填下拉框；未选房间时选第一个并保存。"""
+        if self.config is None:
+            return
+        try:
+            rooms = BagelRouteStore().load_catalog().rooms
+        except (OSError, ValueError, BagelRouteConfigError):
+            log.error('贝果设置页读取房间清单失败', exc_info=True)
+            rooms = []
+        with QtCore.QSignalBlocker(self.room_box):
+            self.room_box.clear()
+            for room in rooms:
+                self.room_box.addItem(room.name, userData=room.room_id)
+            ids = [room.room_id for room in rooms]
+            if self.config.keycard_room not in ids and ids and self.config.is_keycard:
+                self.config.keycard_room = ids[0]
+            if self.config.keycard_room in ids:
+                self.room_box.setCurrentIndex(ids.index(self.config.keycard_room))
+
+    def _refresh_keycard_status(self) -> None:
+        """一行写清房间能不能跑：可用的出生点，或缺什么。"""
+        if self.config is None:
+            return
+        room_id = self.config.keycard_room
+        problems: list[str] = []
+        spawns: list[str] = []
+        try:
+            catalog = BagelRouteStore().load_catalog()
+        except (OSError, ValueError, BagelRouteConfigError) as error:
+            catalog = None
+            problems.append(str(error))
+        if catalog is not None:
+            if catalog.room(room_id) is None:
+                problems.append('未选择房间')
+            else:
+                problem = catalog.keycard_problem(room_id)
+                if problem is not None:
+                    problems.append(problem)
+                selection = catalog.keycard_selection(room_id)
+                if selection.room is None or catalog.route(selection.room) is None:
+                    problems.append('未开启房间段')
+                spawns = [spawn.name for spawn in catalog.spawns if selection.entries.get(spawn.spawn_id) is not None]
+                if not spawns:
+                    problems.append('没有出生点开启入口段')
+        if self.config.keycard_reserve > 0 and not template_exists(self.config.keycard_template):
+            problems.append('没有卡图标，保留张数只能填 0')
+        if problems:
+            self.keycard_status.setText('；'.join(problems))
+            self.keycard_status.setTextColor('#a4262c', '#f0b6bb')
+        else:
+            self.keycard_status.setText(f'可用出生点：{"、".join(spawns)}')
+            self.keycard_status.setTextColor('#606060', '#a0a0a0')
+
+    def _on_mode_changed(self, mode: str) -> None:
+        """切换模式；地图不被新模式支持时跳到它的默认地图。"""
+        if not self._config_loaded or self.config is None:
+            return
+        self.config.mode = mode
+        if not self.config.map_supported:
+            self.config.map_name = MODE_MAPS[mode][0]
+        if self.config.is_keycard and not self.config.keycard_room:
+            self._load_rooms()
+        self._refresh_target()
+
+    def _on_map_changed(self, map_name: str) -> None:
+        """保存地图。"""
+        if not self._config_loaded or self.config is None:
+            return
+        self.config.map_name = map_name
+        self._refresh_target()
+
+    def _on_room_changed(self, index: int) -> None:
+        """保存房间并刷新就绪情况。"""
+        if not self._config_loaded or self.config is None or index < 0:
+            return
+        room_id = self.room_box.itemData(index)
+        if isinstance(room_id, str):
+            self.config.keycard_room = room_id
+        self._refresh_keycard_status()
 
     def _make_end_conditions(self, parent: QWidget) -> QWidget:
         """两个计数输入组成一句话。"""
@@ -256,10 +420,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         sentence.addWidget(BodyLabel('次后结束任务', card))
         sentence.addStretch(1)
         layout.addLayout(sentence)
-        hint = CaptionLabel(
-            '成功次数为0表示不限成功次数；全局或同一路线连续失败达到上限时结束。'
-            '成功入仓后，全局和本局路线的连续失败清零，其他路线的计数保留。', card,
-        )
+        hint = CaptionLabel('成功次数为 0 表示不限；全局或同一路线连续失败达到上限时结束。', card)
         hint.setWordWrap(True)
         layout.addWidget(hint)
         return card
@@ -531,6 +692,8 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             return
         editor.exec()
         editor.deleteLater()
+        if self.config is not None and self.config.is_keycard:
+            self._refresh_keycard_status()
 
     def on_interface_shown(self) -> None:
         """进入页面后绑定当前账号和应用组。"""
@@ -548,27 +711,32 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         self.blueprint_priority.init_with_adapter(
             get_prop_adapter(self.config, 'blueprint_priority'),
         )
-        self.difficulty_card.init_with_adapter(
-            get_prop_adapter(self.config, 'difficulty'),
-        )
+        if not self.config.map_supported:
+            # 手改配置写进了不支持的组合：改回该模式的默认地图。
+            log.warning('贝果设置：%s 不支持 %s，已改回 %s',
+                        self.config.mode, self.config.map_name, MODE_MAPS[self.config.mode][0])
+            self.config.map_name = MODE_MAPS[self.config.mode][0]
+        self._load_rooms()
+        self._refresh_target()
         for control, field in (
             (self.success_count, 'max_success_rounds'),
             (self.failure_count, 'max_consecutive_failures'),
             (self.sell_interval, 'sell_interval'),
             (self.auto_clean_switch, 'auto_clean_warehouse'),
             (self.clean_mode, 'clean_mode'),
+            (self.keycard_reserve, 'keycard_reserve'),
         ):
             control.setEnabled(False)
             control.init_with_adapter(get_prop_adapter(self.config, field))
         self._rebuild_clean_steps()
         self._config_loaded = True
 
-    def _on_difficulty_changed(self, index: int, value: object) -> None:
-        """用户在界面切换挑战难度时，若选择困难或常规，弹出 10 秒倒计时路线切换提醒。"""
-        if not self._config_loaded:
+    def _on_difficulty_changed(self, difficulty: str) -> None:
+        """保存跑刀难度；选困难或常规时弹出 10 秒倒计时路线切换提醒。开房卡固定高危，不写入。"""
+        if not self._config_loaded or self.config is None or self.config.is_keycard:
             return
-        diff = value if isinstance(value, str) else getattr(value, 'value', str(value))
-        if diff in (DIFFICULTY_HARD, DIFFICULTY_NORMAL):
+        self.config.difficulty = difficulty
+        if difficulty in (DIFFICULTY_HARD, DIFFICULTY_NORMAL):
             dialog = NonHazardNoticeDialog(self.window())
             dialog.exec()
             dialog.deleteLater()
