@@ -8,6 +8,7 @@
 - 这一次运行先在两个非支持出生点退出重开，第三次入场的出生点受支持，于是完成采集、主动退出、入仓，并按自定义方案分两步出售。
 - 所有图都是 1920×1080 原生分辨率，WebP q90 有损，只能作布局参考和区域坐标核对，不能作为模板裁剪源。
 - 右下角 UID 已遮挡。
+- 例外：`hud_backpack.webp` 是另一次单独截取的整屏图，无损 WebP，可作背包页坐标与识别的离线依据。
 
 ## 画面
 
@@ -27,6 +28,7 @@
 | 贝果-局内 | [search_weapon_box.webp](search_weapon_box.webp) | 武备箱搜查面板，产出价值 31500，右下「全部拾取」 | [搜查面板可操作性](../../container.md#搜查面板可操作性) |
 | 贝果-局内 | [safe_unlock_calibration.webp](safe_unlock_calibration.webp) | 电子保险箱信号校准，进度 1/4，中央显示 GOOD | [容器交互与解锁](../../container.md#容器交互与解锁) |
 | 贝果-局内 | [search_electronic_safe.webp](search_electronic_safe.webp) | 电子保险箱搜查面板，左侧安全箱已有 2 件 | [收集与对换](../../container.md#收集与对换) |
+| 贝果-局内 | [hud_backpack.webp](hud_backpack.webp) | 局内按 B 打开的背包页：背包 4/20（S、A 材料各 2 件），安全箱 5 格全空，左下「R 整理」。无损，单独采集，不属于上述那次运行 | [退出前整理背包](../../settle.md#退出前整理背包) |
 | 贝果-局内 | [pause_menu.webp](pause_menu.webp) | 暂停菜单「战况」页，底栏脱离卡死、暂离、退出 | [退出与结算提示](../../settle.md#退出与结算提示) |
 | 贝果-退出确认 | [exit_confirm.webp](exit_confirm.webp) | 「是否确认退出战斗？」，副文说明退出后仅保留安全箱内物资 | [退出与结算提示](../../settle.md#退出与结算提示) |
 | 贝果-结算 | [result_exit_empty.webp](result_exit_empty.webp) | 非支持出生点主动退出：标题 DEFEAT，收益 0，时长 00:00:02 | [退出与结算提示](../../settle.md#退出与结算提示) |

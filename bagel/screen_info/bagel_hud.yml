@@ -213,4 +213,17 @@ area_list:
   - 430
   - 1640
   - 760
-
+- area_name: 背包页签
+  pc_rect:
+  - 200
+  - 28
+  - 380
+  - 75
+  text: 背包
+  lcs_percent: 0.7
+- area_name: 背包格数
+  pc_rect:
+  - 250
+  - 356
+  - 390
+  - 390

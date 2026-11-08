@@ -22,6 +22,7 @@ from .operation.operation import (
     is_bagel_result,
     release_flow_inputs,
 )
+from .operation.organize_backpack import BagelOrganizeBackpack
 from .operation.pick_keycard import BagelPickKeycard
 from .operation.settle import BagelSettleWarehouse
 from .route import route_stats
@@ -611,8 +612,17 @@ class BagelApp(ZApplication):
     @node_from(from_name='执行局内流程', status=BagelRouteWalker.STATUS_DONE)
     @operation_node(name='正常局退出', screenshot_before_round=False)
     def exit_after_success(self) -> OperationRoundResult:
-        """路线完整结束后退出到仓库；退出失败时不入仓或计成功。"""
+        """路线完整结束后先整理背包再退出到仓库；退出失败时不入仓或计成功。
+
+        退出只保留安全箱物资，整理把背包里更值钱的物品换进安全箱。
+        整理失败不拦退出，安全箱里已有的物资不受影响。
+        """
         release_flow_inputs(self.ctx)
+        organized = BagelOrganizeBackpack(
+            self.ctx, blueprint_priority=self.config.blueprint_priority, ledger=self._round_ledger,
+        ).execute()
+        if not organized.success:
+            log.warning('贝果整理背包未完成：%s；照常退出', organized.status)
         self._record_round_income(read_hud=True)
         operation = BagelExit(self.ctx)
         result = operation.execute()
