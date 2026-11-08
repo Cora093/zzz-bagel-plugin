@@ -717,6 +717,8 @@ class BagelRouteWalker(BagelOperation):
             spawn: 已确认的出生点；单独试跑房间段时是房间入口。
         """
         self.spawn = spawn
+        # 一局只在出生点所在地图里：锁定后，界面挡住小地图时不会误锁到其它地图。
+        self.locator.lock_map(spawn.map_id)
         if self.trial_route is not None and self.trial_route.is_room_segment:
             route = self.trial_route
         elif self.trial_route is not None:

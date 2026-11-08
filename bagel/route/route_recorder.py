@@ -199,6 +199,8 @@ class BagelPointRecorder:
             self.on_status('正在载入底图')
             locators = load_map_locators()
             self._locator = MultiMapLocator(locators)
+            # 录制只在出生点所在地图里：开着面板时不会误锁到其它地图。
+            self._locator.lock_map(self.spawn.map_id)
             self._layer_paths = {locator.name: locator.image_path for locator in locators}
             self.on_status('准备切到游戏')
             controller.active_window()
