@@ -435,6 +435,8 @@ class BagelRouteWalker(BagelOperation):
         """房卡门左右试探已执行到第几步；没在试探时为 None。"""
         self.card_verify_since: float | None = None
         """判定刷完松手的时刻；松手后确认刷卡结果期间不为 None。"""
+        self.card_swiped: bool = False
+        """本局是否已经刷开房卡门；刷开后门禁卡已用掉，结算时据此决定卡的去留。"""
         self.position: tuple[float, float] | None = None
         self.last_map_id: str | None = None
         self.locate_misses: int = 0
@@ -1082,6 +1084,7 @@ class BagelRouteWalker(BagelOperation):
         card = self._card_entry()
         if card is None:
             if self.card_held:
+                self.card_swiped = True
                 self._reset_point_state()
                 return self.round_success('已完成')
             return self._wait_card_prompt(now, '刷卡提示消失')
@@ -1158,6 +1161,7 @@ class BagelRouteWalker(BagelOperation):
                 log.info('贝果刷卡松手后 F 键仍对准刷卡条目，判定没刷上，重按：%s', text)
                 return self.round_wait('刷卡没刷上，重按', wait=0.1)
         log.info('贝果刷卡完成：%s', '刷卡提示已消失' if card is None else f'F 键已消失，条目 {card[1]}')
+        self.card_swiped = True
         self._reset_point_state()
         return self.round_success('已完成')
 
