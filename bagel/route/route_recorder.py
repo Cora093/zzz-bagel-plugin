@@ -31,6 +31,7 @@ from .route_model import (
     BEACON,
     KIND_LABELS,
     POINT_KINDS,
+    BagelKeycardTag,
     BagelRoute,
     BagelRoutePoint,
     BagelSpawnPoint,
@@ -122,12 +123,14 @@ class BagelPointRecorder:
         on_position: Callable[[tuple[float, float] | None], None] | None = None,
         on_angles: Callable[[float | None, float | None], None] | None = None,
         on_stats: Callable[[dict[str, Any]], None] | None = None,
+        keycard: BagelKeycardTag | None = None,
     ) -> None:
         """
         Args:
             ctx: 已初始化的上下文。
             name: 保存时使用的路线显示名称。
-            spawn: 路线绑定的出生点，首个点必须在它的识别半径内。
+            spawn: 路线绑定的出生点，首个点必须在它的识别半径内。录制开房卡房间段时
+                传房间入口（``BagelKeycardRoom.as_spawn``）。
             activate: 保存后是否开启这条路线。
             on_point: 每打下一个点回调一次。
             on_undo: 每删掉一个点回调一次。
@@ -136,11 +139,13 @@ class BagelPointRecorder:
             on_position: 每帧回调层内坐标，定位失败时为 None。
             on_angles: 每帧回调（镜头朝向, 角色朝向），识别不出时为 None。
             on_stats: 每帧回调定位统计，字段见 ``_build_stats``。
+            keycard: 开房卡段标记；None 表示录制跑刀路线。
         """
         self.ctx: ZContext = ctx
         self.name: str = name
         self.spawn: BagelSpawnPoint = spawn
         self.activate: bool = activate
+        self.keycard: BagelKeycardTag | None = keycard
         self.on_point: Callable[[BagelRoutePoint], None] = on_point or (lambda _p: None)
         self.on_undo: Callable[[], None] = on_undo or (lambda: None)
         self.on_status: Callable[[str], None] = on_status or (lambda _t: None)
@@ -216,7 +221,7 @@ class BagelPointRecorder:
         try:
             self.saved_route = BagelRouteStore().create_custom_route(
                 self.name, self.spawn.spawn_id, points=list(self.route.points),
-                activate=self.activate, started_at=self.route.started_at,
+                activate=self.activate, started_at=self.route.started_at, keycard=self.keycard,
             )
         except (BagelRouteConfigError, ValueError) as error:
             log.error('贝果路线打点保存失败', exc_info=True)

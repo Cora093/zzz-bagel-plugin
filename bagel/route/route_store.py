@@ -4,9 +4,11 @@
 - ``assets/game_data/bagel/spawn_points.yml``：出生点清单。
 - ``assets/game_data/bagel/routes/<标识>.sample.route.json``：默认路线，内容只读。
 - ``plugin_data/<APP_ID>/routes/custom_<标识>.route.json``：自定义路线。
-- ``plugin_data/<APP_ID>/route_settings.yml``：每个出生点当前开启的路线。
+- ``assets/game_data/bagel/keycard_rooms.yml``：开房卡房间清单。
+- ``plugin_data/<APP_ID>/route_settings.yml``：每个出生点当前开启的跑刀路线，
+  以及每个房间当前开启的开房卡房间段和各出生点的入口段。
 
-开启选择每个出生点只存一个路线引用或 ``null``，天然保证同一出生点最多开启一条。
+开启选择每个位置只存一个路线引用或 ``null``，天然保证同一位置最多开启一条。
 路线文件不保存开关状态。界面、录制器和执行器都通过本模块读写，不自行拼路径。
 """
 
@@ -26,19 +28,29 @@ from one_dragon.utils.log_utils import log
 
 from ..defs import PLUGIN_DIR, get_plugin_data_dir
 from .route_model import (
+    SEGMENT_ENTRY,
+    SEGMENT_ROOM,
     SOURCE_CUSTOM,
     SOURCE_DEFAULT,
+    BagelKeycardRoom,
+    BagelKeycardTag,
     BagelRoute,
     BagelRoutePoint,
     BagelRouteRef,
     BagelSpawnPoint,
+    check_entry_segment,
+    check_room_segment,
     check_route_start,
+    join_keycard_route,
     now_iso,
     validate_route_name,
 )
 
 SPAWN_FILE: tuple[str, ...] = ('assets', 'game_data', 'bagel', 'spawn_points.yml')
 """出生点清单相对插件目录的路径。"""
+
+ROOM_FILE: tuple[str, ...] = ('assets', 'game_data', 'bagel', 'keycard_rooms.yml')
+"""开房卡房间清单相对插件目录的路径。"""
 
 SAMPLE_DIR: tuple[str, ...] = ('assets', 'game_data', 'bagel', 'routes')
 """默认路线目录相对插件目录的路径；默认路线随插件分发，不依赖工作目录。"""
@@ -63,31 +75,145 @@ class BagelRouteConfigError(Exception):
 
 
 @dataclass
+class BagelKeycardSelection:
+    """一个房间的开房卡开启选择：一条房间段，加每个出生点一条入口段。"""
+
+    room: BagelRouteRef | None = None
+    """当前开启的房间段；None 表示该房间没有可用房间段。"""
+    entries: dict[str, BagelRouteRef | None] = field(default_factory=dict)
+    """出生点标识 → 当前开启的入口段；缺少记录按关闭处理。"""
+
+    def to_json(self) -> dict[str, Any]:
+        """写入配置的形式。"""
+        return {
+            'room': None if self.room is None else self.room.to_json(),
+            'entries': {
+                spawn_id: None if ref is None else ref.to_json()
+                for spawn_id, ref in self.entries.items()
+            },
+        }
+
+    @classmethod
+    def from_json(cls, data: Any) -> BagelKeycardSelection:
+        """从配置还原。
+
+        Raises:
+            ValueError: 结构不对或引用无效。
+        """
+        if not isinstance(data, dict):
+            raise ValueError('房间开启选择不是映射')
+        room = data.get('room')
+        entries = data.get('entries') or {}
+        if not isinstance(entries, dict):
+            raise ValueError('entries 不是映射')
+        return cls(
+            room=None if room is None else BagelRouteRef.from_json(room),
+            entries={
+                str(spawn_id): None if ref is None else BagelRouteRef.from_json(ref)
+                for spawn_id, ref in entries.items()
+            },
+        )
+
+
+@dataclass
 class BagelRouteCatalog:
-    """一次加载得到的全部出生点、路线与开启选择。"""
+    """一次加载得到的全部出生点、房间、路线与开启选择。"""
 
     spawns: list[BagelSpawnPoint]
     routes: list[BagelRoute]
     active: dict[str, BagelRouteRef | None]
-    """出生点标识 → 当前开启的路线引用；缺少记录按关闭处理。"""
+    """出生点标识 → 当前开启的跑刀路线引用；缺少记录按关闭处理。"""
     errors: list[str] = field(default_factory=list)
     """加载时跳过的损坏文件等问题，供界面提示。"""
+    rooms: list[BagelKeycardRoom] = field(default_factory=list)
+    """已登记的开房卡房间。"""
+    keycard: dict[str, BagelKeycardSelection] = field(default_factory=dict)
+    """房间标识 → 开房卡开启选择；缺少记录按全部关闭处理。"""
 
     def spawn(self, spawn_id: str) -> BagelSpawnPoint | None:
         """按标识找出生点。"""
         return next((item for item in self.spawns if item.spawn_id == spawn_id), None)
+
+    def room(self, room_id: str) -> BagelKeycardRoom | None:
+        """按标识找房间。"""
+        return next((item for item in self.rooms if item.room_id == room_id), None)
 
     def route(self, ref: BagelRouteRef) -> BagelRoute | None:
         """按引用找路线。"""
         return next((item for item in self.routes if item.ref == ref), None)
 
     def active_ref(self, spawn_id: str) -> BagelRouteRef | None:
-        """某个出生点当前开启的路线引用。"""
+        """某个出生点当前开启的跑刀路线引用。"""
         return self.active.get(spawn_id)
 
+    def keycard_selection(self, room_id: str) -> BagelKeycardSelection:
+        """某个房间的开房卡开启选择；没有记录时返回空选择（不写回）。"""
+        return self.keycard.get(room_id) or BagelKeycardSelection()
+
     def is_active(self, route: BagelRoute) -> bool:
-        """路线是否为所绑定出生点当前开启的路线。"""
-        return self.active.get(route.spawn_id) == route.ref
+        """路线是否处于开启状态。
+
+        跑刀路线看出生点的开启选择；开房卡的段看所属房间的开启选择。
+        """
+        if route.keycard is None:
+            return self.active.get(route.spawn_id) == route.ref
+        selection = self.keycard_selection(route.keycard.room_id)
+        if route.keycard.segment == SEGMENT_ROOM:
+            return selection.room == route.ref
+        return selection.entries.get(route.spawn_id) == route.ref
+
+    def segment_problem(self, route: BagelRoute) -> str | None:
+        """检查一条开房卡段本身能否使用：房间已登记、首末点能接上。
+
+        Returns:
+            问题原因；不是开房卡段或没有问题时返回 None。
+        """
+        if route.keycard is None:
+            return None
+        room = self.room(route.keycard.room_id)
+        if room is None:
+            return f'「{route.name}」所属房间 {route.keycard.room_id} 未登记'
+        if route.keycard.segment == SEGMENT_ROOM:
+            problem = check_room_segment(route, room)
+        else:
+            spawn = self.spawn(route.spawn_id)
+            if spawn is None:
+                return f'「{route.name}」绑定的出生点 {route.spawn_id} 未登记'
+            problem = check_route_start(route, spawn) or check_entry_segment(route, room)
+        return None if problem is None else f'「{route.name}」{problem}'
+
+    def keycard_problem(self, room_id: str) -> str | None:
+        """检查某个房间的开房卡开启选择能否执行。
+
+        Returns:
+            选择无效时的原因；全部关闭或有效时返回 None。
+        """
+        room = self.room(room_id)
+        if room is None:
+            return f'房间 {room_id} 未登记'
+        selection = self.keycard_selection(room_id)
+        problems: list[str] = []
+        refs: list[tuple[BagelRouteRef, str, str]] = []
+        if selection.room is not None:
+            refs.append((selection.room, SEGMENT_ROOM, ''))
+        refs.extend((ref, SEGMENT_ENTRY, spawn_id) for spawn_id, ref in selection.entries.items() if ref is not None)
+        for ref, segment, spawn_id in refs:
+            route = self.route(ref)
+            if route is None:
+                problems.append(f'{room.name}开启的路线 {ref} 不存在或已损坏')
+                continue
+            if route.keycard is None or route.keycard.room_id != room_id or route.keycard.segment != segment:
+                problems.append(f'「{route.name}」不是{room.name}的{"房间段" if segment == SEGMENT_ROOM else "入口段"}')
+                continue
+            if segment == SEGMENT_ENTRY and route.spawn_id != spawn_id:
+                problems.append(f'「{route.name}」绑定的出生点与开启位置不一致')
+                continue
+            problem = self.segment_problem(route)
+            if problem is not None:
+                problems.append(problem)
+        if selection.room is None and any(ref is not None for ref in selection.entries.values()):
+            problems.append(f'{room.name}开启了入口段，但没有开启房间段')
+        return '；'.join(problems) if problems else None
 
     def selection_problem(self, spawn_id: str) -> str | None:
         """检查某个出生点的开启选择能否执行。
@@ -120,6 +246,28 @@ class BagelRouteCatalog:
         """开启了路线的出生点个数。"""
         return sum(1 for ref in self.active.values() if ref is not None)
 
+    def keycard_route(self, room_id: str, spawn_id: str) -> BagelRoute | None:
+        """按开启选择拼出某个出生点去某个房间的完整路线。
+
+        Returns:
+            拼好的路线；该出生点没有开启入口段时返回 None（调用方按「出生点不支持」退出重开）。
+
+        Raises:
+            BagelRouteConfigError: 房间未登记、房间段未开启或任一段无效。
+        """
+        problem = self.keycard_problem(room_id)
+        if problem is not None:
+            raise BagelRouteConfigError(problem)
+        selection = self.keycard_selection(room_id)
+        entry_ref = selection.entries.get(spawn_id)
+        if entry_ref is None:
+            return None
+        entry = self.route(entry_ref)
+        room_route = self.route(selection.room) if selection.room is not None else None
+        if entry is None or room_route is None:
+            raise BagelRouteConfigError('开房卡路线引用失效')
+        return join_keycard_route(entry, room_route)
+
 
 class BagelRouteStore:
     """路线文件与开启选择的读写入口。"""
@@ -134,6 +282,7 @@ class BagelRouteStore:
         self.sample_dir: Path = PLUGIN_DIR.joinpath(*SAMPLE_DIR)
         self.settings_path: Path = self.data_dir / 'route_settings.yml'
         self.spawn_path: Path = PLUGIN_DIR.joinpath(*SPAWN_FILE)
+        self.room_path: Path = PLUGIN_DIR.joinpath(*ROOM_FILE)
 
     # ---------- 读取 ----------
 
@@ -163,6 +312,34 @@ class BagelRouteStore:
         if len(set(ids)) != len(ids):
             raise BagelRouteConfigError('出生点清单中有重复标识')
         return spawns
+
+    def load_rooms(self) -> list[BagelKeycardRoom]:
+        """读出开房卡房间清单；文件不存在时返回空列表。
+
+        Raises:
+            BagelRouteConfigError: 清单格式错误或标识重复。
+        """
+        if not self.room_path.is_file():
+            return []
+        try:
+            data = yaml.safe_load(self.room_path.read_text(encoding='utf-8'))
+            rooms = [
+                BagelKeycardRoom(
+                    room_id=str(item['id']),
+                    name=str(item['name']),
+                    layer=str(item['layer']),
+                    x=float(item['x']),
+                    y=float(item['y']),
+                    radius=float(item['radius']),
+                )
+                for item in (data or {}).get('rooms') or []
+            ]
+        except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError, AttributeError) as error:
+            raise BagelRouteConfigError(f'开房卡房间清单无法读取：{error}') from error
+        ids = [item.room_id for item in rooms]
+        if len(set(ids)) != len(ids):
+            raise BagelRouteConfigError('开房卡房间清单中有重复标识')
+        return rooms
 
     def load_routes(self) -> tuple[list[BagelRoute], list[str]]:
         """读出默认与自定义路线，损坏的文件跳过并记录原因。
@@ -194,17 +371,22 @@ class BagelRouteStore:
             BagelRouteConfigError: 出生点清单或开启选择配置损坏。
         """
         spawns = self.load_spawns()
+        rooms = self.load_rooms()
         self._ensure_settings(spawns)
         routes, errors = self.load_routes()
-        active = self._read_settings()
+        active, keycard = self._read_settings()
         # 已登记但没有记录的出生点按关闭处理；新发布的默认路线不抢占用户选择。
         for spawn in spawns:
             active.setdefault(spawn.spawn_id, None)
-        catalog = BagelRouteCatalog(spawns, routes, active, errors)
+        catalog = BagelRouteCatalog(spawns, routes, active, errors, rooms, keycard)
         for spawn_id in list(active):
             if catalog.spawn(spawn_id) is None:
                 errors.append(f'开启选择中的出生点 {spawn_id} 未登记，已忽略')
                 del active[spawn_id]
+        for room_id in list(keycard):
+            if catalog.room(room_id) is None:
+                errors.append(f'开房卡开启选择中的房间 {room_id} 未登记，已忽略')
+                del keycard[room_id]
         return catalog
 
     def load_route(self, ref: BagelRouteRef) -> BagelRoute:
@@ -240,6 +422,44 @@ class BagelRouteStore:
         route = catalog.route(ref)
         return route.copy() if route is not None else None
 
+    def keycard_route(self, room_id: str, spawn_id: str) -> BagelRoute | None:
+        """读出某个出生点去某个房间的开房卡路线（入口段 + 房间段）。
+
+        Returns:
+            拼好的路线；该出生点没有开启入口段时返回 None。
+
+        Raises:
+            BagelRouteConfigError: 配置损坏，或开启的段无效。
+        """
+        return self.load_catalog().keycard_route(room_id, spawn_id)
+
+    def trial_route(self, ref: BagelRouteRef) -> BagelRoute:
+        """读出试跑用的路线。
+
+        入口段单独走到房间入口就停，没有意义，所以试跑入口段时接上该房间当前开启的
+        房间段一起跑；房间段与跑刀路线原样返回。
+
+        Raises:
+            BagelRouteConfigError: 路线不存在，或入口段所属房间没有可用房间段。
+        """
+        route = self.load_route(ref)
+        if not route.is_entry_segment or route.keycard is None:
+            return route
+        catalog = self.load_catalog()
+        problem = catalog.segment_problem(route)
+        if problem is not None:
+            raise BagelRouteConfigError(problem)
+        room_id = route.keycard.room_id
+        room_ref = catalog.keycard_selection(room_id).room
+        room_route = catalog.route(room_ref) if room_ref is not None else None
+        if room_route is None:
+            room = catalog.room(room_id)
+            raise BagelRouteConfigError(f'{room.name if room else room_id}没有开启房间段，入口段无法单独试跑')
+        problem = catalog.segment_problem(room_route)
+        if problem is not None:
+            raise BagelRouteConfigError(problem)
+        return join_keycard_route(route, room_route)
+
     # ---------- 写入 ----------
 
     def set_active_route(self, spawn_id: str, ref: BagelRouteRef | None) -> None:
@@ -255,42 +475,95 @@ class BagelRouteStore:
             route = catalog.route(ref)
             if route is None:
                 raise BagelRouteConfigError(f'路线不存在：{ref}')
+            if route.keycard is not None:
+                raise BagelRouteConfigError(f'「{route.name}」是开房卡{route.keycard.label}，不能作为跑刀路线开启')
             if route.spawn_id != spawn_id:
                 raise BagelRouteConfigError(f'路线「{route.name}」绑定的是其他出生点')
             problem = check_route_start(route, catalog.spawn(spawn_id))
             if problem is not None:
                 raise BagelRouteConfigError(f'路线「{route.name}」无法开启：{problem}')
         catalog.active[spawn_id] = ref
-        self._write_settings(catalog.active)
+        self._write_settings(catalog.active, catalog.keycard)
+
+    def set_keycard_route(self, room_id: str, spawn_id: str | None, ref: BagelRouteRef | None) -> None:
+        """设置某个房间的开房卡开启选择。
+
+        Args:
+            room_id: 房间标识。
+            spawn_id: None 表示设置房间段；否则设置该出生点的入口段。
+            ref: 要开启的段；None 表示关闭该位置。
+
+        Raises:
+            BagelRouteConfigError: 房间或出生点未登记、段类型不符或段本身无法使用。
+        """
+        catalog = self.load_catalog()
+        room = catalog.room(room_id)
+        if room is None:
+            raise BagelRouteConfigError(f'房间未登记：{room_id}')
+        if spawn_id is not None and catalog.spawn(spawn_id) is None:
+            raise BagelRouteConfigError(f'出生点未登记：{spawn_id}')
+        segment = SEGMENT_ROOM if spawn_id is None else SEGMENT_ENTRY
+        if ref is not None:
+            route = catalog.route(ref)
+            if route is None:
+                raise BagelRouteConfigError(f'路线不存在：{ref}')
+            label = '房间段' if segment == SEGMENT_ROOM else '入口段'
+            if route.keycard is None or route.keycard.room_id != room_id or route.keycard.segment != segment:
+                raise BagelRouteConfigError(f'「{route.name}」不是{room.name}的{label}')
+            if spawn_id is not None and route.spawn_id != spawn_id:
+                raise BagelRouteConfigError(f'入口段「{route.name}」绑定的是其他出生点')
+            problem = catalog.segment_problem(route)
+            if problem is not None:
+                raise BagelRouteConfigError(f'无法开启：{problem}')
+        selection = catalog.keycard.setdefault(room_id, BagelKeycardSelection())
+        if spawn_id is None:
+            selection.room = ref
+        else:
+            selection.entries[spawn_id] = ref
+        self._write_settings(catalog.active, catalog.keycard)
 
     def create_custom_route(
         self, name: str, spawn_id: str,
         points: list[BagelRoutePoint] | None = None, activate: bool = False,
-        started_at: str | None = None,
+        started_at: str | None = None, keycard: BagelKeycardTag | None = None,
     ) -> BagelRoute:
         """新建一条自定义路线。
 
         Args:
             name: 显示名称，不能与已有路线重名。
-            spawn_id: 绑定的出生点。
-            points: 点位；None 表示只放一个位于出生点坐标的途径点。
-            activate: 创建后是否开启，开启会替换该出生点原来开启的路线。
+            spawn_id: 绑定的出生点；开房卡房间段不绑定出生点，传空串。
+            points: 点位；None 表示只放一个起点途径点：跑刀路线与入口段放在出生点，
+                房间段放在房间入口。
+            activate: 创建后是否开启，开启会替换同一位置原来开启的路线。
+                开房卡的段要能接上房间入口才开得了，所以通常在补完点位后再开启。
             started_at: 路线开始时间；None 表示当前时间。
+            keycard: 开房卡段标记；None 表示跑刀路线。
 
         Returns:
             已保存的路线。
 
         Raises:
             ValueError: 名称无效或重名。
-            BagelRouteConfigError: 出生点未登记或写入失败。
+            BagelRouteConfigError: 出生点或房间未登记、写入失败。
         """
         catalog = self.load_catalog()
-        spawn = catalog.spawn(spawn_id)
-        if spawn is None:
+        anchor: BagelSpawnPoint | None
+        if keycard is not None:
+            room = catalog.room(keycard.room_id)
+            if room is None:
+                raise BagelRouteConfigError(f'房间未登记：{keycard.room_id}')
+            if keycard.segment == SEGMENT_ROOM:
+                spawn_id = ''
+                anchor = room.as_spawn()
+            else:
+                anchor = catalog.spawn(spawn_id)
+        else:
+            anchor = catalog.spawn(spawn_id)
+        if anchor is None:
             raise BagelRouteConfigError(f'出生点未登记：{spawn_id}')
         name = self._unique_name_check(catalog, name)
         if points is None:
-            points = [BagelRoutePoint(round(spawn.x), round(spawn.y), spawn.layer, 'beacon')]
+            points = [BagelRoutePoint(round(anchor.x), round(anchor.y), anchor.layer, 'beacon')]
         route = BagelRoute(
             route_id=self._new_custom_id(),
             name=name,
@@ -299,10 +572,20 @@ class BagelRouteStore:
             started_at=started_at or now_iso(),
             ended_at=now_iso(),
             points=list(points),
+            keycard=keycard,
         )
         self._write_route(route)
         if activate:
-            self.set_active_route(spawn_id, route.ref)
+            if keycard is None:
+                self.set_active_route(spawn_id, route.ref)
+            else:
+                # 开房卡的段要能接上房间入口才开得了；开不了时保留路线、保持关闭，不让保存失败。
+                try:
+                    self.set_keycard_route(
+                        keycard.room_id, None if keycard.segment == SEGMENT_ROOM else spawn_id, route.ref,
+                    )
+                except BagelRouteConfigError as error:
+                    log.warning('贝果开房卡%s「%s」已保存，但未开启：%s', keycard.label, route.name, error)
         return route
 
     def copy_route(self, ref: BagelRouteRef, name: str) -> BagelRoute:
@@ -313,7 +596,9 @@ class BagelRouteStore:
             BagelRouteConfigError: 源路线不存在或写入失败。
         """
         source = self.load_route(ref)
-        return self.create_custom_route(name, source.spawn_id, points=list(source.points))
+        return self.create_custom_route(
+            name, source.spawn_id, points=list(source.points), keycard=source.keycard,
+        )
 
     def save_custom_route(self, route_id: str, points: list[BagelRoutePoint]) -> BagelRoute:
         """保存自定义路线的节点；默认路线拒绝写入。
@@ -324,9 +609,7 @@ class BagelRouteStore:
         """
         ref = self._custom_ref(route_id)
         route = self.load_route(ref)
-        spawn = next((item for item in self.load_spawns() if item.spawn_id == route.spawn_id), None)
-        if spawn is None:
-            raise BagelRouteConfigError(f'路线绑定的出生点未登记：{route.spawn_id}')
+        spawn = self._start_anchor(route)
         route.points = list(points)
         problem = check_route_start(route, spawn)
         if problem is not None:
@@ -370,8 +653,16 @@ class BagelRouteStore:
             if active == ref:
                 catalog.active[spawn_id] = None
                 changed = True
+        for selection in catalog.keycard.values():
+            if selection.room == ref:
+                selection.room = None
+                changed = True
+            for spawn_id, active in selection.entries.items():
+                if active == ref:
+                    selection.entries[spawn_id] = None
+                    changed = True
         if changed:
-            self._write_settings(catalog.active)
+            self._write_settings(catalog.active, catalog.keycard)
         try:
             path.unlink()
         except OSError as error:
@@ -386,7 +677,7 @@ class BagelRouteStore:
         """
         if self.settings_path.exists():
             return
-        self._write_settings(self._initial_selection(spawns))
+        self._write_settings(self._initial_selection(spawns), {})
 
     def _initial_selection(self, spawns: list[BagelSpawnPoint]) -> dict[str, BagelRouteRef | None]:
         """首次安装的开启选择：只引用存在的默认路线。"""
@@ -403,6 +694,22 @@ class BagelRouteStore:
         return active
 
     # ---------- 内部 ----------
+
+    def _start_anchor(self, route: BagelRoute) -> BagelSpawnPoint:
+        """路线首点要对齐的位置：房间段对齐房间入口，其余对齐绑定的出生点。
+
+        Raises:
+            BagelRouteConfigError: 出生点或房间未登记。
+        """
+        if route.is_room_segment and route.keycard is not None:
+            room = next((item for item in self.load_rooms() if item.room_id == route.keycard.room_id), None)
+            if room is None:
+                raise BagelRouteConfigError(f'房间段所属房间未登记：{route.keycard.room_id}')
+            return room.as_spawn()
+        spawn = next((item for item in self.load_spawns() if item.spawn_id == route.spawn_id), None)
+        if spawn is None:
+            raise BagelRouteConfigError(f'路线绑定的出生点未登记：{route.spawn_id}')
+        return spawn
 
     def _route_path(self, ref: BagelRouteRef) -> Path:
         """引用对应的文件路径；标识不合法时拒绝。"""
@@ -446,8 +753,13 @@ class BagelRouteStore:
 
         _atomic_write(path, text, check)
 
-    def _read_settings(self) -> dict[str, BagelRouteRef | None]:
-        """读出开启选择；损坏时报错，不回退到默认值。"""
+    def _read_settings(
+        self,
+    ) -> tuple[dict[str, BagelRouteRef | None], dict[str, BagelKeycardSelection]]:
+        """读出跑刀与开房卡的开启选择；损坏时报错，不回退到默认值。
+
+        ``keycard_routes`` 是后加的可选项，旧配置没有它时按全部关闭处理。
+        """
         try:
             data = yaml.safe_load(self.settings_path.read_text(encoding='utf-8'))
             if not isinstance(data, dict) or data.get('version') != SETTINGS_VERSION:
@@ -455,24 +767,36 @@ class BagelRouteStore:
             raw = data.get('active_routes') or {}
             if not isinstance(raw, dict):
                 raise ValueError('active_routes 不是映射')
-            return {
+            raw_keycard = data.get('keycard_routes') or {}
+            if not isinstance(raw_keycard, dict):
+                raise ValueError('keycard_routes 不是映射')
+            active = {
                 str(spawn_id): None if value is None else BagelRouteRef.from_json(value)
                 for spawn_id, value in raw.items()
             }
+            keycard = {
+                str(room_id): BagelKeycardSelection.from_json(value)
+                for room_id, value in raw_keycard.items()
+            }
+            return active, keycard
         except (OSError, yaml.YAMLError, ValueError) as error:
             raise BagelRouteConfigError(
                 f'路线开启配置 {self.settings_path.name} 已损坏：{error}',
             ) from error
 
-    def _write_settings(self, active: dict[str, BagelRouteRef | None]) -> None:
-        """一次写入整个开启选择。"""
-        data = {
+    def _write_settings(
+        self, active: dict[str, BagelRouteRef | None], keycard: dict[str, BagelKeycardSelection],
+    ) -> None:
+        """一次写入整个开启选择；没有任何开房卡选择时不写 ``keycard_routes``。"""
+        data: dict[str, Any] = {
             'version': SETTINGS_VERSION,
             'active_routes': {
                 spawn_id: None if ref is None else ref.to_json()
                 for spawn_id, ref in active.items()
             },
         }
+        if keycard:
+            data['keycard_routes'] = {room_id: selection.to_json() for room_id, selection in keycard.items()}
         text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
 
         def check(tmp: Path) -> None:
