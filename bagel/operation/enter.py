@@ -230,10 +230,6 @@ class BagelEnter(BagelOperation):
                 or parse_capacity_pair(read_area(self.ctx, self.last_screenshot, '贝果-仓库', '仓库数量')) is None):
             return self.round_retry('无法核对启动仓库数量', wait=0.5)
         settlement = self.round_by_find_area(self.last_screenshot, '贝果-仓库', '返回研究站').is_success
-        if self.carry_card and not settlement:
-            # 开房卡的卡由用户或挑卡操作在备战仓库放进安全箱，不能在这里存回仓库。
-            log.info('贝果开房卡：启动时停在备战仓库，不入仓，直接返回备战核对携带')
-            return self.round_success('启动仓库返回')
         stored = BagelSettleWarehouse(
             self.ctx, self.recovery_auto_clean,
             filter_groups=self.recovery_filter_groups,
@@ -450,15 +446,18 @@ class BagelEnter(BagelOperation):
                 return self.round_wait(f'携带识别不完整，重新核对 {values}，槽位 {states}', wait=0.5)
             return self.round_fail(f'无法完整识别携带，停止并保留现场 {values}，槽位 {states}')
         self.loadout_misses = 0
+        carrying = not zero_containers(values) or any(states)
+        if carrying and self.allow_clear_loadout and not self.clear_attempted and not self.card_picked:
+            # 首次入场两种模式一样：先清空全部携带。开房卡随后安全箱为空，再挑卡。
+            # 挑过卡后安全箱里的就是挑中的卡，不能再清空，否则会清空、挑卡循环。
+            return self.round_success('需要清空启动战备')
         if self.carry_card:
             problem = self._card_loadout_problem(values, states)
             if problem == self.STATUS_NEED_CARD:
                 return self.round_success(self.STATUS_NEED_CARD)
             if problem is not None:
                 return self.round_fail(problem)
-        elif not zero_containers(values) or any(states):
-            if self.allow_clear_loadout and not self.clear_attempted:
-                return self.round_success('需要清空启动战备')
+        elif carrying:
             return self.round_fail(f'无法确认零携带，请先清空武备、装备、道具、背包和安全箱；容器 {values}，槽位 {states}')
         result = self.round_by_find_and_click_area(self.last_screenshot, '贝果-备战', '前往空洞')
         if result.is_success:
@@ -506,7 +505,7 @@ class BagelEnter(BagelOperation):
     @operation_node(name='清空启动战备', screenshot_before_round=False)
     def clear_starting_loadout(self) -> OperationRoundResult:
         """清空成功后重新截图核对携带，不能直接设置已核验或跳过投资。"""
-        if not self.allow_clear_loadout or self.clear_attempted or self.carry_card:
+        if not self.allow_clear_loadout or self.clear_attempted:
             return self.round_fail('本次入场不允许再次清空战备')
         self.clear_attempted = True
         result = BagelClearLoadout(self.ctx).execute()

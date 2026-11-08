@@ -247,7 +247,7 @@ def log_start(config: BagelConfig, room_name: str | None = None) -> None:
         '后续各局正常返回贝果主界面时，不重复传送。'
     )
     if config.is_keycard:
-        log.info('开房卡模式不自动清空战备，携带不符时停止。随后核对零投资。')
+        log.info('开房卡模式首次入场时先清空全部携带，再从仓库挑卡；之后的入场携带不符时停止。随后核对零投资。')
     elif config.difficulty == DIFFICULTY_HAZARD:
         log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
     else:
