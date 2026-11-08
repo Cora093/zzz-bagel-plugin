@@ -332,6 +332,27 @@ ENTRY_TEXT_MARGIN: int = 6
 PICKUP_WORDS: tuple[str, ...] = ('药粉', '拾取')
 """可拾取物而非容器的提示词；按 F 会捡起地上的东西，不能当箱子处理。"""
 
+PICKUP_TEXT_LEFT: int = 1400
+"""地面拾取物条目文字的左边界（整屏横坐标）。条目图标是物品图，占 1332–1398。"""
+
+PICKUP_TEXT_RIGHT: int = 1575
+"""地面拾取物条目文字的右边界。条目右端有个小圆点（约 1593），读进去会多出「O」「C」。"""
+
+PICKUP_ROW_HALF: int = 30
+"""读拾取物条目文字时，F 键行心上下各取的像素；条目第二行可能是「×3」。"""
+
+CONTAINER_WORDS: tuple[str, ...] = ('箱', '柜', '包', '门')
+"""条目文字含这些字就不当拾取物：容器图标在动画中可能一时匹配不上，按 F 会误开容器。"""
+
+PICKUP_TAP_LIMIT: int = 3
+"""同一条拾取物最多点按几次 F。还在说明捡不起来，本局之后不再按它。"""
+
+PICKUP_FAIL_LIMIT: int = 3
+"""本局累计这么多条拾取物捡不起来，按背包已满处理，不再拾取。"""
+
+PICKUP_TAP_WAIT: float = 0.4
+"""点按 F 拾取后等这么久再看下一帧（秒）。"""
+
 
 def _closest_on_segment(
     start: BagelRoutePoint, end: BagelRoutePoint, position: tuple[float, float],
@@ -447,6 +468,16 @@ class BagelRouteWalker(BagelOperation):
         """为捡走挡在刷卡条目上方的地面拾取物，已经点按 F 的次数。"""
         self.card_wait_since: float | None = None
         """刷卡提示读不到或 F 键没对准的起始时刻。"""
+        self.pickup_text: str | None = None
+        """正在点按 F 拾取的条目文字；没在拾取时为 None。整局有效，换点不清。"""
+        self.pickup_taps: int = 0
+        """对 ``pickup_text`` 已点按 F 的次数。"""
+        self.pickup_ignored: set[str] = set()
+        """本局捡不起来的拾取物条目文字，之后路过不再按。"""
+        self.pickup_failures: int = 0
+        """本局捡不起来的拾取物条数。"""
+        self.pickups: int = 0
+        """本局按提示消失计的已拾取条数，只用于日志。"""
         self.card_probe_step: int | None = None
         """房卡门左右试探已执行到第几步；没在试探时为 None。"""
         self.card_verify_since: float | None = None
@@ -750,7 +781,10 @@ class BagelRouteWalker(BagelOperation):
     @node_from(from_name='碎步移动', status='路线走完')
     @operation_node(name='现场交互判断')
     def check_surroundings(self) -> OperationRoundResult:
-        """原地扫 2 秒：识别到已知提示就按提示交互，否则换路线。"""
+        """原地扫 2 秒：识别到已知提示就按提示交互，否则换路线。脚下有拾取物先捡。"""
+        pickup = self._try_pickup()
+        if pickup is not None:
+            return pickup
         if self._nearby_kind() is not None:
             self.target_wait_since = None
             return self.round_success('现场有交互物')
@@ -1041,7 +1075,16 @@ class BagelRouteWalker(BagelOperation):
         return self._interact_by_kind(self.current_kind)
 
     def _interact_by_kind(self, kind: str) -> OperationRoundResult:
-        """分派交互动作。"""
+        """分派交互动作。F 键落在地面拾取物上时先捡走，再和容器交互。
+
+        容器条目上方常挤着拾取物（录像里「诡异药粉」压在公文包、机械保险箱上面），
+        这时按 F 或长按 F 都落在拾取物上。只在交互还没开始时捡：长按中再点 F 会打断长按。
+        刷卡处有自己的捡法，见 ``_hold_card_reader``。
+        """
+        if kind != 'card_reader' and not self.f_pressed and self.mechanical_hold_until is None:
+            pickup = self._try_pickup()
+            if pickup is not None:
+                return pickup
         if kind == 'electronic_safe':
             return self._run_unlock_safe()
         if kind == 'mechanical_safe':
@@ -1300,6 +1343,66 @@ class BagelRouteWalker(BagelOperation):
             for item in result
         )
 
+    def _try_pickup(self) -> OperationRoundResult | None:
+        """F 键落在地面拾取物上就停下点按 F 捡走；没有可捡的返回 None。
+
+        捡起后条目消失，F 键移到下一条。同一条按满 ``PICKUP_TAP_LIMIT`` 次还在，
+        记为捡不起来，本局不再按它；累计 ``PICKUP_FAIL_LIMIT`` 条捡不起来就不再拾取。
+        同名的两件拾取物挨在一起时，前一件捡起后条目文字不变，也会多耗几次按键。
+        """
+        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+            return None
+        row = self._pickup_row()
+        if row is None or row[1] != self.pickup_text:
+            if self.pickup_text is not None:
+                self.pickups += 1
+                log.info('贝果拾取：「%s」的提示已消失，按已拾取计（本局第 %s 条）', self.pickup_text, self.pickups)
+            self.pickup_text = None
+            self.pickup_taps = 0
+        if row is None:
+            return None
+        text = row[1]
+        if text in self.pickup_ignored:
+            return None
+        if self.pickup_taps >= PICKUP_TAP_LIMIT:
+            self.pickup_ignored.add(text)
+            self.pickup_failures += 1
+            self.pickup_text = None
+            self.pickup_taps = 0
+            log.warning('贝果拾取：「%s」点按 %s 次仍在，跳过（本局第 %s 条捡不起来）',
+                        text, PICKUP_TAP_LIMIT, self.pickup_failures)
+            if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+                log.warning('贝果拾取：累计 %s 条捡不起来，按背包已满处理，本局不再拾取', self.pickup_failures)
+            return None
+        self._release_forward()
+        self.pickup_text = text
+        self.pickup_taps += 1
+        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
+        self._record_input()
+        return self.round_wait(f'点按F拾取「{text}」', wait=PICKUP_TAP_WAIT)
+
+    def _pickup_row(self) -> tuple[int, str] | None:
+        """F 键所在条目是地面拾取物时，返回（行心纵坐标, 条目文字）。
+
+        容器、门的条目图标是交互图标，搜过的容器是绿色对勾，刷卡处是钥匙图标；
+        拾取物的条目图标是物品图，这三种都匹配不到。图标都不是、读得到文字、
+        文字又不像容器的 F 键行，才按拾取物处理。
+        """
+        keys = self._interact_key_rows()
+        if not keys:
+            return None
+        row_y = min(keys)
+        if any(self._row_has_icon(row_y, icon) for icon in ('interact_icon', 'searched_icon', 'card_key_icon')):
+            return None
+        texts = self.ctx.ocr_service.get_ocr_result_list(
+            image=self.last_screenshot,
+            rect=Rect(PICKUP_TEXT_LEFT, row_y - PICKUP_ROW_HALF, PICKUP_TEXT_RIGHT, row_y + PICKUP_ROW_HALF),
+        )
+        text = ''.join(str_utils.remove_whitespace(item.data) for item in texts)
+        if not text or any(word in text for word in CONTAINER_WORDS):
+            return None
+        return row_y, text
+
     def _press_f(self, kind: str) -> OperationRoundResult:
         """点按 F：普通容器、门、电梯。
 
@@ -1463,6 +1566,9 @@ class BagelRouteWalker(BagelOperation):
             )
         if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
             return self.round_wait('等待动作后的新截图', wait=0.05)
+        pickup = self._try_pickup()
+        if pickup is not None:
+            return pickup
         if self.retreat_point is not None:
             return self._retreat(position)
         if distance <= SPRINT_DISTANCE and self.sprinting:
