@@ -80,8 +80,13 @@
   .row .kind-label { flex: 1 1 auto; font-size: 14px; }
   .row select { flex: 1 1 auto; min-width: 0; font-size: 14px; padding: 2px 4px; }
   .row .coord { flex: 0 0 auto; color: #47525f; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .row .layer-tag { flex: 0 0 auto; color: #778ba4; font-size: 12px; }
+  .row.dim { opacity: 0.45; }
+  .map-tools select { font-size: 12px; padding: 1px 4px; max-width: 220px; }
+  #nodeForm select.layerSelect { font-size: 13px; }
   .first-mark { font-size: 11px; color: #a07425; margin-left: 4px; }
   .node-form { padding: 10px 14px; border-top: 1px solid #cfd8e3; background: #f0f5fb; display: flex; flex-direction: column; gap: 8px; }
+  .node-form:empty { display: none; }
   .node-form .line { display: flex; gap: 8px; align-items: center; font-size: 13px; color: #47525f; }
   .node-form input[type=number] { width: 80px; }
   .node-form .elevOption { flex: 1 1 auto; min-width: 0; }
@@ -141,7 +146,7 @@
     <div class="sectionHead"><span>路线内容</span><span class="hint" id="detailHint"></span></div>
     <div id="routeSummary"></div>
     <div id="detailList"></div>
-    <div id="nodeForm"></div>
+    <div id="nodeForm" class="node-form"></div>
     <div class="save-bar"><span id="saveStatus"></span><button id="undoButton" class="small" title="撤销（Ctrl+Z）" disabled>撤销</button><button id="redoButton" class="small" title="重做（Ctrl+Y 或 Ctrl+Shift+Z）" disabled>重做</button><button id="saveButton" class="primary" disabled>保存</button></div>
   </div>
 </div>
@@ -210,7 +215,11 @@ const state = {
   // 连续微调同一个点时合并成一步撤销。
   lastNudge: null,
   // 光标所在的全局坐标，显示在状态行。
-  hoverMap: null
+  hoverMap: null,
+  // 只看一层：完整分层名；null 表示所有分层一起显示。只在当前地图内有效。
+  layerFocus: null,
+  // 每个分层单独反相后的画布，只看一层时用它盖在整图上。
+  layerCanvases: {}
 };
 
 const POINT_HIT_RADIUS = 12;
@@ -448,6 +457,7 @@ function selectMap(mid) {
   if (state.recording) { notify('录制中不能切换地图'); return; }
   guardUnsaved(() => {
     state.activeMap = mid;
+    state.layerFocus = null;
     const first = spawnsOnMap(mid)[0];
     state.activeSpawnId = first ? first.spawn_id : null;
     const route = first ? (activeRouteOf(first.spawn_id) || routesForSpawn(first.spawn_id)[0]) : null;
@@ -522,7 +532,49 @@ function buildMapComposites() {
     });
     invertToLight(cc, c.width, c.height);
     state.maps[mid] = { mapId: mid, x0, y0, x1, y1, canvas: c, layers: items };
+    items.forEach(l => {
+      const img = state.images[layerKey(l)];
+      if (!img) return;
+      const lc = document.createElement('canvas');
+      lc.width = img.width;
+      lc.height = img.height;
+      const lcc = lc.getContext('2d');
+      lcc.imageSmoothingEnabled = false;
+      lcc.drawImage(img, 0, 0);
+      invertToLight(lcc, lc.width, lc.height);
+      state.layerCanvases[layerKey(l)] = lc;
+    });
   });
+}
+
+// ---------- 只看一层 ----------
+
+// 当前生效的「只看一层」：不在当前地图上的设置不生效。
+function focusedLayer() {
+  const layer = state.layerFocus ? state.byName[state.layerFocus] : null;
+  return layer && layer.map_id === state.activeMap ? state.layerFocus : null;
+}
+
+// 完整分层名去掉地图前缀，用于界面显示。
+function shortLayer(name) {
+  const layer = state.byName[name];
+  return layer ? layer.name : name;
+}
+
+function setLayerFocus(name) {
+  state.layerFocus = name || null;
+  renderAll();
+}
+
+// 只看一层时，别的层的节点和连线变淡，也点不中。
+function onFocusedLayer(layerName) {
+  const focus = focusedLayer();
+  return !focus || layerName === focus;
+}
+
+// 当前地图的分层，按清单顺序。
+function layersOfMap(mid) {
+  return state.layers.filter(l => l.map_id === mid && state.images[layerKey(l)]);
 }
 
 // 反相成浅底深线：透明像素填浅灰，不透明像素按亮度反相。
@@ -576,6 +628,27 @@ function renderMapTabs() {
   });
   const tools = document.createElement('div');
   tools.className = 'map-tools';
+  const layers = layersOfMap(state.activeMap);
+  if (layers.length > 1) {
+    const route = shownRoute();
+    const sel = document.createElement('select');
+    sel.title = '只看一层：别的层的底图、节点和连线变淡，也点不中';
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = '全部分层';
+    sel.appendChild(all);
+    layers.forEach(l => {
+      const key = layerKey(l);
+      const count = route ? route.points.filter(pt => pt.layer === key).length : 0;
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = '只看 ' + l.name + (count ? '（路线 ' + count + ' 点）' : '');
+      sel.appendChild(opt);
+    });
+    sel.value = focusedLayer() || '';
+    sel.onchange = () => setLayerFocus(sel.value);
+    tools.appendChild(sel);
+  }
   [['−', '缩小', () => zoomMap(1 / 1.25)], ['＋', '放大', () => zoomMap(1.25)],
     ['适应', '显示整张地图', () => { state.autoFit = true; fitMap(); draw(); }],
     ['看路线', '缩放到当前路线', () => focusRoute()]].forEach(([text, title, fn]) => {
@@ -1023,10 +1096,16 @@ function renderDetail() {
   };
   box.innerHTML = '';
   let selectedRow = null;
+  const multiLayer = new Set(route.points.map(pt => pt.layer)).size > 1;
   route.points.forEach((d, index) => {
     const row = document.createElement('div');
-    row.className = 'row' + (index === state.selectedPoint ? ' selected' : '');
-    row.onclick = () => { state.selectedPoint = index; renderDetail(); draw(); };
+    row.className = 'row' + (index === state.selectedPoint ? ' selected' : '') + (onFocusedLayer(d.layer) ? '' : ' dim');
+    row.onclick = () => {
+      state.selectedPoint = index;
+      if (!onFocusedLayer(d.layer)) { setLayerFocus(d.layer); return; }
+      renderDetail();
+      draw();
+    };
     const order = document.createElement('span');
     order.className = 'order';
     order.textContent = index + 1;
@@ -1067,6 +1146,13 @@ function renderDetail() {
       label.innerHTML = escapeHtml(KIND_LABELS[d.kind] || d.kind) + (index === 0 ? '<span class="first-mark">起点</span>' : '');
       row.appendChild(label);
     }
+    if (multiLayer) {
+      const tag = document.createElement('span');
+      tag.className = 'layer-tag';
+      tag.textContent = shortLayer(d.layer);
+      tag.title = d.layer;
+      row.appendChild(tag);
+    }
     const coord = document.createElement('span');
     coord.className = 'coord';
     coord.textContent = '(' + d.x.toFixed(0) + ', ' + d.y.toFixed(0) + ')';
@@ -1096,6 +1182,8 @@ function renderNodeForm(route) {
     + '<label>Y <input id="pointY" type="number" value="' + p.y + '"></label>'
     + '<button class="small" id="pointApply">应用坐标</button>'
     + (index > 0 ? '<button class="small danger" id="pointDelete">删除节点</button>' : '') + '</div>'
+    + (index > 0 ? '<div class="line"><label>分层 <select class="layerSelect" id="pointLayer">'
+      + layerOptions(p.layer) + '</select></label></div>' : '')
     + (p.kind === 'elevator' ? '<div class="line"><input class="elevOption" id="elevOption" placeholder="楼层文字，留空表示不选" value="'
       + escapeHtml(p.elevator_option || '') + '"><select id="elevExit"><option value="forward"'
       + (p.elevator_exit !== 'backward' ? ' selected' : '') + '>出梯向前</option><option value="backward"'
@@ -1111,6 +1199,14 @@ function renderNodeForm(route) {
   };
   const del = document.getElementById('pointDelete');
   if (del) del.onclick = () => deletePoint(index);
+  const layerSel = document.getElementById('pointLayer');
+  if (layerSel) layerSel.onchange = () => {
+    recordHistory();
+    state.draft.points[index].layer = layerSel.value;
+    // 正在只看一层时跟着切过去，免得刚改的点变淡、点不中。
+    if (focusedLayer() && focusedLayer() !== layerSel.value) state.layerFocus = layerSel.value;
+    afterEdit();
+  };
   if (p.kind === 'elevator') {
     document.getElementById('elevOption').onchange = (ev) => {
       recordHistory();
@@ -1123,6 +1219,16 @@ function renderNodeForm(route) {
       afterEdit();
     };
   }
+}
+
+// 节点所在地图的全部分层，做成下拉选项。
+function layerOptions(current) {
+  const layer = state.byName[current];
+  const mid = layer ? layer.map_id : state.activeMap;
+  return layersOfMap(mid).map(l => {
+    const key = layerKey(l);
+    return '<option value="' + escapeHtml(key) + '"' + (key === current ? ' selected' : '') + '>' + escapeHtml(l.name) + '</option>';
+  }).join('');
 }
 
 function renderSaveBar() {
@@ -1141,6 +1247,7 @@ function renderSaveBar() {
 
 // 草稿变更后的统一刷新；不写盘。
 function afterEdit() {
+  if (mapsReady) renderMapTabs();
   renderRouteList();
   renderDetail();
   draw();
@@ -1200,7 +1307,7 @@ function visibleRoutePoints() {
   const out = [];
   if (!route) return out;
   route.points.forEach((p, index) => {
-    if (!onActiveMap(p.layer)) return;
+    if (!onActiveMap(p.layer) || !onFocusedLayer(p.layer)) return;
     const s = globalToScreen(p.x, p.y);
     if (s) out.push({ index: index, p: p, s: s });
   });
@@ -1286,7 +1393,8 @@ function hitSegment(mx, my) {
   for (let i = 1; i < route.points.length; i++) {
     const a = route.points[i - 1];
     const b = route.points[i];
-    if (a.layer !== b.layer || !onActiveMap(a.layer)) continue;
+    if (!onActiveMap(a.layer) || !onActiveMap(b.layer)) continue;
+    if (!onFocusedLayer(a.layer) && !onFocusedLayer(b.layer)) continue;
     const sa = globalToScreen(a.x, a.y);
     const sb = globalToScreen(b.x, b.y);
     if (!sa || !sb) continue;
@@ -1301,18 +1409,21 @@ function hitSegment(mx, my) {
     const d = Math.hypot(px - mx, py - my);
     if (d > bestDist) continue;
     bestDist = d;
-    best = { index: i - 1, x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t) };
+    best = {
+      index: i - 1, x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t),
+      layer: focusedLayer() || a.layer
+    };
   }
   return best;
 }
 
-// 在第 index 点后面插一个途径点，沿用同一点的分层；只改草稿。
-function insertPointAfter(index, gx, gy) {
+// 在第 index 点后面插一个途径点；layer 不给时沿用第 index 点的分层。只改草稿。
+function insertPointAfter(index, gx, gy, layer) {
   if (!canEdit()) return -1;
   const ref = state.draft.points[index];
   if (!ref) return -1;
   recordHistory();
-  state.draft.points.splice(index + 1, 0, { x: gx, y: gy, layer: ref.layer, kind: 'beacon' });
+  state.draft.points.splice(index + 1, 0, { x: gx, y: gy, layer: layer || ref.layer, kind: 'beacon' });
   return index + 1;
 }
 
@@ -1416,8 +1527,22 @@ function draw() {
   if (!m) return;
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(m.canvas, state.offsetX, state.offsetY,
-    m.canvas.width * state.scale, m.canvas.height * state.scale);
+  const focus = focusedLayer();
+  const focusCanvas = focus ? state.layerCanvases[focus] : null;
+  if (focusCanvas) {
+    // 整图压淡当参照，再按 origin 把这一层原样盖上：这一层的范围里只看得到它自己的墙。
+    const layer = state.byName[focus];
+    ctx.globalAlpha = 0.3;
+    ctx.drawImage(m.canvas, state.offsetX, state.offsetY,
+      m.canvas.width * state.scale, m.canvas.height * state.scale);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(focusCanvas,
+      state.offsetX + (layer.origin[0] - m.x0) * state.scale, state.offsetY + (layer.origin[1] - m.y0) * state.scale,
+      focusCanvas.width * state.scale, focusCanvas.height * state.scale);
+  } else {
+    ctx.drawImage(m.canvas, state.offsetX, state.offsetY,
+      m.canvas.width * state.scale, m.canvas.height * state.scale);
+  }
 
   drawSpawns();
 
@@ -1426,19 +1551,22 @@ function draw() {
     const pts = route.points
       .map((p, i) => ({ p, order: i + 1 }))
       .filter(it => onActiveMap(it.p.layer));
-    // 同层的相邻点连成折线；跨层的相邻点断开，避免把上下楼连成一条线。
-    ctx.strokeStyle = 'rgba(40, 90, 160, 0.7)';
-    ctx.lineWidth = 1.5;
+    // 相邻点连成折线。跨层的一段（上下楼）画虚线；只看一层时，两端都不在这层的连线变淡。
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1], b = pts[i];
-      if (a.p.layer !== b.p.layer) continue;
       const sa = globalToScreen(a.p.x, a.p.y);
       const sb = globalToScreen(b.p.x, b.p.y);
       if (!sa || !sb) continue;
+      ctx.save();
+      if (a.p.layer !== b.p.layer) ctx.setLineDash([6, 5]);
+      ctx.globalAlpha = onFocusedLayer(a.p.layer) || onFocusedLayer(b.p.layer) ? 1 : 0.25;
+      ctx.strokeStyle = 'rgba(40, 90, 160, 0.7)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(sa[0], sa[1]);
       ctx.lineTo(sb[0], sb[1]);
       ctx.stroke();
+      ctx.restore();
     }
     // 选中点最后画，几个点叠在一起时它在最上面。
     const ordered = pts.filter(it => it.order - 1 !== state.selectedPoint)
@@ -1446,6 +1574,7 @@ function draw() {
     ordered.forEach(it => {
       const s = globalToScreen(it.p.x, it.p.y);
       if (!s) return;
+      ctx.globalAlpha = onFocusedLayer(it.p.layer) ? 1 : 0.3;
       if (it.order - 1 === state.selectedPoint) {
         ctx.beginPath();
         ctx.arc(s[0], s[1], 12, 0, Math.PI * 2);
@@ -1460,6 +1589,7 @@ function draw() {
       ctx.fillStyle = '#123';
       ctx.font = '13px "Microsoft YaHei UI", sans-serif';
       ctx.fillText(String(it.order), s[0] + 10, s[1] - 8);
+      ctx.globalAlpha = 1;
     });
   }
 
@@ -1550,6 +1680,7 @@ function draw() {
 function renderHud() {
   const route = state.recording ? null : shownRoute();
   const spawn = getSpawn(state.activeSpawnId);
+  const focus = focusedLayer();
   const cursor = state.hoverMap ? ' · 光标 (' + state.hoverMap[0] + ', ' + state.hoverMap[1] + ')' : '';
   if (state.recording) {
     hud.textContent = '录制中 · 1 途径点 2 电子箱 3 机械箱 4 普通箱 5 门 6 电梯 · 退格 删上一个点';
@@ -1562,7 +1693,7 @@ function renderHud() {
     const mode = !route ? '未选择路线'
       : canEdit() ? '拖点移动 · 点连线插点 · 方向键微调 · Del 删点 · Ctrl+Z 撤销'
         : isCustom(route) ? busyReason() : '默认路线只读';
-    hud.textContent = state.activeMap + cursor
+    hud.textContent = state.activeMap + cursor + (focus ? ' · 只看 ' + shortLayer(focus) : '')
       + (spawn && spawn.map_id === state.activeMap ? ' · 出生点 ' + spawn.name : '') + ' · ' + mode;
   }
 }
@@ -1577,7 +1708,7 @@ wrap.addEventListener('mousedown', (e) => {
     if (state.insertAfter >= 0) {
       const g = toGlobal(mx, my);
       if (g) {
-        const at = insertPointAfter(state.insertAfter, g[0], g[1]);
+        const at = insertPointAfter(state.insertAfter, g[0], g[1], focusedLayer());
         state.insertAfter = -1;
         state.selectedPoint = at;
         afterEdit();
@@ -1597,7 +1728,7 @@ wrap.addEventListener('mousedown', (e) => {
     // 点在线上就插一个途径点，不然就是平移底图
     const seg = hitSegment(mx, my);
     if (seg) {
-      const at = insertPointAfter(seg.index, seg.x, seg.y);
+      const at = insertPointAfter(seg.index, seg.x, seg.y, seg.layer);
       state.selectedPoint = at;
       afterEdit();
       return;
