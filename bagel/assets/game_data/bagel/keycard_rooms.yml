@@ -11,3 +11,9 @@ rooms:
     x: 160
     y: 319
     radius: 20
+  - id: bunless_zhibangbang
+    name: 无力野人镇芝邦邦餐厅
+    layer: 城郊幻境/Custom4
+    x: 950
+    y: 133
+    radius: 20
