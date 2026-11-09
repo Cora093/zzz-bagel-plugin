@@ -84,6 +84,7 @@
   .row .coord { flex: 0 0 auto; color: #47525f; font-size: 14px; font-variant-numeric: tabular-nums; }
   .row .layer-tag { flex: 0 0 auto; color: #778ba4; font-size: 12px; }
   .row.dim { opacity: 0.45; }
+  .map-tools .located { align-self: center; font-size: 12px; color: #2f3b48; user-select: text; font-variant-numeric: tabular-nums; }
   .map-tools button.on { background: #2b6cb0; border-color: #2b6cb0; color: #fff; }
   #nodeForm select.layerSelect { font-size: 13px; }
   .first-mark { font-size: 11px; color: #a07425; margin-left: 4px; }
@@ -223,6 +224,12 @@ const state = {
   lastNudge: null,
   // 光标所在的全局坐标，显示在状态行。
   hoverMap: null,
+  // 工具栏「定位」得到的角色位置：{ layer, x, y }，工具栏显示坐标，地图上画一个标记。
+  located: null,
+  // 工具栏「定位」开关：打开后持续定位，直到再点一下或出错。
+  tracking: false,
+  // 本次打开开关后是否已经把视野移到角色位置。
+  trackCentered: false,
   // 只看当前层开关。当前层是选中点所在的层；取消选中后沿用上一次的层。
   followLayer: false,
   currentLayer: null,
@@ -596,6 +603,28 @@ function buildMapComposites() {
   });
 }
 
+// ---------- 工具栏定位 ----------
+
+// 定位结果的文字，显示和复制用同一段。
+function locatedText() {
+  const l = state.located;
+  return l ? '(' + l.x + ', ' + l.y + ') ' + l.layer : '';
+}
+
+function toggleTracking() {
+  if (state.tracking) {
+    call('track_stop', {});
+    return;
+  }
+  state.tracking = true;
+  state.trackCentered = false;
+  renderMapTabs();
+  call('track_start', {}).then(result => {
+    // 命令被拒（录制、试跑中）时不会开始定位，这里把开关复原。
+    if (!result.ok) { state.tracking = false; renderMapTabs(); }
+  });
+}
+
 // ---------- 只看当前层 ----------
 
 // 开关打开时生效的当前层：选中点所在的层；没有选中点时沿用上一次的层。
@@ -683,6 +712,28 @@ function renderMapTabs() {
   const tools = document.createElement('div');
   tools.className = 'map-tools';
   const layers = layersOfMap(state.activeMap);
+  const locate = document.createElement('button');
+  locate.className = 'small' + (state.tracking ? ' on' : '');
+  locate.textContent = state.tracking ? '停止定位' : '定位';
+  locate.title = state.tracking ? '停止持续定位'
+    : '切到游戏持续定位，实时显示角色的全局坐标与分层；回到编辑器时暂停，再点一下停止';
+  locate.disabled = !state.tracking && (state.recording || state.trial);
+  locate.onclick = toggleTracking;
+  tools.appendChild(locate);
+  if (state.located) {
+    const span = document.createElement('span');
+    span.className = 'located';
+    span.id = 'locatedText';
+    span.textContent = locatedText();
+    span.title = '可以选中复制，也可以点「复制」';
+    tools.appendChild(span);
+    const copy = document.createElement('button');
+    copy.className = 'small';
+    copy.textContent = '复制';
+    copy.title = '把坐标与分层复制到剪贴板';
+    copy.onclick = () => call('copy_text', { text: locatedText() });
+    tools.appendChild(copy);
+  }
   if (layers.length > 1) {
     const b = document.createElement('button');
     b.className = 'small' + (state.followLayer ? ' on' : '');
@@ -1777,6 +1828,22 @@ function draw() {
     }
   }
 
+  // 工具栏「定位」的角色位置：红色十字加圆圈。
+  if (state.located && onActiveMap(state.located.layer)) {
+    const s = globalToScreen(state.located.x, state.located.y);
+    if (s) {
+      ctx.save();
+      ctx.strokeStyle = '#e23b3b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], 9, 0, Math.PI * 2);
+      ctx.moveTo(s[0] - 15, s[1]); ctx.lineTo(s[0] + 15, s[1]);
+      ctx.moveTo(s[0], s[1] - 15); ctx.lineTo(s[0], s[1] + 15);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   renderHud();
 }
 
@@ -2101,6 +2168,39 @@ window.bagelEditor = {
     if (state.activeMap !== layer.map_id) { state.activeMap = layer.map_id; renderAll(); }
     state.livePosition = toMapCanvas(localXY[0] + layer.origin[0], localXY[1] + layer.origin[1]);
     draw();
+  },
+  // 持续定位的一次结果：更新工具栏坐标和地图标记。开关打开后的第一次结果把视野移过去（不改缩放），
+  // 之后不再动视野，免得拖不动地图。
+  updateLocated(layerName, globalXY) {
+    const layer = state.byName[layerName];
+    if (!state.tracking || !layer || !globalXY) return;
+    const first = !state.located;
+    state.located = { layer: layerName, x: Math.round(globalXY[0]), y: Math.round(globalXY[1]) };
+    const span = document.getElementById('locatedText');
+    // 已有坐标文字时原地改字，不重建工具栏，正在选中的文字不会丢。
+    if (span && !first) span.textContent = locatedText();
+    else renderMapTabs();
+    if (!state.trackCentered) {
+      state.trackCentered = true;
+      if (layer.map_id !== state.activeMap) {
+        notify('角色在' + layer.map_id + '，切到该地图可看到位置标记');
+      } else {
+        const m = state.maps[state.activeMap];
+        const rect = wrap.getBoundingClientRect();
+        if (m && rect.width) {
+          state.autoFit = false;
+          state.offsetX = rect.width / 2 - (state.located.x - m.x0) * state.scale;
+          state.offsetY = rect.height / 2 - (state.located.y - m.y0) * state.scale;
+        }
+      }
+    }
+    draw();
+  },
+  // 持续定位结束：开关复原；出错时提示原因。坐标保留最后一次结果，方便复制。
+  trackStopped(ok, message) {
+    state.tracking = false;
+    if (!ok && message) notify(message, true);
+    renderMapTabs();
   },
   // 用定位结果替换第 index 个点的坐标：只改草稿，保存后才写入文件。
   setPointPosition(index, layerName, globalXY) {
