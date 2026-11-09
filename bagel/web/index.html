@@ -84,7 +84,7 @@
   .row .coord { flex: 0 0 auto; color: #47525f; font-size: 14px; font-variant-numeric: tabular-nums; }
   .row .layer-tag { flex: 0 0 auto; color: #778ba4; font-size: 12px; }
   .row.dim { opacity: 0.45; }
-  .map-tools select { font-size: 12px; padding: 1px 4px; max-width: 220px; }
+  .map-tools button.on { background: #2b6cb0; border-color: #2b6cb0; color: #fff; }
   #nodeForm select.layerSelect { font-size: 13px; }
   .first-mark { font-size: 11px; color: #a07425; margin-left: 4px; }
   .node-form { padding: 10px 14px; border-top: 1px solid #cfd8e3; background: #f0f5fb; display: flex; flex-direction: column; gap: 8px; }
@@ -223,8 +223,9 @@ const state = {
   lastNudge: null,
   // 光标所在的全局坐标，显示在状态行。
   hoverMap: null,
-  // 只看一层：完整分层名；null 表示所有分层一起显示。只在当前地图内有效。
-  layerFocus: null,
+  // 只看当前层开关。当前层是选中点所在的层；取消选中后沿用上一次的层。
+  followLayer: false,
+  currentLayer: null,
   // 每个分层单独反相后的画布，只看一层时用它盖在整图上。
   layerCanvases: {}
 };
@@ -492,6 +493,7 @@ function selectRoute(key) {
   state.activeSpawnId = groupIdOf(route);
   state.selectedKey = key;
   state.selectedPoint = -1;
+  state.currentLayer = null;
   state.insertAfter = -1;
   resetDraft();
   renderAll();
@@ -504,7 +506,7 @@ function selectMap(mid) {
   if (state.recording) { notify('录制中不能切换地图'); return; }
   guardUnsaved(() => {
     state.activeMap = mid;
-    state.layerFocus = null;
+    state.currentLayer = null;
     const first = spawnsOnMap(mid)[0];
     state.activeSpawnId = first ? first.spawn_id : null;
     const route = first ? (activeRouteOf(first.spawn_id) || routesForSpawn(first.spawn_id)[0]) : null;
@@ -594,12 +596,17 @@ function buildMapComposites() {
   });
 }
 
-// ---------- 只看一层 ----------
+// ---------- 只看当前层 ----------
 
-// 当前生效的「只看一层」：不在当前地图上的设置不生效。
+// 开关打开时生效的当前层：选中点所在的层；没有选中点时沿用上一次的层。
+// 不在当前地图上的层不生效。
 function focusedLayer() {
-  const layer = state.layerFocus ? state.byName[state.layerFocus] : null;
-  return layer && layer.map_id === state.activeMap ? state.layerFocus : null;
+  if (!state.followLayer) return null;
+  const route = shownRoute();
+  const p = route && state.selectedPoint >= 0 ? route.points[state.selectedPoint] : null;
+  if (p && onActiveMap(p.layer)) state.currentLayer = p.layer;
+  const layer = state.currentLayer ? state.byName[state.currentLayer] : null;
+  return layer && layer.map_id === state.activeMap ? state.currentLayer : null;
 }
 
 // 完整分层名去掉地图前缀，用于界面显示。
@@ -608,12 +615,12 @@ function shortLayer(name) {
   return layer ? layer.name : name;
 }
 
-function setLayerFocus(name) {
-  state.layerFocus = name || null;
+function toggleFollowLayer() {
+  state.followLayer = !state.followLayer;
   renderAll();
 }
 
-// 只看一层时，别的层的节点和连线变淡，也点不中。
+// 只看当前层时，别的层的节点和连线变淡。
 function onFocusedLayer(layerName) {
   const focus = focusedLayer();
   return !focus || layerName === focus;
@@ -677,24 +684,12 @@ function renderMapTabs() {
   tools.className = 'map-tools';
   const layers = layersOfMap(state.activeMap);
   if (layers.length > 1) {
-    const route = shownRoute();
-    const sel = document.createElement('select');
-    sel.title = '只看一层：别的层的底图、节点和连线变淡，也点不中';
-    const all = document.createElement('option');
-    all.value = '';
-    all.textContent = '全部分层';
-    sel.appendChild(all);
-    layers.forEach(l => {
-      const key = layerKey(l);
-      const count = route ? route.points.filter(pt => pt.layer === key).length : 0;
-      const opt = document.createElement('option');
-      opt.value = key;
-      opt.textContent = '只看 ' + l.name + (count ? '（路线 ' + count + ' 点）' : '');
-      sel.appendChild(opt);
-    });
-    sel.value = focusedLayer() || '';
-    sel.onchange = () => setLayerFocus(sel.value);
-    tools.appendChild(sel);
+    const b = document.createElement('button');
+    b.className = 'small' + (state.followLayer ? ' on' : '');
+    b.textContent = '只看当前层';
+    b.title = '只看选中节点所在的层：别的层的底图、节点和连线变淡；选到别的层的节点时跟着切过去';
+    b.onclick = toggleFollowLayer;
+    tools.appendChild(b);
   }
   [['−', '缩小', () => zoomMap(1 / 1.25)], ['＋', '放大', () => zoomMap(1.25)],
     ['适应', '显示整张地图', () => { state.autoFit = true; fitMap(); draw(); }],
@@ -1213,7 +1208,6 @@ function renderDetail() {
     row.className = 'row' + (index === state.selectedPoint ? ' selected' : '') + (onFocusedLayer(d.layer) ? '' : ' dim');
     row.onclick = () => {
       state.selectedPoint = index;
-      if (!onFocusedLayer(d.layer)) { setLayerFocus(d.layer); return; }
       renderDetail();
       draw();
     };
@@ -1314,8 +1308,6 @@ function renderNodeForm(route) {
   if (layerSel) layerSel.onchange = () => {
     recordHistory();
     state.draft.points[index].layer = layerSel.value;
-    // 正在只看一层时跟着切过去，免得刚改的点变淡、点不中。
-    if (focusedLayer() && focusedLayer() !== layerSel.value) state.layerFocus = layerSel.value;
     afterEdit();
   };
   if (p.kind === 'elevator') {
@@ -1358,7 +1350,6 @@ function renderSaveBar() {
 
 // 草稿变更后的统一刷新；不写盘。
 function afterEdit() {
-  if (mapsReady) renderMapTabs();
   renderRouteList();
   renderDetail();
   draw();
@@ -1418,7 +1409,7 @@ function visibleRoutePoints() {
   const out = [];
   if (!route) return out;
   route.points.forEach((p, index) => {
-    if (!onActiveMap(p.layer) || !onFocusedLayer(p.layer)) return;
+    if (!onActiveMap(p.layer)) return;
     const s = globalToScreen(p.x, p.y);
     if (s) out.push({ index: index, p: p, s: s });
   });
@@ -1426,12 +1417,14 @@ function visibleRoutePoints() {
 }
 
 // 命中半径内的全部点，按距离由近到远排。几个点叠在一起时靠它轮流选中。
+// 只看当前层时，当前层的点优先：这里有当前层的点就只返回它们，别的层的点压在下面也点不到。
 function hitPoints(mx, my) {
-  return visibleRoutePoints()
-    .map(it => ({ index: it.index, d: Math.hypot(it.s[0] - mx, it.s[1] - my) }))
+  const hits = visibleRoutePoints()
+    .map(it => ({ index: it.index, d: Math.hypot(it.s[0] - mx, it.s[1] - my), on: onFocusedLayer(it.p.layer) }))
     .filter(it => it.d <= POINT_HIT_RADIUS)
-    .sort((a, b) => a.d - b.d)
-    .map(it => it.index);
+    .sort((a, b) => a.d - b.d);
+  const own = hits.filter(it => it.on);
+  return (own.length ? own : hits).map(it => it.index);
 }
 
 function hitPoint(mx, my) {
@@ -1804,7 +1797,8 @@ function renderHud() {
     const mode = !route ? '未选择路线'
       : canEdit() ? '拖点移动 · 点连线插点 · 方向键微调 · Del 删点 · Ctrl+Z 撤销'
         : isCustom(route) ? busyReason() : '默认路线只读';
-    hud.textContent = state.activeMap + cursor + (focus ? ' · 只看 ' + shortLayer(focus) : '')
+    const only = !state.followLayer ? '' : focus ? ' · 只看 ' + shortLayer(focus) : ' · 只看当前层：先选一个节点';
+    hud.textContent = state.activeMap + cursor + only
       // 房间入口锚点的名称已带「入口」，不再加「出生点」前缀。
       + (spawn && spawn.map_id === state.activeMap ? ' · ' + (spawn.isRoom ? '' : '出生点 ') + spawn.name : '')
       + ' · ' + mode;
@@ -1829,6 +1823,12 @@ wrap.addEventListener('mousedown', (e) => {
       return;
     }
     const hit = pressPoint(mx, my);
+    if (hit >= 0 && !onFocusedLayer(state.draft.points[hit].layer)) {
+      state.selectedPoint = hit;
+      renderDetail();
+      draw();
+      return;
+    }
     if (hit >= 0) {
       const p = state.draft.points[hit];
       state.dragPoint = hit;
