@@ -26,6 +26,7 @@ def template_exists(template_id: str) -> bool:
     return (TEMPLATE_ROOT / template_id / 'raw.png').is_file()
 
 
+@cache
 def load_template(template_id: str) -> tuple[MatLike, MatLike | None] | None:
     """读模板原图与掩码，同一个模板只读一次。
 
