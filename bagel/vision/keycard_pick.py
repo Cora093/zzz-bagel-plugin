@@ -42,6 +42,8 @@ TOOLTIP_TITLE_RECT: Rect = Rect(605, 228, 862, 268)
 """点开物品后浮窗的标题（物品名）。浮窗位置固定，不随点的格子移动。"""
 TOOLTIP_TYPE_RECT: Rect = Rect(605, 268, 760, 298)
 """浮窗标题下的类型标签，门禁卡显示「门禁卡」。"""
+TOOLTIP_DISMISS_POS: Point = Point(1350, 239)
+"""仓库网格标题栏的空白处；点它关掉物品浮窗，不触发别的操作。浮窗开着时滚轮滚不动网格。"""
 TOOLTIP_SAFE_BUTTON_RECT: Rect = Rect(800, 718, 988, 766)
 """浮窗的「放入安全箱」按钮（快捷键 S）。"""
 

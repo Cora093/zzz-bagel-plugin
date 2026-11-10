@@ -15,6 +15,7 @@ from ..vision.keycard_pick import (
     GRID_SCROLL_POS,
     LOCK_CONFIRM_RECT,
     PAGE_CENTERS,
+    TOOLTIP_DISMISS_POS,
     TOOLTIP_SAFE_BUTTON_RECT,
     TOOLTIP_TITLE_RECT,
     TOOLTIP_TYPE_RECT,
@@ -54,6 +55,14 @@ FILTER_CHECKS: int = 4
 """切换类型筛选后最多点几次，直到仓库标题显示对应类型。"""
 PLACE_CHECKS: int = 4
 """点「放入安全箱」后最多看几帧确认安全箱第 1 格有了物品。"""
+DISMISS_CHECKS: int = 3
+"""滚动前最多点几次标题栏关浮窗；仍关不掉就停止保留现场。"""
+SETTLE_WAIT: float = 0.3
+"""滚动后等列表停稳时，两次截图的间隔（秒）。"""
+SETTLE_MAX_CHECKS: int = 8
+"""滚动后最多截几次等列表停稳；用完仍在动就按当前画面继续，并记警告。"""
+BOTTOM_CONFIRM_CHECKS: int = 3
+"""滚动后画面一直没变，连续截这么多次仍没变才算本页到底。游戏有时滚动过一会儿才起步。"""
 
 
 class BagelPickKeycard(BagelOperation):
@@ -114,11 +123,18 @@ class BagelPickKeycard(BagelOperation):
         self.need_page_click: bool = True
         self.page_signature: MatLike | None = None
         self.scroll_signature: MatLike | None = None
+        """向下滚动前的网格缩略图；非 None 表示正在等这次滚动的结果。"""
+        self.settle_signature: MatLike | None = None
+        """等列表停稳时上一次截图的网格缩略图。"""
+        self.settle_checks: int = 0
+        """这次滚动后已截了几次图等结果。"""
         self.tried: set[tuple[int, int]] = set()
         self.pending: GridCell | None = None
         self.placing_checks: int | None = None
         self.opened: int = 0
         self.viewing_backpack: bool = False
+        self.dismiss_clicks: int = 0
+        """本次滚动前为关浮窗点了几次标题栏。"""
 
     def handle_init(self) -> None:
         """重复执行时从第 1 页重新找。"""
@@ -139,11 +155,14 @@ class BagelPickKeycard(BagelOperation):
         self.need_page_click = True
         self.page_signature = None
         self.scroll_signature = None
+        self.settle_signature = None
+        self.settle_checks = 0
         self.tried = set()
         self.pending = None
         self.placing_checks = None
         self.opened = 0
         self.viewing_backpack = False
+        self.dismiss_clicks = 0
 
     def _at_warehouse(self) -> bool:
         return self.round_by_find_area(self.last_screenshot, '贝果-仓库', '放入仓库').is_success
@@ -228,17 +247,17 @@ class BagelPickKeycard(BagelOperation):
         if self.to_top:
             return self._scroll_top()
         if self.scroll_signature is not None:
-            changed = grid_changed(self.scroll_signature, grid_signature(self.last_screenshot))
-            self.scroll_signature = None
-            if not changed:
-                return self._next_page()
-            self.tried.clear()
+            waiting = self._wait_scroll_settled()
+            if waiting is not None:
+                return waiting
         if self.counting:
             return self._count_screen()
         cell = self._next_candidate()
         if cell is None:
-            self.scroll_signature = grid_signature(self.last_screenshot)
-            self.ctx.controller.scroll(SCROLL_NOTCHES, GRID_SCROLL_POS)
+            if self._tooltip_open():
+                return self._dismiss_tooltip()
+            self.dismiss_clicks = 0
+            self._scroll_down()
             return self.round_wait(f'第 {self.page + 1} 页向下滚动', wait=0.6)
         self.pending = cell
         self.tried.add(cell.center.tuple())
@@ -251,6 +270,17 @@ class BagelPickKeycard(BagelOperation):
         if self.template_id is not None and any(cell.score > 0 for cell in cells):
             cells = [cell for cell in cells if cell.score >= CANDIDATE_SCORE_MIN][:CANDIDATE_LIMIT]
         return next((cell for cell in cells if cell.center.tuple() not in self.tried), None)
+
+    def _tooltip_open(self) -> bool:
+        return '门禁' in self._ocr(TOOLTIP_TYPE_RECT)
+
+    def _dismiss_tooltip(self) -> OperationRoundResult:
+        """滚动前关掉上一格的物品浮窗：浮窗开着时滚轮滚不动网格，会被误判为本页到底。"""
+        if self.dismiss_clicks >= DISMISS_CHECKS:
+            return self.round_fail(f'点了 {self.dismiss_clicks} 次仓库标题栏，物品浮窗仍没关，停止并保留现场')
+        self.dismiss_clicks += 1
+        self.ctx.controller.click(TOOLTIP_DISMISS_POS, press_time=0.05)
+        return self.round_wait('滚动前关掉物品浮窗', wait=0.5)
 
     def _header(self) -> str:
         return read_area(self.ctx, self.last_screenshot, '贝果-仓库', '仓库数量')
@@ -320,9 +350,47 @@ class BagelPickKeycard(BagelOperation):
         log.info('贝果挑卡清点：第 %s 页本屏 %s 行（与上屏重叠 %s 行）、%s 格有物，数到 %s 张，累计 %s 张；最高相似度 %s',
                  self.page + 1, len(rows), skip, len(cells), found, self.counted, top)
         self.prev_strips = strips
-        self.scroll_signature = grid_signature(self.last_screenshot)
-        self.ctx.controller.scroll(SCROLL_NOTCHES, GRID_SCROLL_POS)
+        self._scroll_down()
         return self.round_wait(f'清点第 {self.page + 1} 页，向下滚动', wait=0.6)
+
+    def _scroll_down(self) -> None:
+        """记下滚动前的网格并向下滚；下一轮由 ``_wait_scroll_settled`` 等结果。"""
+        self.scroll_signature = grid_signature(self.last_screenshot)
+        self.settle_signature = None
+        self.settle_checks = 0
+        self.ctx.controller.scroll(SCROLL_NOTCHES, GRID_SCROLL_POS)
+
+    def _clear_scroll_wait(self) -> None:
+        self.scroll_signature = None
+        self.settle_signature = None
+        self.settle_checks = 0
+
+    def _wait_scroll_settled(self) -> OperationRoundResult | None:
+        """滚动后等列表停稳再继续；仍要等就返回等待结果，已停稳返回 None，到底直接换页。
+
+        游戏有时过一会儿才开始滚，滚动本身也要几百毫秒。在滚动途中截图计数或点格子，
+        行会整体错位：行重叠对不上，同一批卡被数两遍，也可能点到错位的格子。
+        所以画面变了以后，要连续两次截图都没再变才算停稳；一直没变则多等几次，
+        确认不是还没起步，才判本页到底。
+        """
+        current = grid_signature(self.last_screenshot)
+        previous = self.settle_signature
+        self.settle_signature = current
+        self.settle_checks += 1
+        if not grid_changed(self.scroll_signature, current):
+            if self.settle_checks <= BOTTOM_CONFIRM_CHECKS:
+                return self.round_wait('等列表开始滚动', wait=SETTLE_WAIT)
+            self._clear_scroll_wait()
+            return self._next_page()
+        if previous is None or grid_changed(previous, current):
+            if self.settle_checks < SETTLE_MAX_CHECKS:
+                return self.round_wait('等列表滚动停稳', wait=SETTLE_WAIT)
+            log.warning('贝果挑卡：滚动后截了 %s 次列表仍在动，按当前画面继续', self.settle_checks)
+        elif self.settle_checks > 2:
+            log.info('贝果挑卡：滚动后第 %s 次截图列表才停稳', self.settle_checks)
+        self._clear_scroll_wait()
+        self.tried.clear()
+        return None
 
     def _pages_done(self, reason: str) -> OperationRoundResult:
         """全部页看完：清点阶段据此决定挑不挑，挑卡阶段就是没找到。"""
@@ -343,7 +411,7 @@ class BagelPickKeycard(BagelOperation):
         self.page = 0
         self.need_page_click = True
         self.page_signature = None
-        self.scroll_signature = None
+        self._clear_scroll_wait()
         self.prev_strips = []
         return self.round_wait('清点完毕，开始挑卡', wait=0.05)
 
