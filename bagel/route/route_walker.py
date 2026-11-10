@@ -33,7 +33,7 @@ from one_dragon.utils import cal_utils, cv2_utils, str_utils
 from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 
-from ..defs import PLUGIN_DIR
+from ..defs import MAP_JANUS, PLUGIN_DIR
 from ..operation.close_search import BagelCloseSearch
 from ..operation.container import INTERACT_KEY_THRESHOLD
 from ..operation.operation import BagelOperation
@@ -65,6 +65,7 @@ from .route_model import (
     BagelRouteRef,
     BagelSpawnPoint,
     check_route_start,
+    map_id_of,
 )
 from .route_recorder import is_foreground
 from .route_store import (
@@ -145,11 +146,28 @@ NEAR_STEP_TURN_RADIUS: float = 8.0
 CRUISE_TURN_CAP 限制。
 """
 
+NEAR_STOP_TURN_ANGLE: float = 60.0
+"""近点内朝向偏差超过它时仍停车转到位，再慢步。
+
+近点不停车转，偏差大时一步慢步会朝错误方向走出好几像素：实机里角色面朝东、
+途径点在西边 7px，一步慢步往东走了 8px；折回后面朝西到达途径点，下一个公文包点
+在正南 6px，一步慢步又往西走了 6px，余势再滑出 5px，出了门卡在墙边。
+改用 0.08 秒短步也不行：短按几乎走不动，边走边转每轮又限幅 15 度，实机在 4.5px
+处原地蹭了 4 秒，方向不对时还越蹭越远。
+
+阈值取 60 度：5px 处定位抖动造成的偏差实测 59–78 度，转到位后残差落在阈值内，
+不会因抖动反复停车。
+"""
+
 BOX_SMALL_STEP_RADIUS: float = 3.0
 """箱子碎步半径：进到它以内用碎步（用户给定 3px）。"""
 
 ELECTRONIC_SMALL_STEP_RADIUS: float = 15.0
-"""电子保险箱短步半径：进入后保持短步，直到当前目标结束。"""
+"""电子保险箱短步半径：进入后保持短步，直到当前目标结束。
+
+只用于雅努斯幻境的电子保险箱：那一个箱子要碎步才贴得准。其他地图的电子
+保险箱和普通箱子一样慢步接近、3px 内碎步。
+"""
 
 BOX_WAIT_RADIUS: float = 1.9
 """箱子原地等待半径：距离小于 1.9px 就停步原地等提示（用户给定）。
@@ -220,6 +238,23 @@ SIDE_STEP_SECONDS: float = 0.2
 
 STUCK_STEP_LIMIT: int = 5
 """同一个点连续侧移的上限；挪这么多步还脱不了身，说明不是偏线而是真走不通。"""
+STUCK_ON_LINE_SEQUENCE: tuple[int, ...] = (-1, -1, 1, 1, 1)
+"""卡位时已站在路径线上、判不出往哪侧挪，就按这个顺序侧移：-1 左（A），1 右（D）。
+
+站在线上仍走不动，说明挡路的是线上的东西（如刚开过的电子保险箱的箱角），
+等着不动只会把侧移次数耗光。先左两步，再右三步，回到原位后再向右一步，
+两侧都试到。长度与 ``STUCK_STEP_LIMIT`` 相同。
+"""
+
+BLOCKED_DOOR_TAP_LIMIT: int = 2
+"""同一个点受阻时为开门点按 F 的最多次数。
+
+路上的普通门有时开着、有时关着，录路线时开着的门不会打成门点。关着时角色顶在门板上，
+最上面一条提示是门（如「木质单开门」）。只在受阻时才按，门开着时不会去碰它。
+"""
+
+BLOCKED_DOOR_WAIT_SECONDS: float = 0.8
+"""受阻时点按 F 开门后，等门打开的时间（秒）。"""
 
 SLOW_STUCK_SECONDS: float = 5.0
 """慢步或短步逼近时，位置连续这么久变化不足 ``STUCK_DISTANCE`` 就算受阻。"""
@@ -256,6 +291,17 @@ SURROUND_CHECK_SECONDS: float = 2.0
 MECHANICAL_HOLD_SECONDS: float = 5.0
 """机械保险箱长按 F 的最长时间（秒）。"""
 
+MECHANICAL_PROMPT_LOST_SECONDS: float = 0.5
+"""机械保险箱长按中 F 键连续消失多久（秒），就松手回碎步移动重新靠近。
+
+正常长按时「长按 F 机械保险箱」条目和 F 键一直在，面板一出才消失。
+角色带着余势滑到采信距离边缘时就开始长按，可能接着滑出交互范围，
+条目消失后长按不会生效，干等只会两次超时判失败。
+"""
+
+MECHANICAL_PROMPT_LOST_LIMIT: int = 2
+"""同一个机械保险箱点因长按中提示消失而重新靠近的最多次数，用完后按原超时逻辑处理。"""
+
 INTERACT_TAP_SECONDS: float = 0.2
 """点按交互键 F 的按住时长（秒）。"""
 
@@ -268,11 +314,44 @@ CARD_HOLD_MIN_SECONDS: float = 1.5
 录像里进度圈约 1.5 秒填满。实机出现过长按 1.1 秒时 F 键读不到、提前松手、门没开。
 """
 
+CARD_STABLE_SECONDS: float = 0.5
+"""刷卡条目与 F 键连续对准这么久（秒）才开始长按。
+
+碎步刚到点或试探侧移后角色还带着余势，提示一出现就长按，角色可能在长按中滑出
+刷卡器范围，长按不再生效。先原地等余势停下：仍在范围内就提示不变，滑出去了就
+提示消失、转去试探。0.5 秒是推断值，尚未标定。
+"""
+
+CARD_HOLD_LOST_LIMIT: int = 2
+"""长按中刷卡条目整条消失、松手回去试探的最多次数，用完后按本局失败处理。
+
+正常刷完时条目一直在，计数先变成 0，松手后提示才消失。长按开始时角色还带着
+余势滑动，可能滑出交互范围，条目和 F 键一起消失；这时只看「满 1.5 秒 F 键消失」
+会把没刷上当成刷完，后面顶着关着的门走。
+"""
+
 CARD_VERIFY_WAIT_SECONDS: float = 0.5
-"""判定刷完并松手后，等这么久再看一帧，确认 F 键没有重新对准刷卡条目（秒）。"""
+"""判定刷完并松手后，等这么久再看第一帧，确认 F 键没有重新对准刷卡条目（秒）。"""
+
+CARD_SWIPE_SETTLE_SECONDS: float = 2.0
+"""松手后 F 键仍对准刷卡条目时，最多等多久让提示消失，才判没刷上（秒，从松手起算）。
+
+实机刷开门时都是长按约 1.6 秒读到计数「0」就松手，松手约 0.56 秒后提示已消失。
+刷完的瞬间提示还显示「0/1」，若只看松手 0.5 秒后的一帧就判没刷上，重按前会读到
+计数 0，被当成没带卡而停掉任务。所以给提示留时间消失；没带卡时提示不会消失，
+等满后照旧重按，重按前读到 0 仍按没带卡停止。
+"""
 
 CARD_PROMPT_WAIT_SECONDS: float = 2.0
-"""刷卡提示暂时读不到、或 F 键没对准刷卡条目时，最多等多久（秒）。"""
+"""F 键没出现或没对准刷卡条目时，最多等多久（秒）。"""
+
+CARD_PROMPT_LOST_SECONDS: float = 0.5
+"""还没长按时刷卡条目连续消失多久（秒），就回碎步移动左右试探。
+
+碎步刚到点时角色带着余势，提示出现后可能又滑出刷卡器范围。只在交互节点
+原地等不会把角色带回去，所以提示稳定消失后改回移动节点试探。留 0.5 秒是为了
+不把单帧闪烁当成消失。
+"""
 
 CARD_CLEAR_TAP_LIMIT: int = 2
 """F 键落在地面拾取物上时，最多点按几次 F 把它捡走。"""
@@ -352,6 +431,16 @@ PICKUP_FAIL_LIMIT: int = 3
 
 PICKUP_TAP_WAIT: float = 0.4
 """点按 F 拾取后等这么久再看下一帧（秒）。"""
+
+PICKUP_BLOCK_ICONS: tuple[str, ...] = ('interact_icon', 'searched_icon', 'card_key_icon')
+"""移动中提示列表里有这些条目时不顺路拾取。
+
+提示列表按距离排序，角色还在滑动时 F 键会在条目间换位：截图里 F 键对准拾取物，
+按下时可能已经对准旁边的保险箱，误开解锁小游戏。停下后与容器交互前仍会先捡。
+"""
+
+STRAY_UNLOCK_ESC_LIMIT: int = 2
+"""移动中误开了非目标电子保险箱的解锁界面时，同一个点最多按几次 esc 退出。"""
 
 
 def _closest_on_segment(
@@ -458,6 +547,10 @@ class BagelRouteWalker(BagelOperation):
         self.f_pressed: bool = False
         self.mechanical_hold_until: float | None = None
         self.mechanical_retried: bool = False
+        self.mechanical_lost_since: float | None = None
+        """机械保险箱长按中 F 键开始消失的时刻；F 键在时为 None。"""
+        self.mechanical_lost_count: int = 0
+        """当前点因长按中提示消失而重新靠近的次数。"""
         self.card_hold_started: float | None = None
         """刷卡处开始长按 F 的时刻；没在长按时为 None。"""
         self.card_retried: bool = False
@@ -467,7 +560,19 @@ class BagelRouteWalker(BagelOperation):
         self.card_clear_taps: int = 0
         """为捡走挡在刷卡条目上方的地面拾取物，已经点按 F 的次数。"""
         self.card_wait_since: float | None = None
-        """刷卡提示读不到或 F 键没对准的起始时刻。"""
+        """F 键没出现或没对准刷卡条目的起始时刻。"""
+        self.card_lost_since: float | None = None
+        self.card_stable_since: float | None = None
+        """刷卡条目与 F 键开始连续对准的时刻；未对准时为 None。"""
+        """还没长按时刷卡条目消失的起始时刻。"""
+        self.card_hold_lost_since: float | None = None
+        """长按中刷卡条目整条消失的起始时刻；条目在时为 None。"""
+        self.card_hold_lost_count: int = 0
+        """当前房卡门因长按中条目消失而松手回去试探的次数。"""
+        self.stray_unlock_escapes: int = 0
+        """当前点为退出误开的解锁界面已按 esc 的次数。"""
+        self.blocked_door_taps: int = 0
+        """当前点受阻时为开门已点按 F 的次数。"""
         self.pickup_text: str | None = None
         """正在点按 F 拾取的条目文字；没在拾取时为 None。整局有效，换点不清。"""
         self.pickup_taps: int = 0
@@ -918,6 +1023,8 @@ class BagelRouteWalker(BagelOperation):
         return self._move_toward()
 
     @node_from(from_name='点调度', status='下一格是箱类')
+    @node_from(from_name='按类型交互', status='刷卡提示消失')
+    @node_from(from_name='按类型交互', status='机械保险箱提示消失')
     @operation_node(name='碎步移动', mute=True)
     def small_step(self) -> OperationRoundResult:
         """按距离逼近箱类点，统一检查到位、提示与单点超时。"""
@@ -1121,6 +1228,9 @@ class BagelRouteWalker(BagelOperation):
             self.input_worker.release_interact()
             self._reset_point_state()
             return self.round_success('机械保险箱已打开')
+        lost = self._mechanical_prompt_lost()
+        if lost is not None:
+            return lost
         if time.monotonic() >= self.mechanical_hold_until:
             self.input_worker.release_interact()
             if self.mechanical_retried:
@@ -1131,6 +1241,42 @@ class BagelRouteWalker(BagelOperation):
             return self.round_wait('长按F超时，释放后重试', wait=0.3)
         return self.round_wait('长按F等待面板', wait=0.3)
 
+    def _mechanical_prompt_lost(self) -> OperationRoundResult | None:
+        """长按中 F 键连续消失 ``MECHANICAL_PROMPT_LOST_SECONDS``：松手回碎步移动重新靠近。
+
+        只在路线上的机械保险箱点生效；路线末尾的现场交互没有当前点，
+        回不到碎步移动，仍按原超时逻辑处理。同一点最多重新靠近
+        ``MECHANICAL_PROMPT_LOST_LIMIT`` 次。
+
+        Returns:
+            转回碎步移动的结果；F 键仍在、还没确认消失或次数用完时返回 None。
+        """
+        point = self._current_point()
+        if point is None or point.kind != 'mechanical_safe':
+            return None
+        if self.mechanical_lost_count >= MECHANICAL_PROMPT_LOST_LIMIT:
+            return None
+        now = time.monotonic()
+        if self._interact_key_rows():
+            self.mechanical_lost_since = None
+            return None
+        if self.mechanical_lost_since is None:
+            self.mechanical_lost_since = now
+        if now - self.mechanical_lost_since < MECHANICAL_PROMPT_LOST_SECONDS:
+            return None
+        self.input_worker.release_interact()
+        self.mechanical_lost_count += 1
+        self.mechanical_lost_since = None
+        self.mechanical_hold_until = None
+        self.current_kind = None
+        self.target_wait_since = None
+        self.small_step_since = None
+        log.info(
+            '贝果第 %s 点（机械保险箱）长按中提示消失，松手回碎步移动重新靠近（第 %s/%s 次），位置 %s',
+            self.cursor + 1, self.mechanical_lost_count, MECHANICAL_PROMPT_LOST_LIMIT, self.position,
+        )
+        return self.round_success('机械保险箱提示消失')
+
     def _hold_card_reader(self) -> OperationRoundResult:
         """刷卡处：确认 F 键对准刷卡条目后长按 F，直到刷完。
 
@@ -1139,7 +1285,8 @@ class BagelRouteWalker(BagelOperation):
         不看图标，而看 F 键：长按满 ``CARD_HOLD_MIN_SECONDS`` 后 F 键消失，
         或计数读成 0，就算刷完。
 
-        判定刷完松手后，再看一帧确认：F 键仍对准刷卡条目说明没刷上，重按一次。
+        判定刷完松手后确认：F 键在松手后 ``CARD_SWIPE_SETTLE_SECONDS`` 内仍对准刷卡条目，
+        说明没刷上，重按一次。
 
         F 键落在别的条目上（录像里地面拾取物会挤到刷卡条目上方）时，
         不是容器就点按 F 捡走，最多 ``CARD_CLEAR_TAP_LIMIT`` 次。
@@ -1148,14 +1295,16 @@ class BagelRouteWalker(BagelOperation):
         if self.card_hold_started is not None:
             return self._check_card_hold(now)
         if self.card_verify_since is not None:
-            return self._verify_card_swipe()
+            return self._verify_card_swipe(now)
         card = self._card_entry()
         if card is None:
+            self.card_stable_since = None
             if self.card_held:
                 self.card_swiped = True
                 self._reset_point_state()
                 return self.round_success('已完成')
-            return self._wait_card_prompt(now, '刷卡提示消失')
+            return self._card_prompt_lost(now)
+        self.card_lost_since = None
         card_y, text = card
         count = self._card_count(text)
         if count is not None and count == 0:
@@ -1166,10 +1315,18 @@ class BagelRouteWalker(BagelOperation):
         if any(abs(key_y - card_y) <= CARD_KEY_ROW_TOLERANCE for key_y in keys):
             self._release_forward()
             self.card_wait_since = None
+            if self.card_stable_since is None:
+                self.card_stable_since = now
+            stable = now - self.card_stable_since
+            if stable < CARD_STABLE_SECONDS:
+                return self.round_wait('刷卡提示已对准，等稳定后长按', wait=0.1)
+            log.info('贝果刷卡提示稳定 %.2f 秒，开始长按，位置 %s', stable, self.position)
+            self.card_stable_since = None
             self.card_hold_started = now
             self.card_held = True
             self.input_worker.hold_interact()
             return self.round_wait('长按F刷卡', wait=0.2)
+        self.card_stable_since = None
         if not keys:
             return self._wait_card_prompt(now, 'F 键未出现')
         selected_y = min(keys)
@@ -1192,7 +1349,14 @@ class BagelRouteWalker(BagelOperation):
         elapsed = now - (self.card_hold_started or now)
         card = self._card_entry()
         count = self._card_count(card[1]) if card is not None else None
-        done = count == 0 or (elapsed >= CARD_HOLD_MIN_SECONDS and not self._interact_key_rows())
+        keys = self._interact_key_rows()
+        if card is None and not keys:
+            lost = self._card_hold_lost(now, elapsed)
+            if lost is not None:
+                return lost
+        else:
+            self.card_hold_lost_since = None
+        done = count == 0 or (elapsed >= CARD_HOLD_MIN_SECONDS and not keys)
         if done:
             self.input_worker.release_interact()
             log.info('贝果刷卡松手：长按 %.1f 秒，计数 %s', elapsed, '未读到' if count is None else count)
@@ -1209,26 +1373,80 @@ class BagelRouteWalker(BagelOperation):
         self.card_retried = True
         return self.round_wait('刷卡长按超时，释放后重按', wait=0.3)
 
-    def _verify_card_swipe(self) -> OperationRoundResult:
+    def _card_hold_lost(self, now: float, elapsed: float) -> OperationRoundResult | None:
+        """长按中刷卡条目与 F 键一起消失：在满 ``CARD_HOLD_MIN_SECONDS`` 前开始消失就没刷上。
+
+        正常长按时进度圈会盖住钥匙图标，图标分数掉到 0.75–0.79、匹配不到，但 F 键一直在；
+        滑出交互范围或转开时，条目和 F 键一起消失。所以只在两者都没有时才算消失。
+        消失始于 ``CARD_HOLD_MIN_SECONDS`` 之后的，交回原判据（多半是刷完）；之前的，
+        连续 ``CARD_PROMPT_LOST_SECONDS`` 后松手回碎步试探，与还没长按时提示消失走同一条路。
+        同一个门最多 ``CARD_HOLD_LOST_LIMIT`` 次。
+
+        Args:
+            now: 本轮的单调时钟读数。
+            elapsed: 本次长按已持续的秒数。
+
+        Returns:
+            等待或转回碎步移动的结果；交回原判据时返回 None。
+        """
+        if self.card_hold_lost_since is None:
+            self.card_hold_lost_since = now
+        started = self.card_hold_started if self.card_hold_started is not None else now
+        if self.card_hold_lost_since - started >= CARD_HOLD_MIN_SECONDS:
+            return None
+        if now - self.card_hold_lost_since < CARD_PROMPT_LOST_SECONDS:
+            return self.round_wait('长按F刷卡中：刷卡条目和 F 键消失', wait=0.1)
+        self.input_worker.release_interact()
+        self.card_hold_started = None
+        self.card_hold_lost_since = None
+        self.card_held = False
+        self.card_hold_lost_count += 1
+        if self.card_hold_lost_count > CARD_HOLD_LOST_LIMIT:
+            self._reset_point_state()
+            return self.round_recoverable_fail('刷卡长按中刷卡提示反复消失，门没刷开')
+        self.card_wait_since = None
+        self.card_clear_taps = 0
+        self.current_kind = None
+        if self.card_probe_step is None:
+            self.card_probe_step = 0
+        log.info(
+            '贝果第 %s 点（房卡门）长按 %.1f 秒时刷卡提示消失，没刷上，松手回碎步移动左右试探'
+            '（第 %s/%s 次，从第 %s 步起），位置 %s',
+            self.cursor + 1, elapsed, self.card_hold_lost_count, CARD_HOLD_LOST_LIMIT,
+            self.card_probe_step + 1, self.position,
+        )
+        return self.round_success('刷卡提示消失')
+
+    def _verify_card_swipe(self, now: float) -> OperationRoundResult:
         """松手后确认刷卡结果。
 
         刷完后计数变成 0、F 键消失；F 键仍与刷卡条目同一行，说明这次长按没刷上
         （提前松手或长按被打断）。计数 OCR 常读不到，所以这里只看 F 键模板。
-        没刷上时重按一次，重按后仍没刷上按失败局收尾。
+        F 键仍对准时先等提示消失，从松手起满 ``CARD_SWIPE_SETTLE_SECONDS`` 仍对准
+        才判没刷上；没刷上时重按一次，重按后仍没刷上按失败局收尾。
+
+        Args:
+            now: 本轮的单调时钟读数。
         """
-        self.card_verify_since = None
+        released_at = self.card_verify_since if self.card_verify_since is not None else now
         card = self._card_entry()
         if card is not None:
             card_y, text = card
             keys = self._interact_key_rows()
             if any(abs(key_y - card_y) <= CARD_KEY_ROW_TOLERANCE for key_y in keys):
+                if now - released_at < CARD_SWIPE_SETTLE_SECONDS:
+                    return self.round_wait('松手后 F 键仍对准刷卡条目，等提示消失', wait=0.2)
+                self.card_verify_since = None
                 if self.card_retried:
                     self._reset_point_state()
                     return self.round_recoverable_fail('刷卡重按后 F 键仍对准刷卡条目，门没刷开')
                 self.card_retried = True
-                log.info('贝果刷卡松手后 F 键仍对准刷卡条目，判定没刷上，重按：%s', text)
+                log.info('贝果刷卡松手 %.1f 秒后 F 键仍对准刷卡条目，判定没刷上，重按：%s',
+                         now - released_at, text)
                 return self.round_wait('刷卡没刷上，重按', wait=0.1)
-        log.info('贝果刷卡完成：%s', '刷卡提示已消失' if card is None else f'F 键已消失，条目 {card[1]}')
+        self.card_verify_since = None
+        log.info('贝果刷卡完成：松手 %.1f 秒后%s', now - released_at,
+                 '刷卡提示已消失' if card is None else f'F 键已消失，条目 {card[1]}')
         self.card_swiped = True
         self._reset_point_state()
         return self.round_success('已完成')
@@ -1260,6 +1478,32 @@ class BagelRouteWalker(BagelOperation):
             CARD_PROBE_STEP_SECONDS, self.position,
         )
         return self.round_wait('房卡门左右试探刷卡提示', wait=0.3)
+
+    def _card_prompt_lost(self, now: float) -> OperationRoundResult:
+        """还没长按时刷卡条目消失：确认 ``CARD_PROMPT_LOST_SECONDS`` 后回碎步移动试探。
+
+        试探进度沿用已有的，不从头开始；提示再出现时移动节点会转回交互，
+        试探序列走完仍没有提示，由 ``_probe_card_reader`` 判失败。
+
+        Args:
+            now: 本轮的单调时钟读数。
+        """
+        self._release_forward()
+        if self.card_lost_since is None:
+            self.card_lost_since = now
+        if now - self.card_lost_since < CARD_PROMPT_LOST_SECONDS:
+            return self.round_wait('等待刷卡：刷卡提示消失', wait=0.1)
+        self.card_lost_since = None
+        self.card_wait_since = None
+        self.card_clear_taps = 0
+        self.current_kind = None
+        if self.card_probe_step is None:
+            self.card_probe_step = 0
+        log.info(
+            '贝果第 %s 点（房卡门）刷卡提示出现后又消失，回到碎步移动左右试探（从第 %s 步起），位置 %s',
+            self.cursor + 1, self.card_probe_step + 1, self.position,
+        )
+        return self.round_success('刷卡提示消失')
 
     def _wait_card_prompt(self, now: float, reason: str) -> OperationRoundResult:
         """刷卡前条件暂不满足时原地等，超过 ``CARD_PROMPT_WAIT_SECONDS`` 判失败。
@@ -1322,6 +1566,25 @@ class BagelRouteWalker(BagelOperation):
         )
         return [area.pc_rect.y1 + item.center.y for item in result]
 
+    def _icon_rows(self, icon: str) -> list[int]:
+        """提示列表里某种条目图标所在的整屏纵坐标。
+
+        Args:
+            icon: 图标模板名，如 ``interact_icon``。
+        """
+        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
+        template = _load_icon_template(icon)
+        if area is None or template is None:
+            return []
+        crop = cv2_utils.crop_image_only(self.last_screenshot, area.pc_rect)
+        if crop is None or crop.size == 0:
+            return []
+        result = cv2_utils.match_template(
+            crop, template[0], ICON_THRESHOLD,
+            mask=template[1], only_best=False, ignore_inf=True,
+        )
+        return [area.pc_rect.y1 + item.center.y for item in result]
+
     def _row_has_icon(self, row_y: int, icon: str) -> bool:
         """指定行上是否有某种条目图标。
 
@@ -1329,28 +1592,18 @@ class BagelRouteWalker(BagelOperation):
             row_y: 整屏纵坐标。
             icon: 图标模板名，如 ``interact_icon``。
         """
-        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
-        template = _load_icon_template(icon)
-        if area is None or template is None:
-            return False
-        crop = cv2_utils.crop_image_only(self.last_screenshot, area.pc_rect)
-        if crop is None or crop.size == 0:
-            return False
-        result = cv2_utils.match_template(
-            crop, template[0], ICON_THRESHOLD,
-            mask=template[1], only_best=False, ignore_inf=True,
-        )
-        return any(
-            abs(area.pc_rect.y1 + item.center.y - row_y) <= CARD_KEY_ROW_TOLERANCE
-            for item in result
-        )
+        return any(abs(y - row_y) <= CARD_KEY_ROW_TOLERANCE for y in self._icon_rows(icon))
 
-    def _try_pickup(self) -> OperationRoundResult | None:
+    def _try_pickup(self, moving: bool = False) -> OperationRoundResult | None:
         """F 键落在地面拾取物上就停下点按 F 捡走；没有可捡的返回 None。
 
         捡起后条目消失，F 键移到下一条。同一条按满 ``PICKUP_TAP_LIMIT`` 次还在，
         记为捡不起来，本局不再按它；累计 ``PICKUP_FAIL_LIMIT`` 条捡不起来就不再拾取。
         同名的两件拾取物挨在一起时，前一件捡起后条目文字不变，也会多耗几次按键。
+
+        Args:
+            moving: 是否在移动节点里顺路拾取。为 True 时，提示列表里有容器、
+                搜过的容器或刷卡条目就不按，见 ``PICKUP_BLOCK_ICONS``。
         """
         if self.pickup_failures >= PICKUP_FAIL_LIMIT:
             return None
@@ -1365,6 +1618,8 @@ class BagelRouteWalker(BagelOperation):
             return None
         text = row[1]
         if text in self.pickup_ignored:
+            return None
+        if moving and any(self._icon_rows(icon) for icon in PICKUP_BLOCK_ICONS):
             return None
         if self.pickup_taps >= PICKUP_TAP_LIMIT:
             self.pickup_ignored.add(text)
@@ -1541,6 +1796,9 @@ class BagelRouteWalker(BagelOperation):
             self._release_forward()
             if self.is_bagel_result():
                 return self.round_fail(self.STATUS_DEFEATED)
+            stray = self._handle_stray_unlock(point)
+            if stray is not None:
+                return stray
             if self.last_position is None:
                 return self.round_retry('起步定位失败，重试', wait=0.3)
             if self.locate_miss_since is None:
@@ -1557,6 +1815,7 @@ class BagelRouteWalker(BagelOperation):
         distance = hypot(point.x - position[0], point.y - position[1])
         if (
             point.kind == 'electronic_safe'
+            and map_id_of(point.layer) == MAP_JANUS
             and distance <= ELECTRONIC_SMALL_STEP_RADIUS
             and not self.electronic_small_steps
         ):
@@ -1568,9 +1827,12 @@ class BagelRouteWalker(BagelOperation):
             )
         if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
             return self.round_wait('等待动作后的新截图', wait=0.05)
-        pickup = self._try_pickup()
-        if pickup is not None:
-            return pickup
+        # 已在途径点到达半径内就先算到点：拾取那几轮不做到点判定，角色带着上一步
+        # 慢步的余势会穿过到达半径而不被认到点。拾取留到下一个点的第一轮再做。
+        if not (point.kind == BEACON and distance <= ARRIVE_RADIUS and self.retreat_point is None):
+            pickup = self._try_pickup(moving=True)
+            if pickup is not None:
+                return pickup
         if self.retreat_point is not None:
             return self._retreat(position)
         if distance <= SPRINT_DISTANCE and self.sprinting:
@@ -1590,7 +1852,7 @@ class BagelRouteWalker(BagelOperation):
             if distance <= BEACON_SLOW_RADIUS:
                 return self._slow_step(point, position)
             return self._cruise(point, position)
-        # 电子保险箱进入 15px 后保持短步；其他箱类仍在 3px 内使用碎步。
+        # 雅努斯电子保险箱进入 15px 后保持短步；其他箱类仍在 3px 内使用碎步。
         # 可信提示出现就转入交互，不要求先走到原地等待半径。
         prompt = self._prompt_stop(distance)
         if prompt is not None:
@@ -1609,6 +1871,35 @@ class BagelRouteWalker(BagelOperation):
             return self._short_step()
         self.small_step_since = None
         return self._slow_step(point, position, short_press=self.electronic_small_steps)
+
+    def _handle_stray_unlock(self, point: BagelRoutePoint) -> OperationRoundResult | None:
+        """移动中出现电子保险箱解锁界面时接手；没有该界面返回 None。
+
+        F 键在条目间换位时，按 F 可能误开旁边的电子保险箱。解锁界面盖住小地图，
+        不处理就会连续定位失败。目标点就是电子保险箱时直接转入交互，解锁操作
+        认得已打开的界面；否则按 esc 退出，同一个点最多 ``STRAY_UNLOCK_ESC_LIMIT`` 次。
+
+        Args:
+            point: 当前游标点。
+        """
+        if not self._has('大保险解锁提示'):
+            return None
+        self.locate_miss_since = None
+        if point.kind == 'electronic_safe':
+            log.info('贝果第 %s 点（电子保险箱）移动中已进入解锁界面，直接接着解锁', self.cursor + 1)
+            self.current_kind = 'electronic_safe'
+            self.target_wait_since = None
+            return self.round_success('提示已出现')
+        if self.stray_unlock_escapes >= STRAY_UNLOCK_ESC_LIMIT:
+            return None
+        self.stray_unlock_escapes += 1
+        log.info(
+            '贝果第 %s 点（%s）移动中误开了电子保险箱解锁界面，按 esc 退出（第 %s 次）',
+            self.cursor + 1, point.kind, self.stray_unlock_escapes,
+        )
+        self.ctx.controller.btn_press('esc', press_time=0.1)
+        self._record_input()
+        return self.round_wait('误开解锁界面，按 esc 退出', wait=0.5)
 
     def _wait_here(self, point: BagelRoutePoint) -> OperationRoundResult:
         """已站在箱子上：原地不动，等提示出现或超时跳到下一个点（房卡门判失败）。
@@ -1872,7 +2163,7 @@ class BagelRouteWalker(BagelOperation):
         避免多次短按相互覆盖。
 
         近距离不再按角度停车转：这个距离上的目标方位由定位抖动决定，
-        改成边走边转（线程内限幅 15 度）。
+        改成边走边转（线程内限幅 15 度）；偏差超过 ``NEAR_STOP_TURN_ANGLE`` 时仍停车转到位。
 
         Args:
             point: 当前目标点。
@@ -1891,8 +2182,9 @@ class BagelRouteWalker(BagelOperation):
         angle_diff = cal_utils.angle_delta(angle % 360, target_angle)
         distance = hypot(point.x - position[0], point.y - position[1])
         near = distance <= NEAR_STEP_TURN_RADIUS
-        self._submit_turn(target_angle, cruise_only=near)
-        if abs(angle_diff) > WALK_TURN_ANGLE and not near:
+        stop_turn = abs(angle_diff) > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
+        self._submit_turn(target_angle, cruise_only=near and not stop_turn)
+        if stop_turn:
             # 大偏差：松键停车等转向线程转到位，不短按前进。
             self._release_forward()
             return self.round_wait(f'{action}停车等转向 {angle_diff:.0f}度')
@@ -1939,20 +2231,26 @@ class BagelRouteWalker(BagelOperation):
             return None
         if time.monotonic() - started < STUCK_SECONDS:
             return None
+        door = self._open_blocking_door()
+        if door is not None:
+            self.stuck_since = None
+            return door
         if self.stuck_steps >= STUCK_STEP_LIMIT:
             return self._blocked('持续前进但位置未变化，侧移多次仍无法脱离')
         direction = self._path_side(position, point, angle)
+        on_line = direction is None and self._previous_point() is not None
+        if on_line:
+            direction = STUCK_ON_LINE_SEQUENCE[self.stuck_steps % len(STUCK_ON_LINE_SEQUENCE)]
         self.stuck_steps += 1
         self.stuck_since = None
         if direction is None:
-            # 没有上一个点，或已经站在线上，判断不出该往哪挪，不瞎动。
+            # 路线第一个点没有路径线，判断不出该往哪挪，不瞎动。
             return self.round_wait('前进受阻，等待重新判定路径线', wait=0.2)
         self.input_worker.side_step(direction, SIDE_STEP_SECONDS)
         self._record_input()
-        return self.round_wait(
-            f'前进受阻，往路径线{"右" if direction > 0 else "左"}侧移动一步',
-            wait=SIDE_STEP_SECONDS + 0.1,
-        )
+        side = '右' if direction > 0 else '左'
+        what = f'已在路径线上，试着往{side}侧' if on_line else f'往路径线{side}侧'
+        return self.round_wait(f'前进受阻，{what}移动一步', wait=SIDE_STEP_SECONDS + 0.1)
 
     def _check_slow_stuck(self, position: tuple[float, float]) -> OperationRoundResult | None:
         """慢步或短步逼近时，位置停滞满 ``SLOW_STUCK_SECONDS`` 就按受阻处理。
@@ -1966,9 +2264,37 @@ class BagelRouteWalker(BagelOperation):
             if hypot(position[0] - origin[0], position[1] - origin[1]) < STUCK_DISTANCE:
                 if now - started < SLOW_STUCK_SECONDS:
                     return None
+                door = self._open_blocking_door()
+                if door is not None:
+                    self.slow_stuck_since = None
+                    return door
                 return self._blocked('慢步前进但位置未变化')
         self.slow_stuck_since = (position, now)
         return None
+
+    def _open_blocking_door(self) -> OperationRoundResult | None:
+        """受阻时最上面一条提示是门：松开前进键，点按 F 开门。
+
+        同一个点最多 ``BLOCKED_DOOR_TAP_LIMIT`` 次；不是门或次数用完返回 None，
+        交回侧移、退回的原逻辑。
+
+        Returns:
+            开门后等待的结果；不开门时返回 None。
+        """
+        if self.blocked_door_taps >= BLOCKED_DOOR_TAP_LIMIT:
+            return None
+        entry = self._top_entry()
+        if entry is None or self._classify(entry[0], entry[1]) != 'door':
+            return None
+        self._release_forward()
+        self.blocked_door_taps += 1
+        log.info(
+            '贝果第 %s 点前进受阻，前方是「%s」，点按 F 开门（第 %s/%s 次），位置 %s',
+            self.cursor + 1, entry[1], self.blocked_door_taps, BLOCKED_DOOR_TAP_LIMIT, self.position,
+        )
+        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
+        self._record_input()
+        return self.round_wait('前进受阻，点按 F 开门', wait=BLOCKED_DOOR_WAIT_SECONDS)
 
     def _blocked(self, reason: str) -> OperationRoundResult:
         """当前点走不通：先退回上一个点再重走，次数用完或退回途中受阻才判失败。
@@ -2124,11 +2450,19 @@ class BagelRouteWalker(BagelOperation):
         self.f_pressed = False
         self.mechanical_hold_until = None
         self.mechanical_retried = False
+        self.mechanical_lost_since = None
+        self.mechanical_lost_count = 0
         self.card_hold_started = None
         self.card_retried = False
         self.card_held = False
         self.card_clear_taps = 0
         self.card_wait_since = None
+        self.card_stable_since = None
+        self.card_lost_since = None
+        self.card_hold_lost_since = None
+        self.card_hold_lost_count = 0
+        self.stray_unlock_escapes = 0
+        self.blocked_door_taps = 0
         self.card_probe_step = None
         self.card_verify_since = None
         self.target_wait_since = None
