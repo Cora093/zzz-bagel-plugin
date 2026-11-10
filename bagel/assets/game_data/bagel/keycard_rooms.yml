@@ -17,3 +17,9 @@ rooms:
     x: 950
     y: 133
     radius: 20
+  - id: bunless_storage_2f
+    name: 无力野人镇仓储中心二层板房
+    layer: 城郊幻境/Custom4_1
+    x: 1077
+    y: 189
+    radius: 20
