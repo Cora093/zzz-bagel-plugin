@@ -3,9 +3,11 @@
 退出时游戏只保留安全箱物资，背包里的东西带不出去。路上直接拾取的物品都进背包，
 所以退出前按 B 打开局内背包页，按入箱同一套优先级逐件填空或对换。
 
-背包页的几何取自一张实机截图（1920×1080，背包 4/20）：
-背包每排 5 格，前三排格心 y=450/570/690，第四排被安全箱面板挡住、要滚动才看得到；
-安全箱格心与搜查面板相同（y=898），沿用 ``inspect_safe_slots``。
+背包页左栏（队伍、道具、背包）整体可以滚动，打开时的滚动位置不固定，背包格不能写死。
+每次先用 OCR 找「背包(n/20)」标题，按标题定各排格心；件数多于可见格时先往下滚。
+几何取自一张实机截图（1920×1080）：标题行心 y=373 时，背包首排格心 y=450，排距 120，
+每排 5 格，列心 x=259/360/461/562/662；卡片上下各约 55 像素。左栏底部固定压着安全箱面板，
+卡片下沿须在 y=795 以上才算完整可见。安全箱格心与搜查面板相同（y=898），沿用 ``inspect_safe_slots``。
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from one_dragon.utils.log_utils import log
 
 from ..vision.item_vision import (
     ACTION_FILL,
+    QUALITY_UNKNOWN,
+    BagelSlotMark,
     choose_store_action,
     inspect_occupied,
 )
@@ -44,10 +48,19 @@ if TYPE_CHECKING:
 BACKPACK_KEY: str = 'b'
 """局内打开背包页的按键。"""
 _BACKPACK_XS: tuple[int, ...] = (259, 360, 461, 562, 662)
-_BACKPACK_YS: tuple[int, ...] = (450, 570, 690)
-BACKPACK_SLOT_CENTERS: tuple[Point, ...] = tuple(Point(x, y) for y in _BACKPACK_YS for x in _BACKPACK_XS)
-"""背包页不滚动时完整可见的 15 格，按从左到右、从上到下编号。"""
-_BACKPACK_COUNT_PATTERN: re.Pattern[str] = re.compile(r'(\d+)/(\d+)')
+_BACKPACK_ROWS: int = 4
+_FIRST_ROW_OFFSET: int = 77
+"""标题行心到首排格心的纵向距离。"""
+_ROW_STEP: int = 120
+_CARD_HALF_HEIGHT: int = 55
+_VISIBLE_TOP: int = 95
+"""左栏可见区上沿（页签栏下方）。"""
+_VISIBLE_BOTTOM: int = 795
+"""左栏可见区下沿，再往下是固定的安全箱面板。"""
+_SCROLL_POS: Point = Point(461, 600)
+"""在左栏上滚动鼠标滚轮的位置。"""
+_SCROLL_LIMIT: int = 6
+_HEADER_PATTERN: re.Pattern[str] = re.compile(r'背包.*?(\d+)/(\d+)')
 
 _STATUS_NEXT: str = '继续整理'
 _REPRESS_SECONDS: float = 3.0
@@ -57,7 +70,8 @@ _REPRESS_SECONDS: float = 3.0
 class BagelOrganizeBackpack(BagelOperation):
     """打开局内背包页，把背包物品按优先级换进安全箱，再关掉背包页。
 
-    只看不滚动时可见的 15 格；背包第 16–20 格的物品不参与整理。
+    只看定位时完整可见的几排；滚不到的排不参与整理。品质认不出的格子不拖，
+    格心没对准时格子会被读成未知品质，不能拿它去换安全箱里的东西。
     任何一步失败都只影响整理本身：调用方照常退出，安全箱里已有的物资不受影响。
     """
 
@@ -95,6 +109,10 @@ class BagelOrganizeBackpack(BagelOperation):
         self._pending_kind: str | None = None
         self._repeated: int = 0
         self._pressed_at: float | None = None
+        self._centers: tuple[Point, ...] = ()
+        self._scrolls: int = 0
+        self._last_header_y: int | None = None
+        self._logged_unknown: set[int] = set()
 
     def handle_init(self) -> None:
         """每次执行清空计数与待核对拖拽。"""
@@ -105,6 +123,10 @@ class BagelOrganizeBackpack(BagelOperation):
         self._skipped = set()
         self._panel_wait = 0
         self._pressed_at = None
+        self._centers = ()
+        self._scrolls = 0
+        self._last_header_y = None
+        self._logged_unknown = set()
         self._clear_pending()
 
     def _backpack_open(self) -> bool:
@@ -122,7 +144,6 @@ class BagelOrganizeBackpack(BagelOperation):
         if self.is_bagel_result():
             return self.round_fail(self.STATUS_DEFEATED)
         if self._backpack_open():
-            self._log_backpack_count()
             return self.round_success('背包已打开')
         if self._has('搜查容器标题') or self._has('电子保险箱标题'):
             self.ctx.controller.btn_press('esc', press_time=0.1)
@@ -135,22 +156,63 @@ class BagelOrganizeBackpack(BagelOperation):
             return self.round_wait('已按 B 打开背包', wait=0.8)
         return self.round_retry('未识别局内画面，无法打开背包', wait=0.5)
 
-    def _log_backpack_count(self) -> None:
-        """记下背包格数；超过可见的 15 格时提示第四排不参与整理。"""
+    def _find_header(self) -> tuple[int, int] | None:
+        """在左栏找「背包(n/20)」标题，返回（标题行心纵坐标, 件数）；找不到为 None。"""
         texts = self.ctx.ocr_service.get_ocr_result_list(
-            image=self.last_screenshot, rect=self.ctx.screen_loader.get_area('贝果-局内', '背包格数').rect,
+            image=self.last_screenshot, rect=self.ctx.screen_loader.get_area('贝果-局内', '背包标题').rect,
         )
-        text = ''.join(item.data for item in texts)
-        match = _BACKPACK_COUNT_PATTERN.search(text.replace(' ', ''))
-        if match is None:
-            log.info('贝果整理背包：背包格数未读到（OCR=%s）', text)
-            return
-        count = int(match.group(1))
-        log.info('贝果整理背包：背包 %s/%s', count, match.group(2))
-        if count > len(BACKPACK_SLOT_CENTERS):
-            log.warning('贝果整理背包：背包超过 %s 件，第四排不在画面内，不参与整理', len(BACKPACK_SLOT_CENTERS))
+        for item in texts:
+            match = _HEADER_PATTERN.search(str(item.data).replace(' ', ''))
+            if match is not None:
+                return int(item.center.y), int(match.group(1))
+        return None
 
     @node_from(from_name='打开背包')
+    @operation_node(name='定位背包格', timeout_seconds=10)
+    def locate_grid(self) -> OperationRoundResult:
+        """按标题定格心；件数多于可见格时往下滚，标题不动了或滚到上限就按当前画面定。"""
+        if not self._backpack_open():
+            return self._wait_panel('背包页不在画面内')
+        header = self._find_header()
+        if header is None:
+            if self._scrolls < _SCROLL_LIMIT:
+                # 标题可能被滚出上沿，往回滚一格再找。
+                self._scrolls += 1
+                self._last_header_y = None
+                self.ctx.controller.scroll(-1, _SCROLL_POS)
+                return self.round_wait('找不到背包标题，往上滚一格', wait=0.5)
+            return self.round_fail('左栏里找不到背包标题')
+        header_y, count = header
+        needed_rows = min(_BACKPACK_ROWS, max(1, -(-count // len(_BACKPACK_XS))))
+        rows = self._visible_rows(header_y)
+        if (len(rows) < needed_rows and self._scrolls < _SCROLL_LIMIT
+                and header_y != self._last_header_y):
+            self._scrolls += 1
+            self._last_header_y = header_y
+            self.ctx.controller.scroll(1, _SCROLL_POS)
+            return self.round_wait('往下滚动背包', wait=0.5)
+        self._centers = tuple(
+            Point(x, header_y + _FIRST_ROW_OFFSET + _ROW_STEP * row) for row in rows for x in _BACKPACK_XS
+        )
+        log.info('贝果整理背包：背包 %s 件，标题 y=%s，可见第 %s 排（滚动 %s 次）',
+                 count, header_y, '、'.join(str(row + 1) for row in rows) or '无', self._scrolls)
+        if len(rows) < needed_rows:
+            log.warning('贝果整理背包：背包有 %s 排物品，只看得到 %s 排，其余不参与整理', needed_rows, len(rows))
+        if not rows:
+            return self.round_fail('背包格都不在可见区')
+        return self.round_success('已定位背包格')
+
+    @staticmethod
+    def _visible_rows(header_y: int) -> list[int]:
+        """标题在 header_y 时，卡片上下沿都落在左栏可见区内的排号（从 0 开始）。"""
+        rows: list[int] = []
+        for row in range(_BACKPACK_ROWS):
+            center = header_y + _FIRST_ROW_OFFSET + _ROW_STEP * row
+            if center - _CARD_HALF_HEIGHT >= _VISIBLE_TOP and center + _CARD_HALF_HEIGHT <= _VISIBLE_BOTTOM:
+                rows.append(row)
+        return rows
+
+    @node_from(from_name='定位背包格')
     @node_from(from_name='核对整理变化', status=_STATUS_NEXT)
     @operation_node(name='逐件换入安全箱')
     def store_next(self) -> OperationRoundResult:
@@ -161,10 +223,7 @@ class BagelOrganizeBackpack(BagelOperation):
         if safe is None:
             return self._wait_panel('安全箱格子状态不明')
         self._panel_wait = 0
-        backpack = [
-            mark for mark in inspect_occupied(self.last_screenshot, BACKPACK_SLOT_CENTERS)
-            if mark.index not in self._skipped
-        ]
+        backpack = self._backpack_marks()
         safes = inspect_occupied(self.last_screenshot, SAFE_SLOT_CENTERS, safe.occupied)
         choice = choose_store_action(backpack, safes, safe.empty, self.blueprint_priority)
         if choice is None:
@@ -234,6 +293,7 @@ class BagelOrganizeBackpack(BagelOperation):
 
     @node_from(from_name='逐件换入安全箱', status=STATUS_DONE)
     @node_from(from_name='打开背包', success=False)
+    @node_from(from_name='定位背包格', success=False)
     @node_from(from_name='逐件换入安全箱', success=False)
     @node_from(from_name='核对整理变化', success=False)
     @operation_node(name='关闭背包', timeout_seconds=10)
@@ -252,6 +312,20 @@ class BagelOrganizeBackpack(BagelOperation):
             return self.round_wait('关闭背包页', wait=0.8)
         return self.round_retry('等待回到局内画面', wait=0.5)
 
+    def _backpack_marks(self) -> list[BagelSlotMark]:
+        """已定位的背包格里有物品、品质认得出、且没被跳过的格子。"""
+        marks: list[BagelSlotMark] = []
+        for mark in inspect_occupied(self.last_screenshot, self._centers):
+            if mark.index in self._skipped:
+                continue
+            if mark.quality == QUALITY_UNKNOWN:
+                if mark.index not in self._logged_unknown:
+                    self._logged_unknown.add(mark.index)
+                    log.info('贝果整理背包：背包格 %s 品质认不出（类型=%s），不拖', mark.index + 1, mark.item_type)
+                continue
+            marks.append(mark)
+        return marks
+
     def _wait_panel(self, reason: str) -> OperationRoundResult:
         """背包页或安全箱认不清时有界等待，超限按失败交给关闭节点。"""
         self._panel_wait += 1
@@ -267,7 +341,7 @@ class BagelOrganizeBackpack(BagelOperation):
         timing = self.BACKGROUND_DRAG_TIMING if self.ctx.controller.background_mode else self.FOREGROUND_DRAG_TIMING
         self._actions += 1
         self.ctx.controller.drag_to(
-            end=SAFE_SLOT_CENTERS[dest], start=BACKPACK_SLOT_CENTERS[source], timing=timing,
+            end=SAFE_SLOT_CENTERS[dest], start=self._centers[source], timing=timing,
         )
 
     def _clear_pending(self) -> None:

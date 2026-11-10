@@ -221,9 +221,9 @@ area_list:
   - 75
   text: 背包
   lcs_percent: 0.7
-- area_name: 背包格数
+- area_name: 背包标题
   pc_rect:
-  - 250
-  - 356
-  - 390
-  - 390
+  - 200
+  - 90
+  - 720
+  - 800
