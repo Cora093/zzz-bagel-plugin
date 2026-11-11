@@ -22,7 +22,15 @@ import PySide6.QtWebEngineWidgets as QtWebEngineWidgets
 from one_dragon.utils.log_utils import log
 from PySide6 import QtCore
 from PySide6.QtCore import QObject, QRect, Qt, QTimer, QUrl, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import (
     BodyLabel,
     PrimaryPushButton,
@@ -159,6 +167,8 @@ class BagelRouteEditor(QDialog):
         self.thread: Any = None
         self.test_thread: Any = None
         self.locate_thread: Any = None
+        self.track_thread: Any = None
+        """地图工具栏「定位」开关打开时的持续定位线程。"""
         self._locate_index: int = -1
         """正在定位替换的点序号；-1 表示没有进行中的定位。"""
         self.run_overlay: BagelRunOverlay | None = None
@@ -240,6 +250,9 @@ class BagelRouteEditor(QDialog):
         bar_layout.addWidget(self.stop_button)
         bar_layout.addSpacing(12)
         self.status_label: BodyLabel = BodyLabel('就绪', bar)
+        # 状态文字长短不定：允许被截断，不按全文宽度撑大窗口。
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.status_label.setMinimumWidth(0)
         bar_layout.addWidget(self.status_label, 1)
         bar_layout.addWidget(self._build_key_hint(bar))
         layout.addWidget(bar)
@@ -366,9 +379,21 @@ class BagelRouteEditor(QDialog):
             self._close_confirmed = True
             self.close()
             return
+        if cmd == 'copy_text':
+            text = str(args.get('text') or '')
+            QApplication.clipboard().setText(text)
+            self._reply(request_id, True, f'已复制 {text}')
+            return
+        if cmd == 'track_stop':
+            self._stop_track()
+            self._reply(request_id, True, '正在停止定位')
+            return
         busy = self._busy_reason()
         if busy is not None:
             self._reply(request_id, False, busy)
+            return
+        if self.track_thread is not None and cmd in ('record', 'test', 'locate', 'track_start'):
+            self._reply(request_id, False, '正在持续定位，请先停止定位')
             return
         handlers = {
             'save': self._cmd_save,
@@ -380,6 +405,7 @@ class BagelRouteEditor(QDialog):
             'record': self._cmd_record,
             'test': self._cmd_test,
             'locate': self._cmd_locate,
+            'track_start': self._cmd_track_start,
         }
         handler = handlers.get(cmd)
         if handler is None:
@@ -474,6 +500,55 @@ class BagelRouteEditor(QDialog):
         index = int(args['index'])
         self._start_locate(index)
         return f'正在切到游戏定位第 {index + 1} 点…', None
+
+    def _cmd_track_start(self, args: dict[str, Any]) -> tuple[str, Any]:
+        """打开地图工具栏的「定位」开关：切到游戏持续定位，坐标推给网页显示。"""
+        self._start_track()
+        return '正在切到游戏定位…', None
+
+    # ---------- 持续定位 ----------
+
+    def _start_track(self) -> None:
+        """启动持续定位线程。"""
+        from .locate_thread import BagelTrackThread
+
+        thread = BagelTrackThread(self.ctx, self)
+        self.track_thread = thread
+        thread.status_changed.connect(self.status_label.setText)
+        thread.position_changed.connect(self._on_track_position)
+        thread.done.connect(self._on_track_done)
+        thread.finished.connect(self._clear_track_thread)
+        thread.start()
+
+    def _stop_track(self) -> None:
+        """请求停止持续定位；线程退出后由 ``_on_track_done`` 通知网页。"""
+        if self.track_thread is not None:
+            self.track_thread.stop()
+
+    def _on_track_position(self, layer_name: str, global_xy: object) -> None:
+        """把一次定位结果推给网页。
+
+        Args:
+            layer_name: 命中的分层名。
+            global_xy: 全局坐标。
+        """
+        if isinstance(global_xy, tuple):
+            self._call_js('updateLocated', layer_name, [round(global_xy[0]), round(global_xy[1])])
+
+    def _on_track_done(self, ok: bool, message: str) -> None:
+        """持续定位结束：通知网页把开关复原。
+
+        Args:
+            ok: 是否正常结束（手动停止算正常）。
+            message: 结论文案。
+        """
+        self.status_label.setText(message)
+        self._call_js('trackStopped', ok, message)
+
+    def _clear_track_thread(self) -> None:
+        """持续定位线程结束后放开引用。"""
+        self.track_thread = None
+        self._close_if_pending()
 
     # ---------- 定位 ----------
 
@@ -801,7 +876,7 @@ class BagelRouteEditor(QDialog):
             仍有线程在运行时返回 True，调用方应推迟关闭。
         """
         running = [
-            thread for thread in (self.thread, self.test_thread, self.locate_thread)
+            thread for thread in (self.thread, self.test_thread, self.locate_thread, self.track_thread)
             if thread is not None and thread.isRunning()
         ]
         if not running:
@@ -813,6 +888,7 @@ class BagelRouteEditor(QDialog):
                 self.recorder.request_stop()
             if self.test_thread is not None:
                 self.test_thread.stop()
+            self._stop_track()
         return True
 
     def _close_if_pending(self) -> None:
