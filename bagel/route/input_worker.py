@@ -512,6 +512,8 @@ class BagelInputWorker:
         """从实际按下开始计算的短按截止时刻，使用单调时钟。"""
         self._forward_released_at: float = 0.0
         """最近一次实际松键的系统时间，用于判断截图是否晚于动作。"""
+        self._forward_pressed_at: float | None = None
+        """本次实际按下 W 的时刻（单调时钟）；松键后为 None。"""
         self._forward_lock: threading.Lock = threading.Lock()
         self._backward_want: bool = False
         """主线意图：是否该一直按住后退（S）。电梯进出要用。"""
@@ -587,6 +589,13 @@ class BagelInputWorker:
             if self._forward_want or self._forward_down:
                 return None
             return self._forward_released_at
+
+    def forward_held_seconds(self) -> float | None:
+        """W 已实际按住的秒数；当前没按住时返回 None。"""
+        with self._forward_lock:
+            if not self._forward_down or self._forward_pressed_at is None:
+                return None
+            return time.monotonic() - self._forward_pressed_at
 
     def hold_backward(self) -> None:
         """希望一直按住后退（S）；线程会把它对齐到真实按键状态。"""
@@ -706,13 +715,16 @@ class BagelInputWorker:
                     if starting_step and self._forward_down:
                         self.ctx.controller.move_w(release=True)
                         self._forward_down = False
+                        self._forward_pressed_at = None
                         self._forward_released_at = time.time()
                     want = self._forward_want
                     if want != self._forward_down:
                         if want:
                             self.ctx.controller.move_w(press=True)
+                            self._forward_pressed_at = time.monotonic()
                         else:
                             self.ctx.controller.move_w(release=True)
+                            self._forward_pressed_at = None
                             self._forward_released_at = time.time()
                         self._forward_down = want
                     if (
@@ -806,6 +818,7 @@ class BagelInputWorker:
             try:
                 self.ctx.controller.move_w(press=True)
                 self._forward_down = True
+                self._forward_pressed_at = time.monotonic()
                 if self._forward_step_duration is not None:
                     self._forward_step_until = time.monotonic() + self._forward_step_duration
             except Exception:

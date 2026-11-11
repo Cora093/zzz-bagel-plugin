@@ -80,8 +80,14 @@
   .row .kind-label { flex: 1 1 auto; font-size: 14px; }
   .row select { flex: 1 1 auto; min-width: 0; font-size: 14px; padding: 2px 4px; }
   .row .coord { flex: 0 0 auto; color: #47525f; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .row .layer-tag { flex: 0 0 auto; color: #778ba4; font-size: 12px; }
+  .row.dim { opacity: 0.45; }
+  .map-tools .located { align-self: center; font-size: 12px; color: #2f3b48; user-select: text; font-variant-numeric: tabular-nums; }
+  .map-tools button.on { background: #2b6cb0; border-color: #2b6cb0; color: #fff; }
+  #nodeForm select.layerSelect { font-size: 13px; }
   .first-mark { font-size: 11px; color: #a07425; margin-left: 4px; }
   .node-form { padding: 10px 14px; border-top: 1px solid #cfd8e3; background: #f0f5fb; display: flex; flex-direction: column; gap: 8px; }
+  .node-form:empty { display: none; }
   .node-form .line { display: flex; gap: 8px; align-items: center; font-size: 13px; color: #47525f; }
   .node-form input[type=number] { width: 80px; }
   .node-form .elevOption { flex: 1 1 auto; min-width: 0; }
@@ -141,8 +147,8 @@
     <div class="sectionHead"><span>路线内容</span><span class="hint" id="detailHint"></span></div>
     <div id="routeSummary"></div>
     <div id="detailList"></div>
-    <div id="nodeForm"></div>
-    <div class="save-bar"><span id="saveStatus"></span><button id="saveButton" class="primary" disabled>保存</button></div>
+    <div id="nodeForm" class="node-form"></div>
+    <div class="save-bar"><span id="saveStatus"></span><button id="undoButton" class="small" title="撤销（Ctrl+Z）" disabled>撤销</button><button id="redoButton" class="small" title="重做（Ctrl+Y 或 Ctrl+Shift+Z）" disabled>重做</button><button id="saveButton" class="primary" disabled>保存</button></div>
   </div>
 </div>
 <div id="pointMenu"></div>
@@ -199,7 +205,29 @@ const state = {
   insertAfter: -1,
   mouseMap: null,
   selectedPoint: -1,
-  manageFilter: 'all'
+  manageFilter: 'all',
+  // 撤销与重做：只记当前草稿的点位快照，换路线或放弃修改时清空。
+  history: null,
+  // 拖点：按下时的鼠标位置与点原坐标；移动超过阈值才算拖动。
+  dragOrigin: null,
+  // 按下时命中的全部点（按距离排序），以及按下前它们里是否已有选中点。
+  pressHits: [],
+  pressWasSelected: false,
+  // 连续微调同一个点时合并成一步撤销。
+  lastNudge: null,
+  // 光标所在的全局坐标，显示在状态行。
+  hoverMap: null,
+  // 工具栏「定位」得到的角色位置：{ layer, x, y }，工具栏显示坐标，地图上画一个标记。
+  located: null,
+  // 工具栏「定位」开关：打开后持续定位，直到再点一下或出错。
+  tracking: false,
+  // 本次打开开关后是否已经把视野移到角色位置。
+  trackCentered: false,
+  // 只看当前层开关。当前层是选中点所在的层；取消选中后沿用上一次的层。
+  followLayer: false,
+  currentLayer: null,
+  // 每个分层单独反相后的画布，只看一层时用它盖在整图上。
+  layerCanvases: {}
 };
 
 const POINT_HIT_RADIUS = 12;
@@ -210,6 +238,19 @@ const LINE_HIT_RADIUS = 7;
 
 const SPAWN_HIT_RADIUS = 14;
 // 点选出生点标记的命中半径（屏幕像素）。
+
+const MAX_SCALE = 32;
+// 最大缩放：每个地图像素 32 屏幕像素。室内房间只有几十个地图像素宽，
+// 相距 1px 的点要放到这个倍数才分得开。
+
+const DRAG_THRESHOLD = 4;
+// 按下节点后鼠标移动超过这么多屏幕像素才算拖动，避免点一下就把点带偏。
+
+const HISTORY_LIMIT = 100;
+// 撤销最多记这么多步。
+
+const NUDGE_MERGE_MS = 1000;
+// 连续微调同一个点、两次间隔不超过这个毫秒数时，合并成一步撤销。
 
 const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
@@ -293,9 +334,53 @@ function hasUnsavedEdits() {
   return JSON.stringify(state.draft.points) !== JSON.stringify(saved.points);
 }
 
-function resetDraft() {
+// keepHistory：保存成功后重建草稿时保留撤销记录，撤销会让草稿重新变成未保存。
+function resetDraft(keepHistory) {
   const saved = savedRoute();
   state.draft = isCustom(saved) ? { key: routeKey(saved), points: clone(saved.points) } : null;
+  if (!keepHistory || !state.draft || !state.history || state.history.key !== state.draft.key) state.history = null;
+  state.lastNudge = null;
+}
+
+// ---------- 撤销与重做 ----------
+
+function historyOfDraft() {
+  const key = state.draft ? state.draft.key : null;
+  if (!state.history || state.history.key !== key) state.history = { key, undo: [], redo: [] };
+  return state.history;
+}
+
+// 改草稿之前调用：记下改之前的点位。新的修改会清空重做记录。
+function recordHistory() {
+  if (!state.draft) return;
+  const h = historyOfDraft();
+  h.undo.push(clone(state.draft.points));
+  if (h.undo.length > HISTORY_LIMIT) h.undo.shift();
+  h.redo = [];
+  state.lastNudge = null;
+}
+
+function canUndo() { return canEdit() && !!state.draft && historyOfDraft().undo.length > 0; }
+function canRedo() { return canEdit() && !!state.draft && historyOfDraft().redo.length > 0; }
+
+function undoEdit() {
+  if (!canUndo()) return;
+  const h = historyOfDraft();
+  h.redo.push(clone(state.draft.points));
+  state.draft.points = h.undo.pop();
+  state.lastNudge = null;
+  if (state.selectedPoint >= state.draft.points.length) state.selectedPoint = -1;
+  afterEdit();
+}
+
+function redoEdit() {
+  if (!canRedo()) return;
+  const h = historyOfDraft();
+  h.undo.push(clone(state.draft.points));
+  state.draft.points = h.redo.pop();
+  state.lastNudge = null;
+  if (state.selectedPoint >= state.draft.points.length) state.selectedPoint = -1;
+  afterEdit();
 }
 
 function nextName(base) {
@@ -337,7 +422,7 @@ async function saveDraft() {
   if (!canEdit() || !state.draft || !hasUnsavedEdits()) return true;
   const result = await call('save', { route_id: saved.route_id, points: state.draft.points });
   if (!result.ok) return false;
-  resetDraft();
+  resetDraft(true);
   renderAll();
   return true;
 }
@@ -368,6 +453,7 @@ function selectRoute(key) {
   state.activeSpawnId = route.spawn_id;
   state.selectedKey = key;
   state.selectedPoint = -1;
+  state.currentLayer = null;
   state.insertAfter = -1;
   resetDraft();
   renderAll();
@@ -380,6 +466,7 @@ function selectMap(mid) {
   if (state.recording) { notify('录制中不能切换地图'); return; }
   guardUnsaved(() => {
     state.activeMap = mid;
+    state.currentLayer = null;
     const first = spawnsOnMap(mid)[0];
     state.activeSpawnId = first ? first.spawn_id : null;
     const route = first ? (activeRouteOf(first.spawn_id) || routesForSpawn(first.spawn_id)[0]) : null;
@@ -454,7 +541,76 @@ function buildMapComposites() {
     });
     invertToLight(cc, c.width, c.height);
     state.maps[mid] = { mapId: mid, x0, y0, x1, y1, canvas: c, layers: items };
+    items.forEach(l => {
+      const img = state.images[layerKey(l)];
+      if (!img) return;
+      const lc = document.createElement('canvas');
+      lc.width = img.width;
+      lc.height = img.height;
+      const lcc = lc.getContext('2d');
+      lcc.imageSmoothingEnabled = false;
+      lcc.drawImage(img, 0, 0);
+      invertToLight(lcc, lc.width, lc.height);
+      state.layerCanvases[layerKey(l)] = lc;
+    });
   });
+}
+
+// ---------- 工具栏定位 ----------
+
+// 定位结果的文字，显示和复制用同一段。
+function locatedText() {
+  const l = state.located;
+  return l ? '(' + l.x + ', ' + l.y + ') ' + l.layer : '';
+}
+
+function toggleTracking() {
+  if (state.tracking) {
+    call('track_stop', {});
+    return;
+  }
+  state.tracking = true;
+  state.trackCentered = false;
+  renderMapTabs();
+  call('track_start', {}).then(result => {
+    // 命令被拒（录制、试跑中）时不会开始定位，这里把开关复原。
+    if (!result.ok) { state.tracking = false; renderMapTabs(); }
+  });
+}
+
+// ---------- 只看当前层 ----------
+
+// 开关打开时生效的当前层：选中点所在的层；没有选中点时沿用上一次的层。
+// 不在当前地图上的层不生效。
+function focusedLayer() {
+  if (!state.followLayer) return null;
+  const route = shownRoute();
+  const p = route && state.selectedPoint >= 0 ? route.points[state.selectedPoint] : null;
+  if (p && onActiveMap(p.layer)) state.currentLayer = p.layer;
+  const layer = state.currentLayer ? state.byName[state.currentLayer] : null;
+  return layer && layer.map_id === state.activeMap ? state.currentLayer : null;
+}
+
+// 完整分层名去掉地图前缀，用于界面显示。
+function shortLayer(name) {
+  const layer = state.byName[name];
+  return layer ? layer.name : name;
+}
+
+function toggleFollowLayer() {
+  state.followLayer = !state.followLayer;
+  renderAll();
+}
+
+// 只看当前层时，别的层的节点和连线变淡。
+function onFocusedLayer(layerName) {
+  const focus = focusedLayer();
+  return !focus || layerName === focus;
+}
+
+// 当前地图的分层，按清单顺序。
+function layersOfMap(mid) {
+  return state.layers.filter(l => l.map_id === mid && state.images[layerKey(l)]);
 }
 
 // 反相成浅底深线：透明像素填浅灰，不透明像素按亮度反相。
@@ -508,6 +664,37 @@ function renderMapTabs() {
   });
   const tools = document.createElement('div');
   tools.className = 'map-tools';
+  const layers = layersOfMap(state.activeMap);
+  const locate = document.createElement('button');
+  locate.className = 'small' + (state.tracking ? ' on' : '');
+  locate.textContent = state.tracking ? '停止定位' : '定位';
+  locate.title = state.tracking ? '停止持续定位'
+    : '切到游戏持续定位，实时显示角色的全局坐标与分层；回到编辑器时暂停，再点一下停止';
+  locate.disabled = !state.tracking && (state.recording || state.trial);
+  locate.onclick = toggleTracking;
+  tools.appendChild(locate);
+  if (state.located) {
+    const span = document.createElement('span');
+    span.className = 'located';
+    span.id = 'locatedText';
+    span.textContent = locatedText();
+    span.title = '可以选中复制，也可以点「复制」';
+    tools.appendChild(span);
+    const copy = document.createElement('button');
+    copy.className = 'small';
+    copy.textContent = '复制';
+    copy.title = '把坐标与分层复制到剪贴板';
+    copy.onclick = () => call('copy_text', { text: locatedText() });
+    tools.appendChild(copy);
+  }
+  if (layers.length > 1) {
+    const b = document.createElement('button');
+    b.className = 'small' + (state.followLayer ? ' on' : '');
+    b.textContent = '只看当前层';
+    b.title = '只看选中节点所在的层：别的层的底图、节点和连线变淡；选到别的层的节点时跟着切过去';
+    b.onclick = toggleFollowLayer;
+    tools.appendChild(b);
+  }
   [['−', '缩小', () => zoomMap(1 / 1.25)], ['＋', '放大', () => zoomMap(1.25)],
     ['适应', '显示整张地图', () => { state.autoFit = true; fitMap(); draw(); }],
     ['看路线', '缩放到当前路线', () => focusRoute()]].forEach(([text, title, fn]) => {
@@ -572,7 +759,7 @@ function zoomMap(factor) {
   const x = rect.width / 2, y = rect.height / 2;
   const bx = (x - state.offsetX) / state.scale;
   const by = (y - state.offsetY) / state.scale;
-  state.scale = Math.min(Math.max(state.scale * factor, 0.05), 12);
+  state.scale = Math.min(Math.max(state.scale * factor, 0.05), MAX_SCALE);
   state.offsetX = x - bx * state.scale;
   state.offsetY = y - by * state.scale;
   state.autoFit = false;
@@ -954,10 +1141,16 @@ function renderDetail() {
     startInsert(state.selectedPoint >= 0 ? state.selectedPoint : route.points.length - 1);
   };
   box.innerHTML = '';
+  let selectedRow = null;
+  const multiLayer = new Set(route.points.map(pt => pt.layer)).size > 1;
   route.points.forEach((d, index) => {
     const row = document.createElement('div');
-    row.className = 'row' + (index === state.selectedPoint ? ' selected' : '');
-    row.onclick = () => { state.selectedPoint = index; renderDetail(); draw(); };
+    row.className = 'row' + (index === state.selectedPoint ? ' selected' : '') + (onFocusedLayer(d.layer) ? '' : ' dim');
+    row.onclick = () => {
+      state.selectedPoint = index;
+      renderDetail();
+      draw();
+    };
     const order = document.createElement('span');
     order.className = 'order';
     order.textContent = index + 1;
@@ -978,6 +1171,7 @@ function renderDetail() {
       });
       sel.onclick = (ev) => ev.stopPropagation();
       sel.onchange = () => {
+        recordHistory();
         const p = state.draft.points[index];
         p.kind = sel.value;
         if (p.kind === 'elevator') {
@@ -997,6 +1191,13 @@ function renderDetail() {
       label.innerHTML = escapeHtml(KIND_LABELS[d.kind] || d.kind) + (index === 0 ? '<span class="first-mark">起点</span>' : '');
       row.appendChild(label);
     }
+    if (multiLayer) {
+      const tag = document.createElement('span');
+      tag.className = 'layer-tag';
+      tag.textContent = shortLayer(d.layer);
+      tag.title = d.layer;
+      row.appendChild(tag);
+    }
     const coord = document.createElement('span');
     coord.className = 'coord';
     coord.textContent = '(' + d.x.toFixed(0) + ', ' + d.y.toFixed(0) + ')';
@@ -1010,7 +1211,9 @@ function renderDetail() {
       row.appendChild(locate);
     }
     box.appendChild(row);
+    if (index === state.selectedPoint) selectedRow = row;
   });
+  if (selectedRow) selectedRow.scrollIntoView({ block: 'nearest' });
   if (editable && state.selectedPoint >= 0 && route.points[state.selectedPoint]) renderNodeForm(route);
   renderSaveBar();
 }
@@ -1024,6 +1227,8 @@ function renderNodeForm(route) {
     + '<label>Y <input id="pointY" type="number" value="' + p.y + '"></label>'
     + '<button class="small" id="pointApply">应用坐标</button>'
     + (index > 0 ? '<button class="small danger" id="pointDelete">删除节点</button>' : '') + '</div>'
+    + (index > 0 ? '<div class="line"><label>分层 <select class="layerSelect" id="pointLayer">'
+      + layerOptions(p.layer) + '</select></label></div>' : '')
     + (p.kind === 'elevator' ? '<div class="line"><input class="elevOption" id="elevOption" placeholder="楼层文字，留空表示不选" value="'
       + escapeHtml(p.elevator_option || '') + '"><select id="elevExit"><option value="forward"'
       + (p.elevator_exit !== 'backward' ? ' selected' : '') + '>出梯向前</option><option value="backward"'
@@ -1032,22 +1237,41 @@ function renderNodeForm(route) {
     const x = Number(document.getElementById('pointX').value);
     const y = Number(document.getElementById('pointY').value);
     if (!Number.isFinite(x) || !Number.isFinite(y)) { notify('请填写有效的节点坐标', true); return; }
+    recordHistory();
     state.draft.points[index].x = Math.round(x);
     state.draft.points[index].y = Math.round(y);
     afterEdit();
   };
   const del = document.getElementById('pointDelete');
   if (del) del.onclick = () => deletePoint(index);
+  const layerSel = document.getElementById('pointLayer');
+  if (layerSel) layerSel.onchange = () => {
+    recordHistory();
+    state.draft.points[index].layer = layerSel.value;
+    afterEdit();
+  };
   if (p.kind === 'elevator') {
     document.getElementById('elevOption').onchange = (ev) => {
+      recordHistory();
       state.draft.points[index].elevator_option = ev.target.value.trim();
       afterEdit();
     };
     document.getElementById('elevExit').onchange = (ev) => {
+      recordHistory();
       state.draft.points[index].elevator_exit = ev.target.value;
       afterEdit();
     };
   }
+}
+
+// 节点所在地图的全部分层，做成下拉选项。
+function layerOptions(current) {
+  const layer = state.byName[current];
+  const mid = layer ? layer.map_id : state.activeMap;
+  return layersOfMap(mid).map(l => {
+    const key = layerKey(l);
+    return '<option value="' + escapeHtml(key) + '"' + (key === current ? ' selected' : '') + '>' + escapeHtml(l.name) + '</option>';
+  }).join('');
 }
 
 function renderSaveBar() {
@@ -1056,6 +1280,8 @@ function renderSaveBar() {
   const route = savedRoute();
   const dirty = hasUnsavedEdits();
   button.disabled = !canEdit() || !dirty;
+  document.getElementById('undoButton').disabled = !canUndo();
+  document.getElementById('redoButton').disabled = !canRedo();
   status.classList.toggle('dirty', dirty);
   if (!route) status.textContent = '';
   else if (!isCustom(route)) status.textContent = '默认路线只读，复制后再修改';
@@ -1130,14 +1356,64 @@ function visibleRoutePoints() {
   return out;
 }
 
+// 命中半径内的全部点，按距离由近到远排。几个点叠在一起时靠它轮流选中。
+// 只看当前层时，当前层的点优先：这里有当前层的点就只返回它们，别的层的点压在下面也点不到。
+function hitPoints(mx, my) {
+  const hits = visibleRoutePoints()
+    .map(it => ({ index: it.index, d: Math.hypot(it.s[0] - mx, it.s[1] - my), on: onFocusedLayer(it.p.layer) }))
+    .filter(it => it.d <= POINT_HIT_RADIUS)
+    .sort((a, b) => a.d - b.d);
+  const own = hits.filter(it => it.on);
+  return (own.length ? own : hits).map(it => it.index);
+}
+
 function hitPoint(mx, my) {
-  let best = -1;
-  let bestDist = POINT_HIT_RADIUS;
-  visibleRoutePoints().forEach(it => {
-    const d = Math.hypot(it.s[0] - mx, it.s[1] - my);
-    if (d <= bestDist) { bestDist = d; best = it.index; }
-  });
-  return best;
+  const hits = hitPoints(mx, my);
+  return hits.length ? hits[0] : -1;
+}
+
+// 按下节点：已选中的点在命中里就继续用它（好拖动），否则取最近的点。
+function pressPoint(mx, my) {
+  const hits = hitPoints(mx, my);
+  state.pressHits = hits;
+  state.pressWasSelected = hits.includes(state.selectedPoint);
+  if (!hits.length) return -1;
+  return state.pressWasSelected ? state.selectedPoint : hits[0];
+}
+
+// 点了已选中的点而没拖动：如果这里叠着别的点，就切到下一个。
+function cycleOverlap(index) {
+  const hits = state.pressHits;
+  if (!state.pressWasSelected || hits.length < 2) return index;
+  const next = hits[(hits.indexOf(index) + 1) % hits.length];
+  notify('这里叠着 ' + hits.length + ' 个点，已切到第 ' + (next + 1) + ' 点');
+  return next;
+}
+
+// 把全局坐标夹到当前地图范围内。
+function clampToMap(x, y) {
+  const m = state.maps[state.activeMap];
+  if (!m) return [x, y];
+  return [Math.min(Math.max(x, m.x0), m.x1), Math.min(Math.max(y, m.y0), m.y1)];
+}
+
+// 方向键微调选中点；连续微调同一点合并成一步撤销。
+function nudgePoint(dx, dy) {
+  const index = state.selectedPoint;
+  const p = state.draft && state.draft.points[index];
+  if (!canEdit() || !p) return;
+  const now = Date.now();
+  const merge = state.lastNudge && state.lastNudge.index === index && now - state.lastNudge.time <= NUDGE_MERGE_MS;
+  if (!merge) recordHistory();
+  state.lastNudge = { index, time: now };
+  [p.x, p.y] = clampToMap(p.x + dx, p.y + dy);
+  afterEdit();
+}
+
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || el.isContentEditable;
 }
 
 function hitSpawn(mx, my) {
@@ -1161,7 +1437,8 @@ function hitSegment(mx, my) {
   for (let i = 1; i < route.points.length; i++) {
     const a = route.points[i - 1];
     const b = route.points[i];
-    if (a.layer !== b.layer || !onActiveMap(a.layer)) continue;
+    if (!onActiveMap(a.layer) || !onActiveMap(b.layer)) continue;
+    if (!onFocusedLayer(a.layer) && !onFocusedLayer(b.layer)) continue;
     const sa = globalToScreen(a.x, a.y);
     const sb = globalToScreen(b.x, b.y);
     if (!sa || !sb) continue;
@@ -1176,23 +1453,28 @@ function hitSegment(mx, my) {
     const d = Math.hypot(px - mx, py - my);
     if (d > bestDist) continue;
     bestDist = d;
-    best = { index: i - 1, x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t) };
+    best = {
+      index: i - 1, x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t),
+      layer: focusedLayer() || a.layer
+    };
   }
   return best;
 }
 
-// 在第 index 点后面插一个途径点，沿用同一点的分层；只改草稿。
-function insertPointAfter(index, gx, gy) {
+// 在第 index 点后面插一个途径点；layer 不给时沿用第 index 点的分层。只改草稿。
+function insertPointAfter(index, gx, gy, layer) {
   if (!canEdit()) return -1;
   const ref = state.draft.points[index];
   if (!ref) return -1;
-  state.draft.points.splice(index + 1, 0, { x: gx, y: gy, layer: ref.layer, kind: 'beacon' });
+  recordHistory();
+  state.draft.points.splice(index + 1, 0, { x: gx, y: gy, layer: layer || ref.layer, kind: 'beacon' });
   return index + 1;
 }
 
 // 起点不能删：路线必须从出生点附近的途径点开始。
 function deletePoint(index) {
   if (!canEdit() || index <= 0 || index >= state.draft.points.length) return;
+  recordHistory();
   state.draft.points.splice(index, 1);
   state.selectedPoint = -1;
   afterEdit();
@@ -1289,8 +1571,22 @@ function draw() {
   if (!m) return;
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(m.canvas, state.offsetX, state.offsetY,
-    m.canvas.width * state.scale, m.canvas.height * state.scale);
+  const focus = focusedLayer();
+  const focusCanvas = focus ? state.layerCanvases[focus] : null;
+  if (focusCanvas) {
+    // 整图压淡当参照，再按 origin 把这一层原样盖上：这一层的范围里只看得到它自己的墙。
+    const layer = state.byName[focus];
+    ctx.globalAlpha = 0.3;
+    ctx.drawImage(m.canvas, state.offsetX, state.offsetY,
+      m.canvas.width * state.scale, m.canvas.height * state.scale);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(focusCanvas,
+      state.offsetX + (layer.origin[0] - m.x0) * state.scale, state.offsetY + (layer.origin[1] - m.y0) * state.scale,
+      focusCanvas.width * state.scale, focusCanvas.height * state.scale);
+  } else {
+    ctx.drawImage(m.canvas, state.offsetX, state.offsetY,
+      m.canvas.width * state.scale, m.canvas.height * state.scale);
+  }
 
   drawSpawns();
 
@@ -1299,23 +1595,30 @@ function draw() {
     const pts = route.points
       .map((p, i) => ({ p, order: i + 1 }))
       .filter(it => onActiveMap(it.p.layer));
-    // 同层的相邻点连成折线；跨层的相邻点断开，避免把上下楼连成一条线。
-    ctx.strokeStyle = 'rgba(40, 90, 160, 0.7)';
-    ctx.lineWidth = 1.5;
+    // 相邻点连成折线。跨层的一段（上下楼）画虚线；只看一层时，两端都不在这层的连线变淡。
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1], b = pts[i];
-      if (a.p.layer !== b.p.layer) continue;
       const sa = globalToScreen(a.p.x, a.p.y);
       const sb = globalToScreen(b.p.x, b.p.y);
       if (!sa || !sb) continue;
+      ctx.save();
+      if (a.p.layer !== b.p.layer) ctx.setLineDash([6, 5]);
+      ctx.globalAlpha = onFocusedLayer(a.p.layer) || onFocusedLayer(b.p.layer) ? 1 : 0.25;
+      ctx.strokeStyle = 'rgba(40, 90, 160, 0.7)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(sa[0], sa[1]);
       ctx.lineTo(sb[0], sb[1]);
       ctx.stroke();
+      ctx.restore();
     }
-    pts.forEach(it => {
+    // 选中点最后画，几个点叠在一起时它在最上面。
+    const ordered = pts.filter(it => it.order - 1 !== state.selectedPoint)
+      .concat(pts.filter(it => it.order - 1 === state.selectedPoint));
+    ordered.forEach(it => {
       const s = globalToScreen(it.p.x, it.p.y);
       if (!s) return;
+      ctx.globalAlpha = onFocusedLayer(it.p.layer) ? 1 : 0.3;
       if (it.order - 1 === state.selectedPoint) {
         ctx.beginPath();
         ctx.arc(s[0], s[1], 12, 0, Math.PI * 2);
@@ -1330,6 +1633,7 @@ function draw() {
       ctx.fillStyle = '#123';
       ctx.font = '13px "Microsoft YaHei UI", sans-serif';
       ctx.fillText(String(it.order), s[0] + 10, s[1] - 8);
+      ctx.globalAlpha = 1;
     });
   }
 
@@ -1413,17 +1717,45 @@ function draw() {
     }
   }
 
+  // 工具栏「定位」的角色位置：红色十字加圆圈。
+  if (state.located && onActiveMap(state.located.layer)) {
+    const s = globalToScreen(state.located.x, state.located.y);
+    if (s) {
+      ctx.save();
+      ctx.strokeStyle = '#e23b3b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], 9, 0, Math.PI * 2);
+      ctx.moveTo(s[0] - 15, s[1]); ctx.lineTo(s[0] + 15, s[1]);
+      ctx.moveTo(s[0], s[1] - 15); ctx.lineTo(s[0], s[1] + 15);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  renderHud();
+}
+
+// 地图左上角的状态行；鼠标移动时只刷新这一行，不重画地图。
+function renderHud() {
+  const route = state.recording ? null : shownRoute();
   const spawn = getSpawn(state.activeSpawnId);
+  const focus = focusedLayer();
+  const cursor = state.hoverMap ? ' · 光标 (' + state.hoverMap[0] + ', ' + state.hoverMap[1] + ')' : '';
   if (state.recording) {
     hud.textContent = '录制中 · 1 途径点 2 电子箱 3 机械箱 4 普通箱 5 门 6 电梯 · 退格 删上一个点';
+  } else if (state.dragPoint >= 0 && state.dragMoved && route && route.points[state.dragPoint]) {
+    const p = route.points[state.dragPoint];
+    hud.textContent = '拖动第 ' + (state.dragPoint + 1) + ' 点 → (' + p.x + ', ' + p.y + ')';
   } else if (state.insertAfter >= 0) {
-    hud.textContent = '插入模式 · 点击地图落下第 ' + (state.insertAfter + 2) + ' 点（途径点） · Esc 取消';
+    hud.textContent = '插入模式 · 点击地图落下第 ' + (state.insertAfter + 2) + ' 点（途径点） · Esc 取消' + cursor;
   } else {
     const mode = !route ? '未选择路线'
-      : canEdit() ? '拖点移动 · 点连线插点 · 点节点弹菜单'
+      : canEdit() ? '拖点移动 · 点连线插点 · 方向键微调 · Del 删点 · Ctrl+Z 撤销'
         : isCustom(route) ? busyReason() : '默认路线只读';
-    hud.textContent = state.activeMap + (spawn && spawn.map_id === state.activeMap ? ' · 出生点 ' + spawn.name : '')
-      + ' · ' + mode + ' · 滚轮缩放 / 空白处拖动';
+    const only = !state.followLayer ? '' : focus ? ' · 只看 ' + shortLayer(focus) : ' · 只看当前层：先选一个节点';
+    hud.textContent = state.activeMap + cursor + only
+      + (spawn && spawn.map_id === state.activeMap ? ' · 出生点 ' + spawn.name : '') + ' · ' + mode;
   }
 }
 
@@ -1437,17 +1769,25 @@ wrap.addEventListener('mousedown', (e) => {
     if (state.insertAfter >= 0) {
       const g = toGlobal(mx, my);
       if (g) {
-        const at = insertPointAfter(state.insertAfter, g[0], g[1]);
+        const at = insertPointAfter(state.insertAfter, g[0], g[1], focusedLayer());
         state.insertAfter = -1;
         state.selectedPoint = at;
         afterEdit();
       }
       return;
     }
-    const hit = hitPoint(mx, my);
+    const hit = pressPoint(mx, my);
+    if (hit >= 0 && !onFocusedLayer(state.draft.points[hit].layer)) {
+      state.selectedPoint = hit;
+      renderDetail();
+      draw();
+      return;
+    }
     if (hit >= 0) {
+      const p = state.draft.points[hit];
       state.dragPoint = hit;
       state.dragMoved = false;
+      state.dragOrigin = { mx, my, x: p.x, y: p.y };
       state.selectedPoint = hit;
       draw();
       return;
@@ -1455,14 +1795,15 @@ wrap.addEventListener('mousedown', (e) => {
     // 点在线上就插一个途径点，不然就是平移底图
     const seg = hitSegment(mx, my);
     if (seg) {
-      const at = insertPointAfter(seg.index, seg.x, seg.y);
+      const at = insertPointAfter(seg.index, seg.x, seg.y, seg.layer);
       state.selectedPoint = at;
       afterEdit();
       return;
     }
   } else if (!state.recording) {
-    const hit = hitPoint(mx, my);
+    let hit = pressPoint(mx, my);
     if (hit >= 0) {
+      hit = cycleOverlap(hit);
       state.selectedPoint = hit;
       renderDetail();
       draw();
@@ -1487,24 +1828,32 @@ wrap.addEventListener('mousemove', (e) => {
   const [mx, my] = localMouse(e);
 
   if (state.dragPoint >= 0 && canEdit()) {
-    const g = toGlobal(mx, my);
-    const p = g ? state.draft.points[state.dragPoint] : null;
-    if (p) {
-      p.x = g[0];
-      p.y = g[1];
+    const o = state.dragOrigin;
+    const p = state.draft.points[state.dragPoint];
+    if (!p || !o) return;
+    if (!state.dragMoved) {
+      if (Math.hypot(mx - o.mx, my - o.my) < DRAG_THRESHOLD) return;
+      recordHistory();
       state.dragMoved = true;
-      draw();
     }
+    // 按鼠标位移移动，不把点吸到光标上：从点边缘按下也不会先跳一下。
+    [p.x, p.y] = clampToMap(
+      o.x + Math.round((mx - o.mx) / state.scale),
+      o.y + Math.round((my - o.my) / state.scale)
+    );
+    draw();
     return;
   }
 
+  state.hoverMap = toGlobal(mx, my);
   if (state.insertAfter >= 0) {
-    state.mouseMap = toGlobal(mx, my);
+    state.mouseMap = state.hoverMap;
     draw();
     return;
   }
 
   if (state.dragging) return;
+  renderHud();
 
   if (canEdit() && hitPoint(mx, my) >= 0) { wrap.style.cursor = 'move'; return; }
   if (canEdit() && hitSegment(mx, my)) { wrap.style.cursor = 'copy'; return; }
@@ -1516,14 +1865,18 @@ wrap.addEventListener('mousemove', (e) => {
 // 挂在画布上会收不到 mouseup，点位就一直跟着鼠标走。
 window.addEventListener('mouseup', (e) => {
   if (state.dragPoint >= 0) {
-    const index = state.dragPoint;
     const moved = state.dragMoved;
+    let index = state.dragPoint;
     state.dragPoint = -1;
     state.dragMoved = false;
+    state.dragOrigin = null;
     if (moved) {
       afterEdit();
     } else if (e.button === 0) {
+      index = cycleOverlap(index);
+      state.selectedPoint = index;
       renderDetail();
+      draw();
       showPointMenu(index, e.clientX, e.clientY);
     }
     return;
@@ -1550,10 +1903,40 @@ window.addEventListener('keydown', (e) => {
     if (modalOpen()) { closeModal(); return; }
     cancelInsert();
     hidePointMenu();
+    return;
+  }
+  // 输入框和下拉框里的按键留给它们自己（比如在坐标框里撤销输入）。
+  if (modalOpen() || isTypingTarget(e.target)) return;
+  const key = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
+    e.preventDefault();
+    redoEdit();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && key === 'z') {
+    e.preventDefault();
+    undoEdit();
+    return;
+  }
+  if (!canEdit() || state.selectedPoint < 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+  const step = e.shiftKey ? 5 : 1;
+  const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (moves[e.key]) {
+    e.preventDefault();
+    hidePointMenu();
+    nudgePoint(moves[e.key][0], moves[e.key][1]);
+    return;
+  }
+  if (e.key === 'Delete' && state.selectedPoint > 0) {
+    e.preventDefault();
+    hidePointMenu();
+    deletePoint(state.selectedPoint);
   }
 });
 
 wrap.addEventListener('mouseleave', () => {
+  state.hoverMap = null;
+  renderHud();
   if (state.insertAfter >= 0) {
     state.mouseMap = null;
     draw();
@@ -1574,7 +1957,7 @@ wrap.addEventListener('wheel', (e) => {
   const my = e.clientY - rect.top;
   const before = [(mx - state.offsetX) / state.scale, (my - state.offsetY) / state.scale];
   const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  state.scale = Math.min(Math.max(state.scale * factor, 0.05), 12);
+  state.scale = Math.min(Math.max(state.scale * factor, 0.05), MAX_SCALE);
   state.autoFit = false;
   state.offsetX = mx - before[0] * state.scale;
   state.offsetY = my - before[1] * state.scale;
@@ -1583,6 +1966,8 @@ wrap.addEventListener('wheel', (e) => {
 
 window.addEventListener('resize', resizeCanvas);
 document.getElementById('saveButton').onclick = () => saveDraft();
+document.getElementById('undoButton').onclick = () => undoEdit();
+document.getElementById('redoButton').onclick = () => redoEdit();
 
 // ---------- 供 Python 侧调用 ----------
 window.bagelEditor = {
@@ -1666,9 +2051,43 @@ window.bagelEditor = {
     state.livePosition = toMapCanvas(localXY[0] + layer.origin[0], localXY[1] + layer.origin[1]);
     draw();
   },
+  // 持续定位的一次结果：更新工具栏坐标和地图标记。开关打开后的第一次结果把视野移过去（不改缩放），
+  // 之后不再动视野，免得拖不动地图。
+  updateLocated(layerName, globalXY) {
+    const layer = state.byName[layerName];
+    if (!state.tracking || !layer || !globalXY) return;
+    const first = !state.located;
+    state.located = { layer: layerName, x: Math.round(globalXY[0]), y: Math.round(globalXY[1]) };
+    const span = document.getElementById('locatedText');
+    // 已有坐标文字时原地改字，不重建工具栏，正在选中的文字不会丢。
+    if (span && !first) span.textContent = locatedText();
+    else renderMapTabs();
+    if (!state.trackCentered) {
+      state.trackCentered = true;
+      if (layer.map_id !== state.activeMap) {
+        notify('角色在' + layer.map_id + '，切到该地图可看到位置标记');
+      } else {
+        const m = state.maps[state.activeMap];
+        const rect = wrap.getBoundingClientRect();
+        if (m && rect.width) {
+          state.autoFit = false;
+          state.offsetX = rect.width / 2 - (state.located.x - m.x0) * state.scale;
+          state.offsetY = rect.height / 2 - (state.located.y - m.y0) * state.scale;
+        }
+      }
+    }
+    draw();
+  },
+  // 持续定位结束：开关复原；出错时提示原因。坐标保留最后一次结果，方便复制。
+  trackStopped(ok, message) {
+    state.tracking = false;
+    if (!ok && message) notify(message, true);
+    renderMapTabs();
+  },
   // 用定位结果替换第 index 个点的坐标：只改草稿，保存后才写入文件。
   setPointPosition(index, layerName, globalXY) {
     if (!canEdit() || !state.draft || index < 0 || index >= state.draft.points.length || !globalXY) return;
+    recordHistory();
     const p = state.draft.points[index];
     p.x = Math.round(globalXY[0]);
     p.y = Math.round(globalXY[1]);
