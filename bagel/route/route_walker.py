@@ -54,6 +54,7 @@ from .input_worker import (
 )
 from .route_model import (
     BEACON,
+    BOX_CATEGORIES,
     ELEVATOR,
     ELEVATOR_EXIT_BACKWARD,
     KIND_LABELS,
@@ -976,7 +977,7 @@ class BagelRouteWalker(BagelOperation):
         按 F 前先松前进键，避免按住前行漂移。
         """
         self._release_forward()
-        if kind == 'box' and self._has('搜查容器标题'):
+        if (kind == 'box' or kind in BOX_CATEGORIES) and self._has('搜查容器标题'):
             # 容器面板已开：立刻交给收集入箱，不在这里判完成。
             # 用「提示消失」推断完成会漏掉收集和关闭面板，面板一直开着
             # 盖住小地图，后面整段导航都定位失败。
