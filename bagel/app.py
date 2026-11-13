@@ -574,6 +574,9 @@ class BagelApp(ZApplication):
             reason = f'{outcome.status}：{outcome.data}' if outcome.data else outcome.status
             return self.round_fail(BagelOperation.STATUS_ROUND_FAILED, data=reason)
         if not outcome.success and outcome.status == BagelRouteWalker.STATUS_KEYCARD_MISSING:
+            if not self.config.is_keycard:
+                # 跑刀路线的房卡门点已被路线校验拒绝；万一漏过，只按本局失败处理，不停止跑刀任务。
+                return self.round_fail(BagelOperation.STATUS_ROUND_FAILED, data=f'{outcome.status}：{outcome.data}')
             return self.round_success(self.STATUS_KEYCARD_MISSING, data=outcome.data)
         if not outcome.success and outcome.status == BagelRouteWalker.STATUS_CONFIG_INVALID:
             return self.round_fail(f'贝果路线配置无效：{outcome.data}')

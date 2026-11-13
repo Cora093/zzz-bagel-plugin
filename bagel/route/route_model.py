@@ -540,6 +540,20 @@ def check_route_start(route: BagelRoute, spawn: BagelSpawnPoint) -> str | None:
     return None
 
 
+def check_run_points(route: BagelRoute) -> str | None:
+    """检查跑刀路线的点类型：不允许房卡门点。
+
+    房卡门点会识别刷卡提示，零携带时读到持卡计数 0 就按没带卡停止任务；
+    刷卡只属于开房卡的房间段。
+
+    Returns:
+        不满足时返回原因；满足或不是跑刀路线时返回 None。
+    """
+    if route.keycard is None and any(point.kind == KEYCARD_DOOR for point in route.points):
+        return '跑刀路线里不能有房卡门点，刷卡只放在开房卡的房间段'
+    return None
+
+
 def check_room_segment(route: BagelRoute, room: BagelKeycardRoom) -> str | None:
     """检查房间段能否接在房间入口之后执行。
 

@@ -41,6 +41,7 @@ from .route_model import (
     check_entry_segment,
     check_room_segment,
     check_route_start,
+    check_run_points,
     join_keycard_route,
     now_iso,
     validate_route_name,
@@ -232,7 +233,7 @@ class BagelRouteCatalog:
             return f'{spawn.name}开启的路线 {ref} 不存在或已损坏'
         if route.spawn_id != spawn_id:
             return f'{spawn.name}开启的路线「{route.name}」绑定的是其他出生点'
-        problem = check_route_start(route, spawn)
+        problem = check_route_start(route, spawn) or check_run_points(route)
         if problem is not None:
             return f'{spawn.name}开启的路线「{route.name}」无法开始：{problem}'
         return None
@@ -481,7 +482,7 @@ class BagelRouteStore:
                 raise BagelRouteConfigError(f'「{route.name}」是开房卡{route.keycard.label}，不能作为跑刀路线开启')
             if route.spawn_id != spawn_id:
                 raise BagelRouteConfigError(f'路线「{route.name}」绑定的是其他出生点')
-            problem = check_route_start(route, catalog.spawn(spawn_id))
+            problem = check_route_start(route, catalog.spawn(spawn_id)) or check_run_points(route)
             if problem is not None:
                 raise BagelRouteConfigError(f'路线「{route.name}」无法开启：{problem}')
         catalog.active[spawn_id] = ref
@@ -613,7 +614,7 @@ class BagelRouteStore:
         route = self.load_route(ref)
         spawn = self._start_anchor(route)
         route.points = list(points)
-        problem = check_route_start(route, spawn)
+        problem = check_route_start(route, spawn) or check_run_points(route)
         if problem is not None:
             raise ValueError(problem)
         route.ended_at = now_iso()
