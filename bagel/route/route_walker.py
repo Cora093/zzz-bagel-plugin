@@ -305,6 +305,16 @@ MECHANICAL_PROMPT_LOST_LIMIT: int = 2
 INTERACT_TAP_SECONDS: float = 0.2
 """点按交互键 F 的按住时长（秒）。"""
 
+ENTRY_NAME_MATCH_PERCENT: float = 0.7
+"""保险箱条目文字与名称的最长公共子序列占名称长度的比例下限。
+提示条刚滑入画面时 OCR 会读错或读不全（实机出现过「机械保险」少了「箱」），按全名匹配会落到
+「普通箱子」兜底，类型锁定后点按 F 对机械保险箱无效。5 个字取 0.7 即至少对上 4 个字，
+容忍错一个字；电子、机械保险箱只共有「保险箱」3 个字，不会互相认错。"""
+
+PRESS_F_MAX_TAPS: int = 20
+"""同一个点最多点按 F 的次数（每次约 0.4 秒）。点这么多次提示还在、面板也没出，
+多半是类型判错（点按对机械保险箱、刷卡处无效），按本局失败处理，不空转到看门狗介入。"""
+
 CARD_HOLD_SECONDS: float = 4.0
 """刷卡处单次长按 F 的上限（秒）。录像里进度圈约 1.5 秒填满。"""
 
@@ -545,6 +555,7 @@ class BagelRouteWalker(BagelOperation):
         self.cursor: int = 0
         self.current_kind: str | None = None
         self.f_pressed: bool = False
+        self.press_f_taps: int = 0
         self.mechanical_hold_until: float | None = None
         self.mechanical_retried: bool = False
         self.mechanical_lost_since: float | None = None
@@ -979,9 +990,9 @@ class BagelRouteWalker(BagelOperation):
         """
         if icon_kind == 'card':
             return 'card_reader'
-        if gt('电子保险箱', 'game') in text:
+        if str_utils.find_by_lcs(gt('电子保险箱', 'game'), text, ENTRY_NAME_MATCH_PERCENT):
             return 'electronic_safe'
-        if gt('机械保险箱', 'game') in text:
+        if str_utils.find_by_lcs(gt('机械保险箱', 'game'), text, ENTRY_NAME_MATCH_PERCENT):
             return 'mechanical_safe'
         if gt('门', 'game') in text:
             return 'door'
@@ -1676,8 +1687,13 @@ class BagelRouteWalker(BagelOperation):
         if self.f_pressed and self._top_entry() is None:
             self._reset_point_state()
             return self.round_success('已完成')
+        if self.press_f_taps >= PRESS_F_MAX_TAPS:
+            log.info('贝果第 %s 点（%s）点按 F %s 次后提示仍在，判本局失败', self.cursor + 1, kind, self.press_f_taps)
+            self._reset_point_state()
+            return self.round_recoverable_fail('点按F后提示一直不消失')
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
         self.f_pressed = True
+        self.press_f_taps += 1
         return self.round_wait('已点按F，等待结果', wait=0.4)
 
     @node_from(from_name='按类型交互', status='电子保险箱已解锁')
@@ -2448,6 +2464,7 @@ class BagelRouteWalker(BagelOperation):
         """
         self.current_kind = None
         self.f_pressed = False
+        self.press_f_taps = 0
         self.mechanical_hold_until = None
         self.mechanical_retried = False
         self.mechanical_lost_since = None
