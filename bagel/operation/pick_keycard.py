@@ -15,17 +15,24 @@ from ..vision.keycard_pick import (
     GRID_SCROLL_POS,
     LOCK_CONFIRM_RECT,
     PAGE_CENTERS,
+    PAGE_ROWS_MAX,
+    TAB_CLOSED,
+    TAB_SELECTED,
     TOOLTIP_DISMISS_POS,
     TOOLTIP_SAFE_BUTTON_RECT,
     TOOLTIP_TITLE_RECT,
     TOOLTIP_TYPE_RECT,
+    TOP_ROW_Y,
+    VISIBLE_ROWS,
     GridCell,
+    RowTracker,
+    arrow_pixels,
     grid_cells,
-    grid_changed,
     grid_rows,
-    grid_signature,
-    row_strips,
-    scroll_overlap,
+    more_below,
+    page_tab_states,
+    rows_same,
+    scroll_effect,
     title_matches,
 )
 from ..vision.screen import read_area
@@ -48,21 +55,33 @@ COUNT_SCORE_MIN: float = 0.95
 CANDIDATE_LIMIT: int = 8
 """每一屏最多点开核对的格子数；卡按种类扎堆，排在前面的足够覆盖。"""
 SCROLL_NOTCHES: int = 5
-"""每次向下滚动的滚轮格数。"""
-SCROLL_TOP_NOTCHES: int = 20
-"""切页后回到顶部时，每次向上滚动的滚轮格数。"""
+"""每次向下（上）滚动的滚轮格数。实机一次滚轮事件正好滚一整行（122 px），1–8 格结果一样；
+取 5 格，是因为若某环境按每格 24 px 滚，5 格也正好是一行。"""
+TOP_COMMANDS: int = 5
+"""点已选中的页签后要发的向上滚动命令数：列表可能停在中间，一页最多 8 行、最多向下滚 3 次，
+每条命令滚一行，5 条足够回到顶部。列表滚离顶部后画面没有顶部提示，所以只能靠命令数。
+切到另一页时列表本来就在顶部，只发 1 条（用来唤出 ▼ 提示）。"""
 FILTER_CHECKS: int = 4
 """切换类型筛选后最多点几次，直到仓库标题显示对应类型。"""
 PLACE_CHECKS: int = 4
 """点「放入安全箱」后最多看几帧确认安全箱第 1 格有了物品。"""
 DISMISS_CHECKS: int = 3
 """滚动前最多点几次标题栏关浮窗；仍关不掉就停止保留现场。"""
+PAGE_CHECKS: int = 3
+"""点分页页签后最多点几次，直到该页签显示为选中；仍没选中就停止并保留现场。"""
 SETTLE_WAIT: float = 0.3
-"""滚动后等列表停稳时，两次截图的间隔（秒）。"""
+"""滚动后等列表停稳时，两次截图的间隔（秒）。滚动动画实测 0.2–0.45 s。"""
 SETTLE_MAX_CHECKS: int = 8
 """滚动后最多截几次等列表停稳；用完仍在动就按当前画面继续，并记警告。"""
-BOTTOM_CONFIRM_CHECKS: int = 3
-"""滚动后画面一直没变，连续截这么多次仍没变才算本页到底。游戏有时滚动过一会儿才起步。"""
+STUCK_SCROLL_MAX: int = 3
+WAKE_SCROLL_MAX: int = 3
+"""每页清点前的向上滚动发完、停稳后 ▼ 提示仍不在，最多补发到这么多条；
+仍不在就当本页滚不动（不超过一屏），只数这一屏。"""
+TOP_MAX_EXTRA: int = 6
+"""发完向上滚动命令后，最多再等几次截图让第 1 行落回顶部位置、画面停稳；仍不行就停止并保留现场。
+列表在顶部时再向上滚会回弹，第 1 行要过一会儿才落回顶部。"""
+TOP_ROW_TOLERANCE: int = 6
+"""第 1 行行心与 ``TOP_ROW_Y`` 相差不超过它，算在顶部。"""
 
 
 class BagelPickKeycard(BagelOperation):
@@ -73,7 +92,7 @@ class BagelPickKeycard(BagelOperation):
 
     挑卡时逐页、逐屏按图标相似度点开候选格，OCR 浮窗标题与房间名一致、类型是门禁卡，
     才点「放入安全箱」。所有页都翻完仍没有就以 ``STATUS_NO_CARD`` 结束。
-    每切到一页先滚回顶部，避免从上次停下的位置开始找。
+    每切到一页先向上滚，回到顶部并刷新 ▼ 提示，再逐行向下滚，▼ 消失判本页到底。
 
     ``from_prepare`` 为真时从备战页进出仓库；否则就在当前仓库（结算仓库）挑，挑完不离开。
     """
@@ -106,7 +125,8 @@ class BagelPickKeycard(BagelOperation):
         """清点到的张数；没清点为 None。"""
         self.near_scores: list[float] = []
         """清点时相似度在候选线与计数线之间的格子，写进日志供标定。"""
-        self.prev_strips: list[MatLike] = []
+        self.row_counts: dict[tuple[int, int], int] = {}
+        """清点时每页每个绝对行号上数到的本房间的卡；一行被多次看到时取最大值，总数是它们的和。"""
         self.count_crops: list[MatLike] = []
         """清点时每屏的网格截图；按保留张数结束时拼成一张存下，供核对数得对不对。"""
         self.filter_clicks: int = 0
@@ -118,16 +138,36 @@ class BagelPickKeycard(BagelOperation):
         """挑卡已有结论，正在把筛选切回「全部」；切回后返回它。"""
         self.restore_clicks: int = 0
         self.to_top: bool = False
-        self.top_signature: MatLike | None = None
+        """正在做每页清点前的向上滚动（唤出 ▼ 提示，必要时回到顶部）。"""
+        self.top_needed: int = 0
+        """本页要发的向上滚动命令数。"""
+        self.top_retries: int = 0
+        """▼ 提示没出现而补发的向上滚动命令数。"""
+        self.top_sent: int = 0
+        """本页已发出的向上滚动命令数。"""
+        self.top_extra: int = 0
+        self.top_rows: list[int] | None = None
+        """发完命令后上一次截图里各完整行的行心纵坐标。"""
         self.page: int = 0
         self.need_page_click: bool = True
-        self.page_signature: MatLike | None = None
-        self.scroll_signature: MatLike | None = None
-        """向下滚动前的网格缩略图；非 None 表示正在等这次滚动的结果。"""
-        self.settle_signature: MatLike | None = None
-        """等列表停稳时上一次截图的网格缩略图。"""
+        self.page_clicks: int | None = None
+        """已点当前页签的次数；非 None 表示正在等页签显示为选中。"""
+        self.tracker: RowTracker | None = None
+        """本页的滚动记账；滚回顶部后在第一屏建立。"""
+        self.scrolling: bool = False
+        """刚发出向下滚动，正在等它的结果。"""
+        self.scroll_before: MatLike | None = None
+        """发出向下滚动前的整屏截图，用来判断命令生效没有。"""
+        self.settle_rows: list[int] | None = None
+        """等列表停稳时上一次截图里各完整行的行心纵坐标。"""
+        self.settle_arrow: bool | None = None
+        """等列表停稳时上一次截图里 ▼ 提示在不在。"""
         self.settle_checks: int = 0
         """这次滚动后已截了几次图等结果。"""
+        self.stuck_scrolls: int = 0
+        self.top_arrow: bool | None = None
+        """向上滚动后上一次截图里 ▼ 提示在不在。"""
+        """▼ 提示还在、滚动命令却没生效的连续次数。"""
         self.tried: set[tuple[int, int]] = set()
         self.pending: GridCell | None = None
         self.placing_checks: int | None = None
@@ -142,21 +182,24 @@ class BagelPickKeycard(BagelOperation):
         self.counting = self.reserve > 0
         self.counted = None
         self.near_scores = []
-        self.prev_strips = []
+        self.row_counts = {}
         self.count_crops = []
         self.filter_clicks = 0
         self.filter_ready = False
         self.lock_hit = False
         self.result = None
         self.restore_clicks = 0
-        self.to_top = False
-        self.top_signature = None
+        self._reset_top()
         self.page = 0
         self.need_page_click = True
-        self.page_signature = None
-        self.scroll_signature = None
-        self.settle_signature = None
+        self.page_clicks = None
+        self.tracker = None
+        self.scrolling = False
+        self.scroll_before = None
+        self.settle_rows = None
+        self.settle_arrow = None
         self.settle_checks = 0
+        self.stuck_scrolls = 0
         self.tried = set()
         self.pending = None
         self.placing_checks = None
@@ -230,7 +273,7 @@ class BagelPickKeycard(BagelOperation):
             return self._apply_filter()
         if self.lock_hit:
             self.lock_hit = False
-            self.page_signature = None
+            self.page_clicks = None
             return self._pages_done(f'第 {self.page + 1} 页未解锁')
         if self.placing_checks is not None:
             return self._check_placed()
@@ -238,18 +281,17 @@ class BagelPickKeycard(BagelOperation):
             return self._check_tooltip()
         if self.need_page_click:
             return self._click_page()
-        if self.page_signature is not None:
-            # 刚翻页：网格没变说明这一页锁定或没有更多页。
-            changed = grid_changed(self.page_signature, grid_signature(self.last_screenshot))
-            self.page_signature = None
-            if not changed:
-                return self._pages_done(f'第 {self.page + 1} 页翻不过去')
+        if self.page_clicks is not None:
+            waiting = self._confirm_page()
+            if waiting is not None:
+                return waiting
         if self.to_top:
             return self._scroll_top()
-        if self.scroll_signature is not None:
+        if self.scrolling:
             waiting = self._wait_scroll_settled()
             if waiting is not None:
                 return waiting
+        self._ensure_tracker()
         if self.counting:
             return self._count_screen()
         cell = self._next_candidate()
@@ -257,8 +299,7 @@ class BagelPickKeycard(BagelOperation):
             if self._tooltip_open():
                 return self._dismiss_tooltip()
             self.dismiss_clicks = 0
-            self._scroll_down()
-            return self.round_wait(f'第 {self.page + 1} 页向下滚动', wait=0.6)
+            return self._scroll_or_next_page()
         self.pending = cell
         self.tried.add(cell.center.tuple())
         self.opened += 1
@@ -318,77 +359,182 @@ class BagelPickKeycard(BagelOperation):
         return self.round_wait('点击全部筛选', wait=0.8)
 
     def _scroll_top(self) -> OperationRoundResult:
-        """切页后向上滚到网格不再变化为止。"""
-        signature = grid_signature(self.last_screenshot)
-        if self.top_signature is not None and not grid_changed(self.top_signature, signature):
-            self.to_top = False
-            self.top_signature = None
-            return self.round_wait('已在本页顶部', wait=0.05)
-        self.top_signature = signature
-        self.ctx.controller.scroll(-SCROLL_TOP_NOTCHES, GRID_SCROLL_POS)
-        return self.round_wait(f'第 {self.page + 1} 页滚回顶部', wait=0.6)
+        """每页清点前先向上滚，唤出 ▼ 提示；点的是已选中的页时同时回到顶部。
+
+        切页后 ▼ 提示还是这一页上次离开时的状态，要滚动过才更新。切到另一页时列表在顶部，
+        向上滚一条不会动，只用来刷新 ▼。命令发完后等第 1 行落回顶部位置、相邻两次截图的行
+        和 ▼ 都不变，等不到就失败。停稳后 ▼ 不在：可能这条命令丢了，也可能本页不超过一屏，
+        补发向上滚动，共 ``WAKE_SCROLL_MAX`` 条仍不在就按本页滚不动处理。
+        """
+        if self.top_sent < self.top_needed:
+            self.top_sent += 1
+            self.top_rows = None
+            self.top_arrow = None
+            self.ctx.controller.scroll(-SCROLL_NOTCHES, GRID_SCROLL_POS)
+            return self.round_wait(f'第 {self.page + 1} 页向上滚动（唤出 ▼ 提示）', wait=0.6)
+        screen = self.last_screenshot
+        rows = grid_rows(screen)
+        arrow = more_below(screen)
+        previous, previous_arrow = self.top_rows, self.top_arrow
+        self.top_rows, self.top_arrow = rows, arrow
+        settled = (bool(rows) and abs(rows[0] - TOP_ROW_Y) <= TOP_ROW_TOLERANCE
+                   and previous is not None and rows_same(previous, rows) and previous_arrow == arrow)
+        if not settled:
+            self.top_extra += 1
+            if self.top_extra > TOP_MAX_EXTRA:
+                first = rows[0] if rows else None
+                return self._finish(self.round_fail(
+                    f'第 {self.page + 1} 页向上滚动后第 1 行在 y={first}（顶部应为 {TOP_ROW_Y}）或画面一直在动，'
+                    '停止并保留现场'))
+            return self.round_wait('等第 1 行落回顶部、画面停稳', wait=0.3)
+        if not arrow and self.top_retries < WAKE_SCROLL_MAX - 1:
+            self.top_retries += 1
+            self.top_needed += 1
+            self.top_extra = 0
+            return self.round_wait('▼ 提示没出现，补发向上滚动', wait=0.05)
+        log.info('贝果挑卡：第 %s 页已发 %s 条向上滚动命令，第 1 行在 y=%s，▼ %s（像素 %s）',
+                 self.page + 1, self.top_sent, rows[0], '在' if arrow else '不在，按本页滚不动处理',
+                 arrow_pixels(screen))
+        self._reset_top()
+        self.tracker = None
+        return self.round_wait('已在本页顶部', wait=0.05)
+
+    def _reset_top(self) -> None:
+        self.to_top = False
+        self.top_needed = 0
+        self.top_retries = 0
+        self.top_sent = 0
+        self.top_extra = 0
+        self.top_rows = None
+        self.top_arrow = None
+
+    def _ensure_tracker(self) -> None:
+        """滚回顶部后的第一屏建立滚动记账：第 1 个完整行记为第 0 行。"""
+        if self.tracker is None:
+            rows = grid_rows(self.last_screenshot)
+            if rows:
+                self.tracker = RowTracker(rows)
 
     def _count_screen(self) -> OperationRoundResult:
-        """数当前屏新露出的行里本房间的卡，然后向下滚。与上一屏重叠的行不重复数。"""
+        """数当前屏各完整行里本房间的卡，按绝对行号记账，一行只算一次；然后向下滚。
+
+        同一行在不同滚动位置被看到多次时取读数最大的一次：靠近列表上下边缘的卡片会被调暗，
+        单次读数可能偏低。
+        """
         rows = grid_rows(self.last_screenshot)
-        strips = row_strips(self.last_screenshot, rows)
-        skip = scroll_overlap(self.prev_strips, strips) if self.prev_strips else 0
-        fresh = set(rows[skip:])
-        found = 0
+        tracker = self.tracker
         cells = grid_cells(self.last_screenshot, self.template_id)
-        for cell in cells:
-            if cell.center.y not in fresh:
-                continue
-            if cell.score >= COUNT_SCORE_MIN:
-                found += 1
-            elif cell.score >= CANDIDATE_SCORE_MIN:
-                self.near_scores.append(cell.score)
-        self.counted = (self.counted or 0) + found
-        self.count_crops.append(
-            self.last_screenshot[GRID_RECT.y1:GRID_RECT.y2, GRID_RECT.x1:GRID_RECT.x2].copy())
+        indexes: list[int] = []
+        new_rows = 0
+        if tracker is not None:
+            for y in rows:
+                index = tracker.row_index(y)
+                indexes.append(index)
+                found = 0
+                near: list[float] = []
+                for cell in cells:
+                    if cell.center.y != y:
+                        continue
+                    if cell.score >= COUNT_SCORE_MIN:
+                        found += 1
+                    elif cell.score >= CANDIDATE_SCORE_MIN:
+                        near.append(cell.score)
+                key = (self.page, index)
+                before = self.row_counts.get(key)
+                if before is None:
+                    new_rows += 1
+                    self.row_counts[key] = found
+                    self.near_scores.extend(near)
+                elif found != before:
+                    log.info('贝果挑卡清点：第 %s 页第 %s 行两次读数不同（%s、%s 张），取大',
+                             self.page + 1, index, before, found)
+                    self.row_counts[key] = max(before, found)
+        self.counted = sum(self.row_counts.values())
+        if new_rows:
+            self.count_crops.append(
+                self.last_screenshot[GRID_RECT.y1:GRID_RECT.y2, GRID_RECT.x1:GRID_RECT.x2].copy())
+        span = f'{min(indexes)}–{max(indexes)}' if indexes else '无'
         top = '、'.join(f'{cell.score:.3f}' for cell in cells[:6]) or '无'
-        log.info('贝果挑卡清点：第 %s 页本屏 %s 行（与上屏重叠 %s 行）、%s 格有物，数到 %s 张，累计 %s 张；最高相似度 %s',
-                 self.page + 1, len(rows), skip, len(cells), found, self.counted, top)
-        self.prev_strips = strips
+        log.info('贝果挑卡清点：第 %s 页已向下滚 %s 行，本屏 %s 行（行号 %s），新行 %s 行、%s 格有物，累计 %s 张；'
+                 '▼ 像素 %s；最高相似度 %s',
+                 self.page + 1, tracker.offset if tracker is not None else 0, len(rows), span, new_rows,
+                 len(cells), self.counted, arrow_pixels(self.last_screenshot), top)
+        return self._scroll_or_next_page()
+
+    def _scroll_or_next_page(self) -> OperationRoundResult:
+        """▼ 提示还在就向下滚一行；已经消失说明本页到底，换下一页。▼ 已在本页开头向上滚动时唤出。"""
+        screen = self.last_screenshot
+        if not more_below(screen):
+            log.info('贝果挑卡：第 %s 页 ▼ 已消失，本页到底（已向下滚 %s 行，▼ 像素 %s）',
+                     self.page + 1, self.tracker.offset if self.tracker is not None else 0, arrow_pixels(screen))
+            return self._next_page()
+        if self.tracker is not None and self.tracker.offset >= PAGE_ROWS_MAX - VISIBLE_ROWS:
+            return self._finish(self.round_fail(
+                f'第 {self.page + 1} 页已向下滚 {self.tracker.offset} 行，▼ 提示仍在；一页最多 {PAGE_ROWS_MAX} 行，'
+                '记账或画面不对，停止并保留现场'))
         self._scroll_down()
-        return self.round_wait(f'清点第 {self.page + 1} 页，向下滚动', wait=0.6)
+        return self.round_wait(f'第 {self.page + 1} 页向下滚动一行', wait=0.6)
 
     def _scroll_down(self) -> None:
-        """记下滚动前的网格并向下滚；下一轮由 ``_wait_scroll_settled`` 等结果。"""
-        self.scroll_signature = grid_signature(self.last_screenshot)
-        self.settle_signature = None
+        """向下滚一行；下一轮由 ``_wait_scroll_settled`` 等结果。"""
+        self.scrolling = True
+        self.scroll_before = self.last_screenshot.copy()
+        self.settle_rows = None
+        self.settle_arrow = None
         self.settle_checks = 0
         self.ctx.controller.scroll(SCROLL_NOTCHES, GRID_SCROLL_POS)
 
     def _clear_scroll_wait(self) -> None:
-        self.scroll_signature = None
-        self.settle_signature = None
+        self.scrolling = False
+        self.scroll_before = None
+        self.settle_rows = None
+        self.settle_arrow = None
         self.settle_checks = 0
 
     def _wait_scroll_settled(self) -> OperationRoundResult | None:
-        """滚动后等列表停稳再继续；仍要等就返回等待结果，已停稳返回 None，到底直接换页。
+        """滚动后等列表停稳；仍要等或要重滚就返回结果，命令生效返回 None 继续。
 
-        游戏有时过一会儿才开始滚，滚动本身也要几百毫秒。在滚动途中截图计数或点格子，
-        行会整体错位：行重叠对不上，同一批卡被数两遍，也可能点到错位的格子。
-        所以画面变了以后，要连续两次截图都没再变才算停稳；一直没变则多等几次，
-        确认不是还没起步，才判本页到底。
+        实机每条滚动命令正好滚一行，行的位置（相位）不变，所以不靠位置判断滚没滚：
+        - 停稳：相邻两次截图（间隔 ``SETTLE_WAIT``）行的纵坐标和 ▼ 状态都不变。
+        - 命令发出前 ▼ 在（本页开头已向上滚动唤出），列表还能滚：画面变了算滚了一行；画面没变而可见各行有不同的卡（``still``），
+          是命令丢了，重发，连续 ``STUCK_SCROLL_MAX`` 次都不动就失败；可见各行全是同款卡时分不出
+          （``unknown``），按滚了一行记账并写日志，这是已知的不确定处，见 docs/keycard.md。
         """
-        current = grid_signature(self.last_screenshot)
-        previous = self.settle_signature
-        self.settle_signature = current
+        screen = self.last_screenshot
+        rows = grid_rows(screen)
+        arrow = more_below(screen)
+        previous_rows, previous_arrow = self.settle_rows, self.settle_arrow
+        self.settle_rows, self.settle_arrow = rows, arrow
         self.settle_checks += 1
-        if not grid_changed(self.scroll_signature, current):
-            if self.settle_checks <= BOTTOM_CONFIRM_CHECKS:
-                return self.round_wait('等列表开始滚动', wait=SETTLE_WAIT)
-            self._clear_scroll_wait()
-            return self._next_page()
-        if previous is None or grid_changed(previous, current):
+        stable = previous_rows is not None and previous_arrow == arrow and rows_same(previous_rows, rows)
+        if not stable:
             if self.settle_checks < SETTLE_MAX_CHECKS:
                 return self.round_wait('等列表滚动停稳', wait=SETTLE_WAIT)
             log.warning('贝果挑卡：滚动后截了 %s 次列表仍在动，按当前画面继续', self.settle_checks)
-        elif self.settle_checks > 2:
-            log.info('贝果挑卡：滚动后第 %s 次截图列表才停稳', self.settle_checks)
+        checks = self.settle_checks
+        before = self.scroll_before
         self._clear_scroll_wait()
+        effect = scroll_effect(before, screen) if before is not None else 'unknown'
+        if effect == 'still':
+            self.stuck_scrolls += 1
+            if self.stuck_scrolls >= STUCK_SCROLL_MAX:
+                count = self.stuck_scrolls
+                self.stuck_scrolls = 0
+                return self._finish(self.round_fail(
+                    f'列表还能向下滚（▼ 提示仍在），连续 {count} 次滚动命令画面都没变，停止并保留现场'))
+            self._scroll_down()
+            return self.round_wait('滚动命令没生效，重发', wait=0.6)
+        self.stuck_scrolls = 0
+        if self.tracker is not None:
+            self.tracker.advance()
+            if not self.tracker.aligned(rows):
+                return self._finish(self.round_fail(
+                    f'第 {self.page + 1} 页滚动后行的位置与顶部不一致（{rows}），滚动不是整行，记账不可信，停止并保留现场'))
+        if effect == 'unknown':
+            log.info('贝果挑卡：第 %s 页第 %s 次滚动前后画面分不出动没动（整块同款卡），按滚了一行记账',
+                     self.page + 1, self.tracker.offset if self.tracker is not None else 0)
+        if checks > 3:
+            log.info('贝果挑卡：滚动后第 %s 次截图列表才停稳', checks)
         self.tried.clear()
         return None
 
@@ -410,22 +556,50 @@ class BagelPickKeycard(BagelOperation):
         self.counting = False
         self.page = 0
         self.need_page_click = True
-        self.page_signature = None
+        self.page_clicks = None
         self._clear_scroll_wait()
-        self.prev_strips = []
+        self.tracker = None
         return self.round_wait('清点完毕，开始挑卡', wait=0.05)
 
     def _click_page(self) -> OperationRoundResult:
+        """点下一页的页签。页签暗色（筛选后该页没有这类物品）或锁定，就算全部页看完。
+
+        不用「点了以后网格变没变」判断翻页：相邻两页都是整块同款卡时网格看起来一样，
+        会把能翻的页误判成翻不过去，漏掉后面所有页。
+
+        点完先向上滚（``_scroll_top``）：切到另一页时列表在顶部，向上滚 1 条只为唤出 ▼ 提示；
+        点的是已选中的页（刚打开仓库，或清点完回到同一页挑卡）时列表可能停在中间，向上滚 5 条回到顶部。
+        """
         if self.page >= len(PAGE_CENTERS):
             return self._pages_done('已翻完全部分页')
+        states = page_tab_states(self.last_screenshot)
+        if states[self.page] == TAB_CLOSED:
+            return self._pages_done(f'第 {self.page + 1} 页页签是暗的或已锁定（页签 {"、".join(states)}）')
         self.need_page_click = False
-        self.page_signature = None if self.page == 0 else grid_signature(self.last_screenshot)
+        self.page_clicks = 1
+        self._reset_top()
         self.to_top = True
-        self.top_signature = None
-        self.prev_strips = []
+        self.top_needed = TOP_COMMANDS if states[self.page] == TAB_SELECTED else 1
+        self.stuck_scrolls = 0
+        self.tracker = None
+        self._clear_scroll_wait()
         self.tried.clear()
         self.ctx.controller.click(PAGE_CENTERS[self.page], press_time=0.05)
         return self.round_wait(f'切到仓库第 {self.page + 1} 页', wait=0.8)
+
+    def _confirm_page(self) -> OperationRoundResult | None:
+        """等刚点的页签显示为选中；选中返回 None 继续，否则重点，点够次数仍没选中就停止。"""
+        states = page_tab_states(self.last_screenshot)
+        if states[self.page] == TAB_SELECTED:
+            self.page_clicks = None
+            return None
+        clicks = self.page_clicks or 0
+        if clicks >= PAGE_CHECKS:
+            return self._finish(self.round_fail(
+                f'点了 {clicks} 次第 {self.page + 1} 页页签仍没选中（页签 {"、".join(states)}），停止并保留现场'))
+        self.page_clicks = clicks + 1
+        self.ctx.controller.click(PAGE_CENTERS[self.page], press_time=0.05)
+        return self.round_wait(f'第 {self.page + 1} 页页签没选中，重点', wait=0.8)
 
     def _next_page(self) -> OperationRoundResult:
         self.page += 1

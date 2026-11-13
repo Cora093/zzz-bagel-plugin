@@ -1,7 +1,7 @@
 """仓库挑门禁卡用到的画面几何与识别。
 
 坐标取自用户录屏（1920×1080，城郊幻境高危备战仓库），录屏是有损编码；
-相似度和行比对阈值按实机清点拼图标定。
+相似度阈值按实机清点拼图标定；列表每条滚动命令正好滚一行，按「命令数」给行编号，画面比对只用来发现命令丢了。
 挑卡时图标模板只给候选格排序，挑哪张以点开浮窗后 OCR 到的标题为准；
 按保留张数清点时只看图标，不点开。
 """
@@ -31,6 +31,16 @@ GRID_SCROLL_POS: Point = Point(1432, 570)
 """在网格上滚动鼠标滚轮的位置。"""
 PAGE_CENTERS: tuple[Point, ...] = tuple(Point(x, 143) for x in (1100, 1211, 1321, 1432, 1542, 1653, 1763))
 """仓库分页页签 1–7 的中心；录屏里 6、7 页是锁定的。"""
+_TAB_HALF: int = 24
+"""判断页签状态时，取页签中心上下左右各这么多像素。"""
+_TAB_GOLD_MIN: int = 400
+"""页签区域里金色像素不少于它，算当前选中页。实机选中页 846–1338，其余页 0。"""
+_TAB_BRIGHT_MIN: int = 100
+"""页签区域里亮像素（灰度 ≥ 200）不少于它，算可以翻到的页。实机白色页码 210–260，
+筛选后没有内容的暗色页码和锁定页 0；选中页的金色圆也有约 120。"""
+TAB_SELECTED: str = 'selected'
+TAB_OPEN: str = 'open'
+TAB_CLOSED: str = 'closed'
 FILTER_ALL_POS: Point = Point(1100, 50)
 """网格上方类型筛选的「全部」。"""
 FILTER_KEYCARD_POS: Point = Point(1655, 50)
@@ -50,8 +60,9 @@ TOOLTIP_SAFE_BUTTON_RECT: Rect = Rect(800, 718, 988, 766)
 _ROW_SAT_MIN: int = 110
 _ROW_VAL_MIN: int = 90
 """卡片底色（黄、红、蓝、紫）的饱和度与亮度下限；格子空时是暗灰，不会过线。"""
-_ROW_FILL_MIN: float = 0.05
-"""一行像素里卡片底色的占比下限；一行只有一张卡时约 0.1。"""
+_ROW_FILL_MIN: float = 0.025
+"""一行像素里卡片底色的占比下限；末页只剩一张白色卡面时，图案遮住底色，
+实机逐行最低约 0.032。取 0.025 保留余量，避免把完整卡片切成多个不足 60 px 的短段。"""
 _ROW_HEIGHT_RANGE: tuple[int, int] = (60, 100)
 """完整一行卡片底色的高度范围；被滚动截掉一部分的行不在范围内，跳过。"""
 _ROW_CENTER_OFFSET: int = -2
@@ -64,12 +75,27 @@ _LETTER_RECT: tuple[int, int, int, int] = (12, 4, 32, 28)
 """卡面左上的字母徽标在模板里的范围 (x1, y1, x2, y2)，各房间的卡在这里区分 A–E。"""
 _LETTER_BLUR: float = 1.0
 _LETTER_MARGIN: int = 6
-_STRIP_HALF_HEIGHT: int = 24
-"""比较滚动前后行内容时，每行取格心上下各这么多像素；滚到顶边的行会被裁掉一截，所以只取中段。"""
-_STRIP_SHIFT: int = 8
-"""比较两行时容许的上下错位；被裁掉一截的行，行心估计会偏几像素。"""
-_STRIP_DIFF_MAX: float = 6.5
-"""两行灰度图错位对齐后的平均差不超过它，算同一行。实机同一行 2–6，相邻不同行 7 以上。"""
+ROW_PITCH: int = 122
+"""相邻两行卡片的行心间距；实机行心 321、443、565、687、809。"""
+TOP_ROW_Y: int = 321
+"""列表在顶部时第 1 行的行心纵坐标。"""
+ARROW_RECT: Rect = Rect(1414, 856, 1454, 872)
+"""网格正下方居中的 ▼ 提示区域；列表还能向下滚时显示，到底后淡出消失。"""
+_ARROW_GRAY_MIN: int = 200
+ARROW_PIXELS_MIN: int = 100
+"""区域里亮度不低于 ``_ARROW_GRAY_MIN`` 的像素数不少于它，算「还能向下滚」。
+实机还能滚时约 288，到底后淡出，途中约 40，最后为 0。"""
+_EFFECT_CELL_HALF: tuple[int, int] = (42, 40)
+"""判断滚动效果时每格取格心左右、上下各这么多像素。"""
+_EFFECT_CHANGED_MIN: float = 1.0
+"""滚动前后同一格的平均灰度差超过它，算画面变了。游戏截图无损，列表不动时实测为 0。"""
+_EFFECT_ROW_DIFFER_MIN: float = 4.0
+"""相邻两行同一列的 6×6 缩略图平均差不低于它，算两张不同的卡。
+实机同款卡 1.5–2.3（上下边缘调暗、亚像素偏移），不同的卡 5.8 以上（含只差底色或字母的卡）。"""
+PAGE_ROWS_MAX: int = 8
+"""一页最多 8 行（仓库总容量 280 = 5 页 × 56 格，每行 7 格）；一页最多向下滚 ``PAGE_ROWS_MAX - 5`` 次。"""
+VISIBLE_ROWS: int = 5
+"""网格一屏能完整显示的行数。"""
 
 
 @dataclass(frozen=True)
@@ -157,48 +183,126 @@ def _match(screen: MatLike, raw: MatLike, origin: Point, part: tuple[int, int, i
     return float(cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED).max())
 
 
-def row_strips(screen: MatLike, rows: list[int]) -> list[MatLike]:
-    """各行网格的灰度图（上下多留 ``_STRIP_SHIFT`` 像素供错位对齐），用来认出滚动前后重复出现的行。"""
-    half = _STRIP_HALF_HEIGHT + _STRIP_SHIFT
-    strips: list[MatLike] = []
-    for y in rows:
-        crop = screen[y - half:y + half, GRID_RECT.x1:GRID_RECT.x2]
-        strips.append(cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY).astype(np.float32))
-    return strips
+def more_below(screen: MatLike) -> bool:
+    """网格下方的 ▼ 提示还在，说明列表还能向下滚。"""
+    return arrow_pixels(screen) >= ARROW_PIXELS_MIN
 
 
-def scroll_overlap(before: list[MatLike], after: list[MatLike]) -> int:
-    """滚动前最后 k 行与滚动后最前 k 行一一相同，返回最大的 k；没有重叠为 0。
-
-    滚动不按整行对齐，前后两屏同一行的行心可差十几像素，所以按各自的行心取条带再比。
-    相邻几行内容完全相同时可能多认重叠、少数几张卡；少数只会让清点偏保守。
-    """
-    for k in range(min(len(before), len(after)), 0, -1):
-        if all(_strip_same(a, b) for a, b in zip(before[-k:], after[:k], strict=True)):
-            return k
-    return 0
-
-
-def _strip_same(a: MatLike, b: MatLike) -> bool:
-    """a 的中段在 b 里上下错位不超过 ``_STRIP_SHIFT`` 时，最小平均差不超过阈值。"""
-    if a.shape != b.shape:
-        return False
-    height = 2 * _STRIP_HALF_HEIGHT
-    core = a[_STRIP_SHIFT:_STRIP_SHIFT + height]
-    diff = min(float(np.abs(core - b[dy:dy + height]).mean()) for dy in range(2 * _STRIP_SHIFT + 1))
-    return diff <= _STRIP_DIFF_MAX
-
-
-def grid_signature(screen: MatLike) -> MatLike:
-    """网格区域的缩略灰度图，用来判断滚动或翻页后画面有没有变。"""
-    crop = screen[GRID_RECT.y1:GRID_RECT.y2, GRID_RECT.x1:GRID_RECT.x2]
+def arrow_pixels(screen: MatLike) -> int:
+    """▼ 提示区域里的亮像素数，写进日志供标定。"""
+    crop = screen[ARROW_RECT.y1:ARROW_RECT.y2, ARROW_RECT.x1:ARROW_RECT.x2]
     gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    return cv2.resize(gray, (gray.shape[1] // 8, gray.shape[0] // 8), interpolation=cv2.INTER_AREA)
+    return int((gray >= _ARROW_GRAY_MIN).sum())
 
 
-def grid_changed(before: MatLike, after: MatLike) -> bool:
-    """两张网格缩略图的平均差超过阈值才算画面变了。"""
-    return float(np.abs(before.astype(np.float32) - after.astype(np.float32)).mean()) >= 3.0
+def rows_same(before: list[int], after: list[int], tolerance: int = 1) -> bool:
+    """两次截图里各完整行的行心纵坐标一一相同（容许 ``tolerance`` 像素），说明列表没在动。"""
+    return len(before) == len(after) and all(
+        abs(a - b) <= tolerance for a, b in zip(before, after, strict=True))
+
+
+def row_phase(rows: list[int]) -> float | None:
+    """各行行心纵坐标对行距取余的圆周平均，范围 [0, ROW_PITCH)；没有完整行返回 None。
+
+    所有行等距排列，所以它代表列表滚到了哪个位置（以一个行距为周期）。
+    """
+    if not rows:
+        return None
+    angles = np.asarray(rows, dtype=np.float64) * (2 * np.pi / ROW_PITCH)
+    mean = np.arctan2(np.sin(angles).mean(), np.cos(angles).mean())
+    return float(mean % (2 * np.pi) * ROW_PITCH / (2 * np.pi))
+
+
+def phase_delta(before: float, after: float) -> float:
+    """两个相位之差，折到 [-ROW_PITCH/2, ROW_PITCH/2)。"""
+    return (after - before + ROW_PITCH / 2) % ROW_PITCH - ROW_PITCH / 2
+
+
+def _effect_cells(screen: MatLike, rows: list[int]) -> list[list[MatLike]]:
+    """各完整行、各列（跳过滚轮光标所在的列，光标和 ▼ 提示都在这一列）的格子灰度图。"""
+    half_w, half_h = _EFFECT_CELL_HALF
+    gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    xs = [x for x in GRID_XS if abs(x - GRID_SCROLL_POS.x) > half_w]
+    return [[gray[y - half_h:y + half_h, x - half_w:x + half_w] for x in xs] for y in rows]
+
+
+def scroll_effect(before: MatLike, after: MatLike) -> str:
+    """判断一条向下滚动命令生效没有：``moved``（滚了）、``still``（没滚）、``unknown``（分不出）。
+
+    - 滚动后任何一格变了就是滚了：游戏截图无损，列表不动时画面逐像素不变。
+    - 画面没变，而滚动前相邻两行有不同的卡：真滚了一行画面一定会变，所以是命令没生效。
+    - 画面没变、可见各行又全是同款卡：滚没滚画面都一样，分不出。
+    两张截图都要在列表停稳后截取。
+    """
+    rows = grid_rows(after)
+    if not rows or grid_rows(before) != rows:
+        return 'moved' if rows else 'unknown'
+    cells_before = _effect_cells(before, rows)
+    cells_after = _effect_cells(after, rows)
+    changed = max(float(np.abs(b - a).mean())
+                  for row_b, row_a in zip(cells_before, cells_after, strict=True)
+                  for b, a in zip(row_b, row_a, strict=True))
+    if changed > _EFFECT_CHANGED_MIN:
+        return 'moved'
+    thumbs = [[cv2.resize(cell, (6, 6), interpolation=cv2.INTER_AREA) for cell in row] for row in cells_before]
+    for upper, lower in zip(thumbs, thumbs[1:], strict=False):
+        if any(float(np.abs(a - b).mean()) >= _EFFECT_ROW_DIFFER_MIN for a, b in zip(upper, lower, strict=True)):
+            return 'still'
+    return 'unknown'
+
+
+class RowTracker:
+    """给本页每一行一个绝对行号：每条生效的向下滚动命令正好滚一行（实机探针 1–8 格都是 122 px）。
+
+    行的相位（行心纵坐标对行距取余）因此固定不变，不能用来发现滚动；行号只靠命令数记账，
+    相位只用来核对行没有错位。
+    """
+
+    def __init__(self, rows: list[int]) -> None:
+        """在列表顶部创建：第 1 个完整行记为第 0 行。"""
+        phase = row_phase(rows)
+        if phase is None:
+            raise ValueError('列表里没有完整行，无法建立滚动记账')
+        self.origin: int = rows[0]
+        self.phase: float = phase
+        self.offset: int = 0
+        """累计向下滚动的行数。"""
+
+    def advance(self) -> None:
+        """记一次生效的向下滚动。"""
+        self.offset += 1
+
+    def aligned(self, rows: list[int], tolerance: float = 6.0) -> bool:
+        """停稳后的行心相位仍与顶部一致；不一致说明滚动不是整行，记账不可信。"""
+        phase = row_phase(rows)
+        return phase is None or abs(phase_delta(self.phase, phase)) <= tolerance
+
+    def row_index(self, y: int) -> int:
+        """当前画面里行心纵坐标为 ``y`` 的那一行的绝对行号。"""
+        return self.offset + round((y - self.origin) / ROW_PITCH)
+
+
+def page_tab_states(screen: MatLike) -> list[str]:
+    """读分页页签 1–7 的状态：``TAB_SELECTED`` 当前页、``TAB_OPEN`` 可翻到、``TAB_CLOSED`` 暗色或锁定。
+
+    类型筛选后，没有该类物品的页页码变暗；未解锁的页显示锁图标。两者都翻不到内容。
+    """
+    hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
+    gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
+    states: list[str] = []
+    for center in PAGE_CENTERS:
+        y1, y2 = center.y - _TAB_HALF, center.y + _TAB_HALF
+        x1, x2 = center.x - _TAB_HALF, center.x + _TAB_HALF
+        h, sat, val = cv2.split(hsv[y1:y2, x1:x2])
+        gold = int(((h >= 15) & (h <= 35) & (sat >= 80) & (val >= 120)).sum())
+        bright = int((gray[y1:y2, x1:x2] >= 200).sum())
+        if gold >= _TAB_GOLD_MIN:
+            states.append(TAB_SELECTED)
+        elif bright >= _TAB_BRIGHT_MIN:
+            states.append(TAB_OPEN)
+        else:
+            states.append(TAB_CLOSED)
+    return states
 
 
 def title_matches(title: str, name: str) -> bool:
