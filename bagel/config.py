@@ -84,6 +84,22 @@ class BagelConfig(ApplicationConfig):
             raise ValueError(f'map 只能是 {"、".join(MAPS)}')
         self.update('map', value)
 
+    def stored_mode_map_problem(self) -> str | None:
+        """检查存下的 ``mode`` 与 ``map`` 原值；缺项按默认，不算问题。
+
+        读取属性时不认识的值会按默认处理，界面据此显示；启动校验看原值，免得拼错的配置静默按默认运行。
+
+        Returns:
+            有不认识的值时返回原因，否则返回 None。
+        """
+        mode = self.get('mode', DEFAULT_MODE)
+        if mode not in MODES:
+            return f'mode「{mode}」无法识别，只能是 {"、".join(MODES)}'
+        map_name = self.get('map', None)
+        if map_name is not None and map_name not in MAPS:
+            return f'map「{map_name}」无法识别，只能是 {"、".join(MAPS)}'
+        return None
+
     @property
     def map_supported(self) -> bool:
         """当前模式是否支持所选地图。"""
@@ -323,8 +339,9 @@ class BagelConfig(ApplicationConfig):
 
     def validate(self) -> None:
         """启动前校验配置。房间是否已登记、是否开启了路线由启动检查对照路线配置确认。"""
-        if self.mode not in MODES:
-            raise ValueError(f'mode 只能是 {"、".join(MODES)}')
+        problem = self.stored_mode_map_problem()
+        if problem is not None:
+            raise ValueError(f'{problem}；打开设置页会改回默认值，确认后再运行')
         if not self.map_supported:
             mode_name = BagelMode.KEYCARD.value.ui_text if self.is_keycard else BagelMode.RUN.value.ui_text
             raise ValueError(f'{mode_name}暂不支持{self.map_name}，请在设置页重新选择地图')

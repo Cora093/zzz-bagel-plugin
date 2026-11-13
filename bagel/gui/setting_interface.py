@@ -711,6 +711,12 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         self.blueprint_priority.init_with_adapter(
             get_prop_adapter(self.config, 'blueprint_priority'),
         )
+        problem = self.config.stored_mode_map_problem()
+        if problem is not None:
+            # 手改配置写进了不认识的值：把界面按默认显示的值写回，启动校验才放行。
+            log.warning('贝果设置：%s，已改回 %s · %s', problem, self.config.mode, self.config.map_name)
+            self.config.mode = self.config.mode
+            self.config.map_name = self.config.map_name
         if not self.config.map_supported:
             # 手改配置写进了不支持的组合：改回该模式的默认地图。
             log.warning('贝果设置：%s 不支持 %s，已改回 %s',
