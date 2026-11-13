@@ -80,6 +80,8 @@ TOP_MAX_EXTRA: int = 6
 列表在顶部时再向上滚会回弹，第 1 行要过一会儿才落回顶部。"""
 TOP_ROW_TOLERANCE: int = 6
 """第 1 行行心与 ``TOP_ROW_Y`` 相差不超过它，算在顶部。"""
+FINISH_MARGIN_SECONDS: float = 20
+"""操作剩余时间不足它时主动结束查找，留出关浮窗、切回「全部」筛选的时间。"""
 
 
 class BagelPickKeycard(BagelOperation):
@@ -253,7 +255,7 @@ class BagelPickKeycard(BagelOperation):
         return self.round_success()
 
     @node_from(from_name='核对挑卡安全箱')
-    @operation_node(name='查找门禁卡', timeout_seconds=420)
+    @operation_node(name='查找门禁卡')
     def find_card(self) -> OperationRoundResult:
         """一轮只做一步：筛选、翻页、滚动、清点一屏、点开一格或核对一格浮窗，便于暂停与超时。"""
         if not self._at_warehouse():
@@ -264,6 +266,8 @@ class BagelPickKeycard(BagelOperation):
             return self.round_retry('等待仓库画面', wait=0.5)
         if self.result is not None:
             return self._restore_filter()
+        if self.operation_usage_time >= self.timeout_seconds - FINISH_MARGIN_SECONDS:
+            return self._fail(f'挑卡超过 {self.timeout_seconds - FINISH_MARGIN_SECONDS:.0f} 秒仍没有结论')
         if not self.filter_ready:
             return self._apply_filter()
         if self.lock_hit:
@@ -313,7 +317,7 @@ class BagelPickKeycard(BagelOperation):
     def _dismiss_tooltip(self) -> OperationRoundResult:
         """滚动前关掉上一格的物品浮窗：浮窗开着时滚轮滚不动网格，会被误判为本页到底。"""
         if self.dismiss_clicks >= DISMISS_CHECKS:
-            return self.round_fail(f'点了 {self.dismiss_clicks} 次仓库标题栏，物品浮窗仍没关，停止并保留现场')
+            return self._fail(f'点了 {self.dismiss_clicks} 次仓库标题栏，物品浮窗仍没关')
         self.dismiss_clicks += 1
         self.ctx.controller.click(TOOLTIP_DISMISS_POS, press_time=0.05)
         return self.round_wait('滚动前关掉物品浮窗', wait=0.5)
@@ -339,9 +343,33 @@ class BagelPickKeycard(BagelOperation):
     def _finish(self, result: OperationRoundResult) -> OperationRoundResult:
         """记下结论，先把类型筛选切回「全部」再返回；结算仓库的数量读数依赖「全部」。"""
         self.result = result
+        self.dismiss_clicks = 0
         return self.round_wait('挑卡结束，切回全部筛选', wait=0.05)
 
+    def _fail(self, reason: str) -> OperationRoundResult:
+        """挑卡失败：先存下现场截图，再照常切回「全部」筛选后返回失败。
+
+        Args:
+            reason: 失败原因，作为操作结果的状态。
+        """
+        path = save_screenshot(self.last_screenshot, 'BagelKeycardPickFail')
+        log.warning('贝果挑卡失败：%s；现场截图 %s', reason, path)
+        return self._finish(self.round_fail(reason))
+
     def _restore_filter(self) -> OperationRoundResult:
+        """把类型筛选切回「全部」后返回 ``_finish`` 记下的结论。
+
+        物品浮窗开着时先点标题栏关掉，否则点筛选会被浮窗挡住；关不掉就不再切筛选。
+        """
+        if self._tooltip_open():
+            if self.dismiss_clicks < DISMISS_CHECKS:
+                self.dismiss_clicks += 1
+                self.ctx.controller.click(TOOLTIP_DISMISS_POS, press_time=0.05)
+                return self.round_wait('切回筛选前关掉物品浮窗', wait=0.5)
+            log.warning('贝果挑卡：物品浮窗关不掉，没有切回全部筛选')
+            result = self.result
+            self.result = None
+            return result
         header = self._header()
         if '全部' in header or self.filter_clicks == 0 or self.restore_clicks >= FILTER_CHECKS:
             if '全部' not in header and self.filter_clicks > 0:
@@ -378,9 +406,9 @@ class BagelPickKeycard(BagelOperation):
             self.top_extra += 1
             if self.top_extra > TOP_MAX_EXTRA:
                 first = rows[0] if rows else None
-                return self._finish(self.round_fail(
+                return self._fail(
                     f'第 {self.page + 1} 页向上滚动后第 1 行在 y={first}（顶部应为 {TOP_ROW_Y}）或画面一直在动，'
-                    '停止并保留现场'))
+                    '停止并保留现场')
             return self.round_wait('等第 1 行落回顶部、画面停稳', wait=0.3)
         if not arrow and self.top_retries < WAKE_SCROLL_MAX - 1:
             self.top_retries += 1
@@ -455,9 +483,9 @@ class BagelPickKeycard(BagelOperation):
                      self.page + 1, self.tracker.offset if self.tracker is not None else 0, arrow_pixels(screen))
             return self._next_page()
         if self.tracker is not None and self.tracker.offset >= PAGE_ROWS_MAX - VISIBLE_ROWS:
-            return self._finish(self.round_fail(
+            return self._fail(
                 f'第 {self.page + 1} 页已向下滚 {self.tracker.offset} 行，▼ 提示仍在；一页最多 {PAGE_ROWS_MAX} 行，'
-                '记账或画面不对，停止并保留现场'))
+                '记账或画面不对，停止并保留现场')
         self._scroll_down()
         return self.round_wait(f'第 {self.page + 1} 页向下滚动一行', wait=0.6)
 
@@ -506,8 +534,8 @@ class BagelPickKeycard(BagelOperation):
             if self.stuck_scrolls >= STUCK_SCROLL_MAX:
                 count = self.stuck_scrolls
                 self.stuck_scrolls = 0
-                return self._finish(self.round_fail(
-                    f'列表还能向下滚（▼ 提示仍在），连续 {count} 次滚动命令画面都没变，停止并保留现场'))
+                return self._fail(
+                    f'列表还能向下滚（▼ 提示仍在），连续 {count} 次滚动命令画面都没变，停止并保留现场')
             self._scroll_down()
             return self.round_wait('滚动命令没生效，重发', wait=0.6)
         self.stuck_scrolls = 0
@@ -523,8 +551,8 @@ class BagelPickKeycard(BagelOperation):
                 )
                 save_screenshot(before, 'BagelScrollBefore')
                 save_screenshot(screen, 'BagelScrollAfter')
-                return self._finish(self.round_fail(
-                    f'第 {self.page + 1} 页滚动后行的位置与顶部不一致（{rows}），滚动不是整行，记账不可信，停止并保留现场'))
+                return self._fail(
+                    f'第 {self.page + 1} 页滚动后行的位置与顶部不一致（{rows}），滚动不是整行，记账不可信，停止并保留现场')
         if effect == 'unknown':
             log.info('贝果挑卡：第 %s 页第 %s 次滚动前后画面分不出动没动（整块同款卡），按滚了一行记账',
                      self.page + 1, self.tracker.offset if self.tracker is not None else 0)
@@ -587,8 +615,8 @@ class BagelPickKeycard(BagelOperation):
             return None
         clicks = self.page_clicks or 0
         if clicks >= PAGE_CHECKS:
-            return self._finish(self.round_fail(
-                f'点了 {clicks} 次第 {self.page + 1} 页页签仍没选中（页签 {"、".join(states)}），停止并保留现场'))
+            return self._fail(
+                f'点了 {clicks} 次第 {self.page + 1} 页页签仍没选中（页签 {"、".join(states)}），停止并保留现场')
         self.page_clicks = clicks + 1
         self.ctx.controller.click(PAGE_CENTERS[self.page], press_time=0.05)
         return self.round_wait(f'第 {self.page + 1} 页页签没选中，重点', wait=0.8)
@@ -601,7 +629,7 @@ class BagelPickKeycard(BagelOperation):
     def _no_card(self, reason: str) -> OperationRoundResult:
         log.info('贝果挑卡：%s，共点开 %s 格，没有找到「%s」的门禁卡', reason, self.opened, self.room_name)
         if self.counted:
-            return self.round_fail(f'清点到 {self.counted} 张却没挑到，停止并保留现场')
+            return self._fail(f'清点到 {self.counted} 张却没挑到')
         return self._finish(self.round_fail(self.STATUS_NO_CARD))
 
     def _check_tooltip(self) -> OperationRoundResult:
@@ -617,7 +645,7 @@ class BagelPickKeycard(BagelOperation):
             return self.round_wait('不是目标卡，看下一格', wait=0.05)
         button = self._ocr(TOOLTIP_SAFE_BUTTON_RECT)
         if '安全箱' not in button:
-            return self.round_fail(f'浮窗没有「放入安全箱」按钮（读到「{button}」），停止并保留现场')
+            return self._fail(f'浮窗没有「放入安全箱」按钮（读到「{button}」）')
         self.ctx.controller.click(TOOLTIP_SAFE_BUTTON_RECT.center, press_time=0.05)
         self.placing_checks = 0
         return self.round_wait('已点放入安全箱', wait=0.8)
@@ -629,7 +657,7 @@ class BagelPickKeycard(BagelOperation):
             return self._finish(self.round_success(self.STATUS_PICKED))
         self.placing_checks = (self.placing_checks or 0) + 1
         if self.placing_checks >= PLACE_CHECKS:
-            return self.round_fail('点了放入安全箱，安全箱仍为空，停止并保留现场')
+            return self._fail('点了放入安全箱，安全箱仍为空')
         return self.round_wait('等待门禁卡进入安全箱', wait=0.5)
 
     @node_from(from_name='查找门禁卡')
