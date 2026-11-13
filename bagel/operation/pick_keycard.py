@@ -46,12 +46,9 @@ if TYPE_CHECKING:
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
     from zzz_od.context.zzz_context import ZContext
 
-CANDIDATE_SCORE_MIN: float = 0.85
-"""有图标模板时，相似度不低于它的格子才点开核对。实机同款卡 0.98 以上，
-同图案不同字母的 D 卡约 0.90，同字母不同底色的卡约 0.86，其他门禁卡更低。"""
-COUNT_SCORE_MIN: float = 0.95
-"""按保留张数清点时，图标相似度不低于它才算一张本房间的卡；清点不点开浮窗。
-取在实机同款卡（0.98 以上）与最接近的别款卡（约 0.90）之间。"""
+KEYCARD_SCORE_MIN: float = 0.95
+"""有图标模板时，图标相似度不低于它才算本房间的卡：挑卡只点开这些格子核对浮窗，清点按它计数、不点开浮窗。
+取在实机同款卡（0.98 以上）与最接近的别款卡（同图案不同字母的 D 卡约 0.90）之间。"""
 CANDIDATE_LIMIT: int = 8
 """每一屏最多点开核对的格子数；卡按种类扎堆，排在前面的足够覆盖。"""
 SCROLL_NOTCHES: int = 1
@@ -124,8 +121,6 @@ class BagelPickKeycard(BagelOperation):
         """当前是否在清点阶段；清点完转入挑卡。"""
         self.counted: int | None = None
         """清点到的张数；没清点为 None。"""
-        self.near_scores: list[float] = []
-        """清点时相似度在候选线与计数线之间的格子，写进日志供标定。"""
         self.row_counts: dict[tuple[int, int], int] = {}
         """清点时每页每个绝对行号上数到的本房间的卡；一行被多次看到时取最大值，总数是它们的和。"""
         self.count_crops: list[MatLike] = []
@@ -182,7 +177,6 @@ class BagelPickKeycard(BagelOperation):
         super().handle_init()
         self.counting = self.reserve > 0
         self.counted = None
-        self.near_scores = []
         self.row_counts = {}
         self.count_crops = []
         self.filter_clicks = 0
@@ -310,7 +304,7 @@ class BagelPickKeycard(BagelOperation):
     def _next_candidate(self) -> GridCell | None:
         cells = grid_cells(self.last_screenshot, self.template_id)
         if self.template_id is not None and any(cell.score > 0 for cell in cells):
-            cells = [cell for cell in cells if cell.score >= CANDIDATE_SCORE_MIN][:CANDIDATE_LIMIT]
+            cells = [cell for cell in cells if cell.score >= KEYCARD_SCORE_MIN][:CANDIDATE_LIMIT]
         return next((cell for cell in cells if cell.center.tuple() not in self.tried), None)
 
     def _tooltip_open(self) -> bool:
@@ -431,21 +425,12 @@ class BagelPickKeycard(BagelOperation):
             for y in rows:
                 index = tracker.row_index(y)
                 indexes.append(index)
-                found = 0
-                near: list[float] = []
-                for cell in cells:
-                    if cell.center.y != y:
-                        continue
-                    if cell.score >= COUNT_SCORE_MIN:
-                        found += 1
-                    elif cell.score >= CANDIDATE_SCORE_MIN:
-                        near.append(cell.score)
+                found = sum(1 for cell in cells if cell.center.y == y and cell.score >= KEYCARD_SCORE_MIN)
                 key = (self.page, index)
                 before = self.row_counts.get(key)
                 if before is None:
                     new_rows += 1
                     self.row_counts[key] = found
-                    self.near_scores.extend(near)
                 elif found != before:
                     log.info('贝果挑卡清点：第 %s 页第 %s 行两次读数不同（%s、%s 张），取大',
                              self.page + 1, index, before, found)
@@ -553,11 +538,8 @@ class BagelPickKeycard(BagelOperation):
         if not self.counting:
             return self._no_card(reason)
         counted = self.counted or 0
-        near = '、'.join(f'{score:.3f}' for score in sorted(self.near_scores, reverse=True)[:8]) or '无'
-        log.info('贝果挑卡：清点完毕（%s），仓库有「%s」的门禁卡 %s 张（图标相似度不低于 %.2f），保留 %s 张；'
-                 '相似度在 %.2f–%.2f 之间未计入的格子：%s',
-                 reason, self.room_name, counted, COUNT_SCORE_MIN, self.reserve,
-                 CANDIDATE_SCORE_MIN, COUNT_SCORE_MIN, near)
+        log.info('贝果挑卡：清点完毕（%s），仓库有「%s」的门禁卡 %s 张（图标相似度不低于 %.2f），保留 %s 张',
+                 reason, self.room_name, counted, KEYCARD_SCORE_MIN, self.reserve)
         if counted <= self.reserve:
             if self.count_crops:
                 path = save_screenshot(np.vstack(self.count_crops), 'BagelKeycardCount')
