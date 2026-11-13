@@ -54,9 +54,10 @@ COUNT_SCORE_MIN: float = 0.95
 取在实机同款卡（0.98 以上）与最接近的别款卡（约 0.90）之间。"""
 CANDIDATE_LIMIT: int = 8
 """每一屏最多点开核对的格子数；卡按种类扎堆，排在前面的足够覆盖。"""
-SCROLL_NOTCHES: int = 5
-"""每次向下（上）滚动的滚轮格数。实机一次滚轮事件正好滚一整行（122 px），1–8 格结果一样；
-取 5 格，是因为若某环境按每格 24 px 滚，5 格也正好是一行。"""
+SCROLL_NOTCHES: int = 1
+"""每次向下（上）滚动的滚轮格数。取 1 格：1 格在各次实机里都正好滚一整行（122 px）。
+曾经 1–8 格都只滚一行，但有一次游戏重启后 5 格一条命令滚了至少 3 行，直接滚到本页底，
+行位置错位而停止清点；原因未查明，所以取最小的 1 格。"""
 TOP_COMMANDS: int = 5
 """点已选中的页签后要发的向上滚动命令数：列表可能停在中间，一页最多 8 行、最多向下滚 3 次，
 每条命令滚一行，5 条足够回到顶部。列表滚离顶部后画面没有顶部提示，所以只能靠命令数。
@@ -528,6 +529,15 @@ class BagelPickKeycard(BagelOperation):
         if self.tracker is not None:
             self.tracker.advance()
             if not self.tracker.aligned(rows):
+                # 结束时会先切回「全部」筛选再截现场图，那张图看不到失败瞬间，这里当场存滚动前后两张。
+                before_rows = grid_rows(before) if before is not None else None
+                log.warning(
+                    '贝果挑卡：滚动后行位置错位，滚动前行 %s、▼ %s，滚动后行 %s、▼ %s，停稳检查 %s 次',
+                    before_rows, more_below(before) if before is not None else None,
+                    rows, arrow, checks,
+                )
+                save_screenshot(before, 'BagelScrollBefore')
+                save_screenshot(screen, 'BagelScrollAfter')
                 return self._finish(self.round_fail(
                     f'第 {self.page + 1} 页滚动后行的位置与顶部不一致（{rows}），滚动不是整行，记账不可信，停止并保留现场'))
         if effect == 'unknown':
