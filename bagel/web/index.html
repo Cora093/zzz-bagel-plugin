@@ -936,14 +936,23 @@ function spawnOptions(selectedId) {
 }
 
 // 路线用途：'' 跑刀路线；'entry:<房间>' 开房卡入口段；'room:<房间>' 开房卡房间段。
-function purposeOptions(selected) {
-  const options = [['', '跑刀路线']];
-  state.rooms.filter(r => r.map_id === state.activeMap).forEach(r => {
-    options.push(['entry:' + r.room_id, '开房卡入口段 · ' + r.name]);
-    options.push(['room:' + r.room_id, '开房卡房间段 · ' + r.name]);
-  });
-  return options.map(([value, label]) => '<option value="' + value + '"' + (value === selected ? ' selected' : '')
+// 表单里先选大类（跑刀／开房卡），开房卡再选段和卡房，提交时拼回这个字符串。
+function selectOptions(options, selected) {
+  return options.map(([value, label]) => '<option value="' + escapeHtml(value) + '"' + (value === selected ? ' selected' : '')
     + '>' + escapeHtml(label) + '</option>').join('');
+}
+
+function purposeFields(purpose) {
+  const keycard = keycardOfPurpose(purpose);
+  const rooms = state.rooms.filter(r => r.map_id === state.activeMap);
+  return '<label class="field">用途<select id="formKind">'
+    + selectOptions([['run', '跑刀'], ['keycard', '开房卡']], keycard ? 'keycard' : 'run') + '</select></label>'
+    + '<div id="formKeycardFields">'
+    + '<label class="field">段<select id="formSegment">'
+    + selectOptions([['entry', '入口段'], ['room', '房间段']], keycard ? keycard.segment : 'entry') + '</select></label>'
+    + '<label class="field">卡房<select id="formRoom">'
+    + selectOptions(rooms.map(r => [r.room_id, r.name]), keycard ? keycard.room : '') + '</select></label>'
+    + '</div>';
 }
 
 function keycardOfPurpose(value) {
@@ -962,7 +971,7 @@ function routeForm(title, intro, spawnId, nameValue, actionText, onSubmit, extra
   showModal(
     '<h2>' + title + '</h2><p>' + intro + '</p>'
     + '<label class="field">路线名称<input id="formName" maxlength="40" value="' + escapeHtml(nameValue) + '"></label>'
-    + (hasRooms ? '<label class="field">用途<select id="formPurpose">' + purposeOptions(purpose || '') + '</select></label>' : '')
+    + (hasRooms ? purposeFields(purpose || '') : '')
     + '<label class="field" id="formSpawnField">绑定出生点<select id="formSpawn">' + spawnOptions(spawnId) + '</select></label>'
     + '<label class="check"><input id="formActivate" type="checkbox">完成后开启；同一位置原来开启的路线会关闭</label>'
     + (extraNote ? '<div class="note">' + extraNote + '</div>' : '')
@@ -972,9 +981,14 @@ function routeForm(title, intro, spawnId, nameValue, actionText, onSubmit, extra
     + '<button class="primary" id="formSubmit">' + actionText + '</button></div>'
   );
   document.getElementById('formCancel').onclick = closeModal;
-  const purposeBox = document.getElementById('formPurpose');
-  const currentPurpose = () => (purposeBox ? purposeBox.value : '');
+  const kindBox = document.getElementById('formKind');
+  const segmentBox = document.getElementById('formSegment');
+  const roomBox = document.getElementById('formRoom');
+  const currentPurpose = () => (
+    kindBox && kindBox.value === 'keycard' && roomBox.value ? segmentBox.value + ':' + roomBox.value : ''
+  );
   const syncPurpose = () => {
+    if (kindBox) document.getElementById('formKeycardFields').hidden = kindBox.value !== 'keycard';
     const keycard = keycardOfPurpose(currentPurpose());
     const room = keycard ? getRoom(keycard.room) : null;
     document.getElementById('formSpawnField').hidden = !!keycard && keycard.segment === 'room';
@@ -986,7 +1000,7 @@ function routeForm(title, intro, spawnId, nameValue, actionText, onSubmit, extra
         : '入口段从出生点走到房间入口 (' + room.x + ', ' + room.y + ')，末点须在入口 ' + room.radius + ' 像素内，段内不能有房卡门点。';
     }
   };
-  if (purposeBox) purposeBox.onchange = syncPurpose;
+  [kindBox, segmentBox, roomBox].forEach(box => { if (box) box.onchange = syncPurpose; });
   syncPurpose();
   const submit = async () => {
     const name = document.getElementById('formName').value.trim();
