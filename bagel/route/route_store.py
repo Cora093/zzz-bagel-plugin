@@ -367,7 +367,7 @@ class BagelRouteStore:
         return routes, errors
 
     def load_catalog(self) -> BagelRouteCatalog:
-        """读出出生点、路线与开启选择；配置不存在时先按出生点清单初始化。
+        """读出出生点、路线与开启选择，并为未配置的房间开启默认段。
 
         Raises:
             BagelRouteConfigError: 出生点清单或开启选择配置损坏。
@@ -673,11 +673,20 @@ class BagelRouteStore:
     # ---------- 初始化 ----------
 
     def _ensure_settings(self, spawns: list[BagelSpawnPoint], rooms: list[BagelKeycardRoom]) -> None:
-        """开启选择配置不存在时，按出生点与房间清单初始化。
+        """首次使用时初始化；升级时为尚未配置的房间开启默认段。
 
-        配置已存在时不做任何事：配置损坏由读取时报错，不当作首次安装重新启用默认路线。
+        已有房间记录保留，包括明确关闭的选择。损坏配置由读取时报错，不重新初始化。
         """
         if self.settings_path.exists():
+            active, keycard = self._read_settings()
+            missing_rooms = [room for room in rooms if room.room_id not in keycard]
+            if not missing_rooms:
+                return
+            defaults = self._initial_keycard_selection(spawns, missing_rooms)
+            if defaults:
+                keycard.update(defaults)
+                self._write_settings(active, keycard)
+                log.info('贝果路线：为 %d 个未配置的房间开启默认段', len(defaults))
             return
         keycard = self._initial_keycard_selection(spawns, rooms)
         self._write_settings(self._initial_selection(spawns), keycard)
@@ -685,7 +694,7 @@ class BagelRouteStore:
     def _initial_keycard_selection(
         self, spawns: list[BagelSpawnPoint], rooms: list[BagelKeycardRoom],
     ) -> dict[str, BagelKeycardSelection]:
-        """首次使用时，开启房间清单中登记且通过段校验的默认路线。"""
+        """从房间清单生成通过段校验的默认开启选择。"""
         routes, _errors = self.load_routes()
         catalog = BagelRouteCatalog(spawns, routes, {}, rooms=rooms)
         selections: dict[str, BagelKeycardSelection] = {}
@@ -793,7 +802,7 @@ class BagelRouteStore:
     ) -> tuple[dict[str, BagelRouteRef | None], dict[str, BagelKeycardSelection]]:
         """读出跑刀与开房卡的开启选择；损坏时报错，不回退到默认值。
 
-        ``keycard_routes`` 是后加的可选项，旧配置没有它时按全部关闭处理。
+        ``keycard_routes`` 是后加的可选项，缺少的房间由初始化与升级步骤补齐默认选择。
         """
         try:
             data = yaml.safe_load(self.settings_path.read_text(encoding='utf-8'))

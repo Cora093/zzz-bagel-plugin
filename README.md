@@ -76,7 +76,7 @@
 
 ### 开房卡默认路线
 
-插件自带汽车旅馆二层、芝邦邦餐厅、仓储中心二层板房的默认路线，共 3 个房间段和 6 个入口段。首次使用时自动开启；已有路线配置会保留原来的选择，升级后请在路线编辑器的开房卡分组中手动开启所需的默认段。
+插件自带汽车旅馆二层、芝邦邦餐厅、仓储中心二层板房的默认路线，共 3 个房间段和 6 个入口段。首次使用时自动开启；升级时也会为尚未配置的房间自动开启全部默认段。已经选过路线或明确关闭的房间保留原来的设置。
 
 汽车旅馆支持风蚀公路_高、风蚀公路_低出生点；餐厅和板房支持野人镇_东、野人镇_西出生点。抽到未开启入口段的出生点会退出重开。默认段只读，复制后可以修改。完整清单和规则见[开房卡默认路线](docs/keycard.md#默认路线)。
 
@@ -88,7 +88,7 @@
 
 1. 路线文件放 `bagel/assets/game_data/bagel/routes/`，文件名必须是 `<route_id>.sample.route.json`（程序会核对文件名与 `route_id` 一致）。
 2. 把路线里的 `route_id` 和 `name` 都改成有辨识度的名字，例如 `录像店-速刷`。**不要带 `custom_` 前缀**：那是本地自定义路线的标识格式，带这个前缀的路线，用户点「复制」时会被按自定义标识去校验，中文名对不上会直接报错。
-3. 跑刀路线想在新用户首次使用时开启，就在 `bagel/assets/game_data/bagel/spawn_points.yml` 里给对应出生点填 `initial_route`。开房卡的段在 `bagel/assets/game_data/bagel/keycard_rooms.yml` 的 `initial_room_route`、`initial_entry_routes` 登记，规则见[开房卡](docs/keycard.md#默认路线)。不需要首次开启的路线不登记。
+3. 跑刀路线想在新用户首次使用时开启，就在 `bagel/assets/game_data/bagel/spawn_points.yml` 里给对应出生点填 `initial_route`。开房卡的段在 `bagel/assets/game_data/bagel/keycard_rooms.yml` 的 `initial_room_route`、`initial_entry_routes` 登记，新装或升级后尚未配置的房间会自动开启，规则见[开房卡](docs/keycard.md#默认路线)。不需要自动开启的路线不登记。
 
 PR 里请写清楚：用的出生点、走法要点（为什么这么绕）、适合什么练度和角色、大概能开多少箱子。有截图或录屏更好。
 
