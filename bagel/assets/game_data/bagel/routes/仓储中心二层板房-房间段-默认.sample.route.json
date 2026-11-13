@@ -1,0 +1,104 @@
+{
+ "version": 2,
+ "route_id": "仓储中心二层板房-房间段-默认",
+ "name": "仓储中心二层板房-房间段-默认",
+ "spawn_id": "",
+ "started_at": "2026-11-08T09:34:43-08:00",
+ "ended_at": "2026-11-10T08:48:11-08:00",
+ "keycard": {
+  "room": "bunless_storage_2f",
+  "segment": "room"
+ },
+ "points": [
+  {
+   "x": 1077,
+   "y": 189,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1077,
+   "y": 201,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1084,
+   "y": 195,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "keycard_door"
+  },
+  {
+   "x": 1093,
+   "y": 198,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1095,
+   "y": 175,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1096,
+   "y": 208,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1097,
+   "y": 213,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "mechanical_safe"
+  },
+  {
+   "x": 1109,
+   "y": 206,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1103,
+   "y": 171,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1092,
+   "y": 211,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1097,
+   "y": 207,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "electronic_safe"
+  },
+  {
+   "x": 1094,
+   "y": 207,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1094,
+   "y": 181,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1074,
+   "y": 180,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1086,
+   "y": 186,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "mechanical_safe"
+  }
+ ]
+}

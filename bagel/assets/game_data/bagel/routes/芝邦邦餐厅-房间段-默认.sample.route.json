@@ -1,0 +1,74 @@
+{
+ "version": 2,
+ "route_id": "芝邦邦餐厅-房间段-默认",
+ "name": "芝邦邦餐厅-房间段-默认",
+ "spawn_id": "",
+ "started_at": "2026-11-08T05:41:24-08:00",
+ "ended_at": "2026-11-12T12:35:26-08:00",
+ "keycard": {
+  "room": "bunless_zhibangbang",
+  "segment": "room"
+ },
+ "points": [
+  {
+   "x": 950,
+   "y": 133,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 952,
+   "y": 139,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 959,
+   "y": 130,
+   "layer": "城郊幻境/Custom4",
+   "kind": "keycard_door"
+  },
+  {
+   "x": 953,
+   "y": 132,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 960,
+   "y": 131,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 969,
+   "y": 131,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 964,
+   "y": 137,
+   "layer": "城郊幻境/Custom4",
+   "kind": "box"
+  },
+  {
+   "x": 971,
+   "y": 127,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 982,
+   "y": 138,
+   "layer": "城郊幻境/Custom4",
+   "kind": "electronic_safe"
+  },
+  {
+   "x": 983,
+   "y": 139,
+   "layer": "城郊幻境/Custom4",
+   "kind": "mechanical_safe"
+  }
+ ]
+}

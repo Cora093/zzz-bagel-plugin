@@ -331,6 +331,8 @@ class BagelRouteStore:
                     x=float(item['x']),
                     y=float(item['y']),
                     radius=float(item['radius']),
+                    initial_room_route=item.get('initial_room_route') or None,
+                    initial_entry_routes=dict(item.get('initial_entry_routes') or {}),
                 )
                 for item in (data or {}).get('rooms') or []
             ]
@@ -372,7 +374,7 @@ class BagelRouteStore:
         """
         spawns = self.load_spawns()
         rooms = self.load_rooms()
-        self._ensure_settings(spawns)
+        self._ensure_settings(spawns, rooms)
         routes, errors = self.load_routes()
         active, keycard = self._read_settings()
         # 已登记但没有记录的出生点按关闭处理；新发布的默认路线不抢占用户选择。
@@ -670,14 +672,47 @@ class BagelRouteStore:
 
     # ---------- 初始化 ----------
 
-    def _ensure_settings(self, spawns: list[BagelSpawnPoint]) -> None:
-        """开启选择配置不存在时，按出生点清单初始化。
+    def _ensure_settings(self, spawns: list[BagelSpawnPoint], rooms: list[BagelKeycardRoom]) -> None:
+        """开启选择配置不存在时，按出生点与房间清单初始化。
 
         配置已存在时不做任何事：配置损坏由读取时报错，不当作首次安装重新启用默认路线。
         """
         if self.settings_path.exists():
             return
-        self._write_settings(self._initial_selection(spawns), {})
+        keycard = self._initial_keycard_selection(spawns, rooms)
+        self._write_settings(self._initial_selection(spawns), keycard)
+
+    def _initial_keycard_selection(
+        self, spawns: list[BagelSpawnPoint], rooms: list[BagelKeycardRoom],
+    ) -> dict[str, BagelKeycardSelection]:
+        """首次使用时，开启房间清单中登记且通过段校验的默认路线。"""
+        routes, _errors = self.load_routes()
+        catalog = BagelRouteCatalog(spawns, routes, {}, rooms=rooms)
+        selections: dict[str, BagelKeycardSelection] = {}
+        for room in rooms:
+            if not room.initial_room_route:
+                continue
+            room_ref = BagelRouteRef(SOURCE_DEFAULT, room.initial_room_route)
+            room_route = catalog.route(room_ref)
+            if (
+                room_route is None
+                or room_route.keycard != BagelKeycardTag(room.room_id, SEGMENT_ROOM)
+                or catalog.segment_problem(room_route) is not None
+            ):
+                continue
+            selection = BagelKeycardSelection(room=room_ref)
+            for spawn_id, route_id in room.initial_entry_routes.items():
+                ref = BagelRouteRef(SOURCE_DEFAULT, route_id)
+                route = catalog.route(ref)
+                if (
+                    route is not None
+                    and route.spawn_id == spawn_id
+                    and route.keycard == BagelKeycardTag(room.room_id, SEGMENT_ENTRY)
+                    and catalog.segment_problem(route) is None
+                ):
+                    selection.entries[spawn_id] = ref
+            selections[room.room_id] = selection
+        return selections
 
     def _initial_selection(self, spawns: list[BagelSpawnPoint]) -> dict[str, BagelRouteRef | None]:
         """首次安装的开启选择：只引用存在的默认路线。"""

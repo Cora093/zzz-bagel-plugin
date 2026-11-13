@@ -245,6 +245,10 @@ class BagelKeycardRoom:
     radius: float
     """接缝半径（地图像素）：入口段末点、房间段首点与入口的距离不超过它才算接上。
     单独试跑房间段时，角色也要站在入口这个半径内。"""
+    initial_room_route: str | None = None
+    """首次使用时开启的默认房间段标识；None 表示不开启。"""
+    initial_entry_routes: dict[str, str] = field(default_factory=dict)
+    """首次使用时开启的默认入口段：出生点标识 → 路线标识。"""
 
     @property
     def map_id(self) -> str:
