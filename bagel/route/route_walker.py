@@ -347,9 +347,17 @@ CARD_SWIPE_SETTLE_SECONDS: float = 2.0
 """松手后 F 键仍对准刷卡条目时，最多等多久让提示消失，才判没刷上（秒，从松手起算）。
 
 实机刷开门时都是长按约 1.6 秒读到计数「0」就松手，松手约 0.56 秒后提示已消失。
-刷完的瞬间提示还显示「0/1」，若只看松手 0.5 秒后的一帧就判没刷上，重按前会读到
-计数 0，被当成没带卡而停掉任务。所以给提示留时间消失；没带卡时提示不会消失，
-等满后照旧重按，重按前读到 0 仍按没带卡停止。
+刷完的瞬间提示还显示「0/1」，若只看松手 0.5 秒后的一帧就判没刷上，会多按一次。
+所以给提示留时间消失；等满仍在才重按，重按前读到计数 0 的处理见 ``CARD_SPENT_WAIT_SECONDS``。
+"""
+
+CARD_SPENT_WAIT_SECONDS: float = 4.0
+"""本点长按过后读到计数 0 时，从松手起最多等多久让提示消失（秒）。
+
+长按过后计数 0 有两种可能：卡刚被这次刷掉（门已开、提示稍后消失），或者本来就没带卡。
+两种情况再按都没用，所以不再重按，只等提示消失：消失就判刷开；满时仍在，本点读到过
+非 0 计数就判本局失败（带了卡，门的状态不明），从没读到过就按没带卡停止任务。
+4 秒是推断值：实机观察到松手约 0.56 秒后提示就消失，尚未标定。
 """
 
 CARD_PROMPT_WAIT_SECONDS: float = 2.0
@@ -567,7 +575,15 @@ class BagelRouteWalker(BagelOperation):
         self.card_retried: bool = False
         """刷卡处是否已经超时重按过一次。"""
         self.card_held: bool = False
-        """当前刷卡处是否已经长按过；长按过后提示消失按刷完处理。"""
+        """当前刷卡处是否已经长按过；长按过后提示消失按刷完处理。长按中提示消失、回去试探时清掉。"""
+        self.card_pressed: bool = False
+        """当前刷卡处是否按下过长按；试探时不清，只在换点时清。读到计数 0 时据此区分门口一开始就是 0 还是刷后变 0。"""
+        self.card_seen_loaded: bool = False
+        """当前刷卡处是否读到过非 0 的持卡计数。"""
+        self.card_released_at: float | None = None
+        """当前刷卡处最近一次长按松手的时刻。"""
+        self.card_spent_since: float | None = None
+        """长按过后读到计数 0、开始等提示消失的时刻；没在等时为 None。"""
         self.card_clear_taps: int = 0
         """为捡走挡在刷卡条目上方的地面拾取物，已经点按 F 的次数。"""
         self.card_wait_since: float | None = None
@@ -1291,8 +1307,8 @@ class BagelRouteWalker(BagelOperation):
     def _hold_card_reader(self) -> OperationRoundResult:
         """刷卡处：确认 F 键对准刷卡条目后长按 F，直到刷完。
 
-        条目第二行是持卡计数，首位为 0 说明没带这个房间的门禁卡，重开也没用，
-        直接停止任务。长按期间进度圈盖住钥匙图标，图标匹配不到，所以完成判据
+        条目第二行是持卡计数。本点还没长按就读到 0，说明没带这个房间的门禁卡，
+        重开也没用，直接停止任务；长按过后读到 0 见 ``_card_spent``。长按期间进度圈盖住钥匙图标，图标匹配不到，所以完成判据
         不看图标，而看 F 键：长按满 ``CARD_HOLD_MIN_SECONDS`` 后 F 键消失，
         或计数读成 0，就算刷完。
 
@@ -1310,7 +1326,7 @@ class BagelRouteWalker(BagelOperation):
         card = self._card_entry()
         if card is None:
             self.card_stable_since = None
-            if self.card_held:
+            if self.card_held or self.card_spent_since is not None:
                 self.card_swiped = True
                 self._reset_point_state()
                 return self.round_success('已完成')
@@ -1318,9 +1334,13 @@ class BagelRouteWalker(BagelOperation):
         self.card_lost_since = None
         card_y, text = card
         count = self._card_count(text)
-        if count is not None and count == 0:
+        if count is not None and count > 0:
+            self.card_seen_loaded = True
+        if count == 0:
             self._release_forward()
-            log.info('贝果刷卡处显示持卡数为 0：%s', text)
+            if self.card_pressed:
+                return self._card_spent(now, text)
+            log.info('贝果刷卡处还没长按就显示持卡数为 0：%s', text)
             return self.round_fail(self.STATUS_KEYCARD_MISSING, data=text)
         keys = self._interact_key_rows()
         if any(abs(key_y - card_y) <= CARD_KEY_ROW_TOLERANCE for key_y in keys):
@@ -1335,6 +1355,7 @@ class BagelRouteWalker(BagelOperation):
             self.card_stable_since = None
             self.card_hold_started = now
             self.card_held = True
+            self.card_pressed = True
             self.input_worker.hold_interact()
             return self.round_wait('长按F刷卡', wait=0.2)
         self.card_stable_since = None
@@ -1360,6 +1381,8 @@ class BagelRouteWalker(BagelOperation):
         elapsed = now - (self.card_hold_started or now)
         card = self._card_entry()
         count = self._card_count(card[1]) if card is not None else None
+        if count is not None and count > 0:
+            self.card_seen_loaded = True
         keys = self._interact_key_rows()
         if card is None and not keys:
             lost = self._card_hold_lost(now, elapsed)
@@ -1370,6 +1393,7 @@ class BagelRouteWalker(BagelOperation):
         done = count == 0 or (elapsed >= CARD_HOLD_MIN_SECONDS and not keys)
         if done:
             self.input_worker.release_interact()
+            self.card_released_at = now
             log.info('贝果刷卡松手：长按 %.1f 秒，计数 %s', elapsed, '未读到' if count is None else count)
             self.card_hold_started = None
             self.card_verify_since = now
@@ -1377,12 +1401,35 @@ class BagelRouteWalker(BagelOperation):
         if elapsed < CARD_HOLD_SECONDS:
             return self.round_wait('长按F刷卡中', wait=0.2)
         self.input_worker.release_interact()
+        self.card_released_at = now
         self.card_hold_started = None
         if self.card_retried:
             self._reset_point_state()
             return self.round_recoverable_fail('刷卡处长按F超时')
         self.card_retried = True
         return self.round_wait('刷卡长按超时，释放后重按', wait=0.3)
+
+    def _card_spent(self, now: float, text: str) -> OperationRoundResult:
+        """本点长按过后读到计数 0：不再重按，等提示消失。
+
+        提示消失由 ``_hold_card_reader`` 判刷开；这里只处理提示还在的情况。从松手起满
+        ``CARD_SPENT_WAIT_SECONDS`` 仍在时，读到过非 0 计数按本局失败，没读到过按没带卡停止。
+
+        Args:
+            now: 本轮的单调时钟读数。
+            text: 刷卡条目文字。
+        """
+        if self.card_spent_since is None:
+            self.card_spent_since = now
+            log.info('贝果刷卡：长按过后计数为 0，不再重按，等提示消失：%s', text)
+        released = self.card_released_at if self.card_released_at is not None else self.card_spent_since
+        if now - released < CARD_SPENT_WAIT_SECONDS:
+            return self.round_wait('长按过后计数为 0，等刷卡提示消失', wait=0.2)
+        if self.card_seen_loaded:
+            self._reset_point_state()
+            return self.round_recoverable_fail(f'刷卡后计数为 0，但提示 {CARD_SPENT_WAIT_SECONDS:.0f} 秒没消失，门是否刷开不明')
+        log.info('贝果刷卡：长按过后计数为 0，提示一直在，本点没读到过非 0 计数，按没带卡处理：%s', text)
+        return self.round_fail(self.STATUS_KEYCARD_MISSING, data=text)
 
     def _card_hold_lost(self, now: float, elapsed: float) -> OperationRoundResult | None:
         """长按中刷卡条目与 F 键一起消失：在满 ``CARD_HOLD_MIN_SECONDS`` 前开始消失就没刷上。
@@ -2472,6 +2519,10 @@ class BagelRouteWalker(BagelOperation):
         self.card_hold_started = None
         self.card_retried = False
         self.card_held = False
+        self.card_pressed = False
+        self.card_seen_loaded = False
+        self.card_released_at = None
+        self.card_spent_since = None
         self.card_clear_taps = 0
         self.card_wait_since = None
         self.card_stable_since = None
