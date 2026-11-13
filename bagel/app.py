@@ -111,6 +111,8 @@ class BagelApp(ZApplication):
         """开房卡模式：安全箱里是否还有没用掉的门禁卡。入场核对到 1 件时置真，刷开门或入仓后置假。"""
         self._round_card_swiped: bool = False
         """开房卡模式：本局是否已刷开房卡门。"""
+        self._round_pickup_presses: int = 0
+        """本局路上为地面拾取物点按 F 的次数；为 0 时退出前不整理背包。"""
         self._cards_out: bool = False
         """开房卡模式：挑卡时仓库已没有该房间的卡；本局收尾后结束任务。"""
         self._keycard_room_name: str = ''
@@ -298,6 +300,7 @@ class BagelApp(ZApplication):
         self._round_spawn = None
         self._round_route = None
         self._round_card_swiped = False
+        self._round_pickup_presses = 0
 
     def _count_round_failure(self) -> None:
         """失败局计入全局连续失败；已执行路线时同时计入该路线。"""
@@ -556,6 +559,7 @@ class BagelApp(ZApplication):
         self._round_route = walker.routes[0] if walker.routes else None
         self._round_map_id = walker.spawn.map_id if walker.spawn is not None else walker.last_map_id
         self._round_card_swiped = walker.card_swiped
+        self._round_pickup_presses = walker.pickup_presses
         if walker.card_swiped:
             self._card_in_safe = False
         if walker.last_screenshot is not None:
@@ -615,19 +619,23 @@ class BagelApp(ZApplication):
     @node_from(from_name='执行局内流程', status=BagelRouteWalker.STATUS_DONE)
     @operation_node(name='正常局退出', screenshot_before_round=False)
     def exit_after_success(self) -> OperationRoundResult:
-        """路线完整结束后退出到仓库；开房卡模式先整理背包。退出失败时不入仓或计成功。
+        """路线完整结束后退出到仓库；开房卡模式路上点按过 F 拾取时先整理背包。退出失败时不入仓或计成功。
 
         退出只保留安全箱物资，整理把背包里更值钱的物品换进安全箱。
+        路上没为拾取物点按过 F，背包里没有新东西，不开背包。
         整理失败不拦退出，安全箱里已有的物资不受影响。
         整理背包只在开房卡模式实机跑过，跑刀模式暂不整理。
         """
         release_flow_inputs(self.ctx)
         if self.config.is_keycard:
-            organized = BagelOrganizeBackpack(
-                self.ctx, blueprint_priority=self.config.blueprint_priority, ledger=self._round_ledger,
-            ).execute()
-            if not organized.success:
-                log.warning('贝果整理背包未完成：%s；照常退出', organized.status)
+            if self._round_pickup_presses == 0:
+                log.info('贝果本局路上没有点按 F 拾取，退出前不整理背包')
+            else:
+                organized = BagelOrganizeBackpack(
+                    self.ctx, blueprint_priority=self.config.blueprint_priority, ledger=self._round_ledger,
+                ).execute()
+                if not organized.success:
+                    log.warning('贝果整理背包未完成：%s；照常退出', organized.status)
         self._record_round_income(read_hud=True)
         operation = BagelExit(self.ctx)
         result = operation.execute()

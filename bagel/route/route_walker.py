@@ -610,6 +610,9 @@ class BagelRouteWalker(BagelOperation):
         """本局捡不起来的拾取物条数。"""
         self.pickups: int = 0
         """本局按提示消失计的已拾取条数，只用于日志。"""
+        self.pickup_presses: int = 0
+        """本局为地面拾取物点按 F 的总次数，含刷卡前捡走挡路的拾取物。
+        不为 0 时背包里可能有东西，正常局退出前据此决定要不要整理背包。"""
         self.card_probe_step: int | None = None
         """房卡门左右试探已执行到第几步；没在试探时为 None。"""
         self.card_verify_since: float | None = None
@@ -1368,6 +1371,7 @@ class BagelRouteWalker(BagelOperation):
             return self._wait_card_prompt(now, 'F 键仍未对准刷卡条目')
         self._release_forward()
         self.card_clear_taps += 1
+        self.pickup_presses += 1
         log.info('贝果刷卡处上方有其他条目，点按 F 先捡走（第 %s 次）', self.card_clear_taps)
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
         return self.round_wait('点按F捡走挡住刷卡的拾取物', wait=0.5)
@@ -1692,6 +1696,7 @@ class BagelRouteWalker(BagelOperation):
         self._release_forward()
         self.pickup_text = text
         self.pickup_taps += 1
+        self.pickup_presses += 1
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
         self._record_input()
         return self.round_wait(f'点按F拾取「{text}」', wait=PICKUP_TAP_WAIT)
