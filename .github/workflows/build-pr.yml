@@ -1,0 +1,87 @@
+name: Build PR Package
+
+# 只在 PR 上构建测试包并挂到 Actions artifact，不发布 Release。
+# 下载 artifact 需要登录 GitHub 账号，链接在 run 页面底部。
+on:
+  pull_request:
+    branches:
+      - main
+    # draft 转 ready 时也触发一次，否则草稿期的最后一次 commit 没有测试包
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # 草稿 PR 不跑，省 Actions 时间
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@v6
+        with:
+          # 构建 PR 分支本身，不构建 merge 结果，避免 PR 有冲突时 checkout 直接失败
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # 用模板仓的校验 / 打包脚本，不信任 PR 分支里的同名脚本
+      - name: Checkout template tools
+        uses: actions/checkout@v6
+        with:
+          repository: OneDragon-Anyone/plugin-template
+          ref: v1
+          path: .plugin-template
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # PR 没有 tag，所以这里不能带 --expect-tag
+      - name: Validate repository
+        run: python .plugin-template/scripts/validate_plugin.py --repo . --strict
+
+      - name: Build package
+        id: build
+        run: python .plugin-template/scripts/build_zip.py --repo . --out "$RUNNER_TEMP/dist"
+
+      - name: Validate package
+        run: >
+          python .plugin-template/scripts/validate_plugin.py
+          --zip "${{ steps.build.outputs.zip }}"
+          --expect-id "${{ steps.build.outputs.id }}"
+
+      - name: Compute short sha
+        id: meta
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: echo "short=${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Write summary
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PLUGIN_VERSION: ${{ steps.build.outputs.version }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SHA256: ${{ steps.build.outputs.sha256 }}
+        run: |
+          {
+            echo "### PR 测试包 第 $PR_NUMBER 号"
+            echo ""
+            echo "- plugin.json version: \`$PLUGIN_VERSION\`"
+            echo "- head commit: \`$HEAD_SHA\`"
+            echo "- sha256: \`$SHA256\`"
+            echo ""
+            echo "在本页底部 Artifacts 区下载，解压后把内层 \`bagel.zip\` 装进一条龙插件目录。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bagel-pr${{ github.event.pull_request.number }}-${{ steps.meta.outputs.short }}
+          path: ${{ steps.build.outputs.zip }}
+          retention-days: 14
