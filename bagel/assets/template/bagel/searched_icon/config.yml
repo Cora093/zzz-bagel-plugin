@@ -1,0 +1,8 @@
+sub_dir: bagel
+template_id: searched_icon
+template_name: 贝果-已搜查图标
+template_shape: circle
+auto_mask: true
+point_list:
+- 1364, 676
+- 1338, 676

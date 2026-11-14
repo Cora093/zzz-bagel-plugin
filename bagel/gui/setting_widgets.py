@@ -99,6 +99,48 @@ class AutoSaleSwitch(SwitchButton, AdapterInitMixin):
         self.state_changed.emit()
 
 
+class ChoiceSegment(SegmentedWidget):
+    """设置页顶部的单选分段按钮：固定总宽、各项平分，可以单项置灰。
+
+    不绑定配置；由页面读写，因为模式、地图、难度之间互相约束。
+    """
+
+    WIDTH: int = 270
+    """三组按钮统一的总宽，让左右边缘对齐。"""
+
+    def __init__(self, options: list[tuple[str, str]], name: str, parent: QWidget) -> None:
+        """
+        Args:
+            options: (取值, 显示文字) 列表。
+            name: 无障碍名称。
+        """
+        super().__init__(parent)
+        for key, text in options:
+            item = self.addItem(key, text)
+            setCustomStyleSheet(
+                item,
+                'SegmentedItem:disabled { color: rgba(0, 0, 0, 0.32); }',
+                'SegmentedItem:disabled { color: rgba(255, 255, 255, 0.32); }',
+            )
+        # Pivot 的布局默认按内容收缩并靠左，会让固定宽度失效；改成各项平分整宽。
+        self.hBoxLayout.setSizeConstraint(QHBoxLayout.SizeConstraint.SetDefaultConstraint)
+        self.hBoxLayout.setAlignment(Qt.AlignmentFlag(0))
+        self.setFixedWidth(self.WIDTH)
+        self.setAccessibleName(name)
+
+    def set_value(self, key: str) -> None:
+        """切换选中项，不发出变更信号。"""
+        with QtCore.QSignalBlocker(self):
+            self.setCurrentItem(key)
+
+    def set_allowed(self, allowed: tuple[str, ...], reason: str) -> None:
+        """不在 ``allowed`` 里的项置灰，悬停提示 ``reason``。"""
+        for key, item in self.items.items():
+            enabled = key in allowed
+            item.setEnabled(enabled)
+            item.setToolTip('' if enabled else reason)
+
+
 class SaleModeSelector(SegmentedWidget, AdapterInitMixin):
     """紧邻出售范围标题的默认、自定义切换。"""
 

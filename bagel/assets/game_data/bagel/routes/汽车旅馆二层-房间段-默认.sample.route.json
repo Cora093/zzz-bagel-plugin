@@ -1,0 +1,74 @@
+{
+ "version": 2,
+ "route_id": "汽车旅馆二层-房间段-默认",
+ "name": "汽车旅馆二层-房间段-默认",
+ "spawn_id": "",
+ "started_at": "2026-11-07T07:11:12-08:00",
+ "ended_at": "2026-11-11T07:57:33-08:00",
+ "keycard": {
+  "room": "windworn_motel_2f",
+  "segment": "room"
+ },
+ "points": [
+  {
+   "x": 159,
+   "y": 315,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  },
+  {
+   "x": 152,
+   "y": 317,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "keycard_door"
+  },
+  {
+   "x": 145,
+   "y": 310,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "electronic_safe"
+  },
+  {
+   "x": 135,
+   "y": 322,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 131,
+   "y": 305,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 118,
+   "y": 331,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 136,
+   "y": 336,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 165,
+   "y": 337,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "mechanical_safe"
+  },
+  {
+   "x": 145,
+   "y": 322,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 152,
+   "y": 313,
+   "layer": "城郊幻境/Custom3_1",
+   "kind": "mechanical_safe"
+  }
+ ]
+}
