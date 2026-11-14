@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
-from bagel.diag import DIAG_ENV, DIAG_VERSION, diag, diag_enabled
-from tests.tools.nav_metrics import parse_line, summarize
+REPO_DIR = Path(__file__).resolve().parents[1]
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
+
+from bagel.diag import DIAG_ENV, DIAG_VERSION, diag, diag_enabled  # noqa: E402
+from tests.tools.nav_metrics import parse_line, summarize  # noqa: E402
 
 SAMPLE_LINE = '[22:04:25.123] [route_walker.py 1288] [INFO]: 贝果诊断 v1 · 点=3 距=12.4 差=-3.1 偏=2.2 位置=(830,351)'
 """固定 v1 样本：改格式前先确认老样本仍能解析。"""
