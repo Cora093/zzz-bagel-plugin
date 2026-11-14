@@ -20,18 +20,14 @@ from ..vision.item_vision import (
     ACTION_STACK,
     ACTION_SWAP,
     ITEM_TYPE_CURRENCY,
-    ITEM_TYPE_MATERIAL,
     ITEM_TYPE_OTHER,
-    STACK_MATCH_MIN,
-    STACK_WINDOW_HALF,
     BagelSlotMark,
     choose_store_action,
-    icon_match_score,
-    icon_patch,
-    icons_same,
+    find_stack_target,
     identify_quality,
     identify_type,
     inspect_occupied,
+    stack_icon_unchanged,
 )
 from ..vision.search_panel import SearchPanelGuard
 from ..vision.search_progress import BagelSearchProgress
@@ -67,9 +63,6 @@ _STATUS_RESELECT: str = '重新挑选'
 _SAFE_QUANTITY_TOP: int = 922
 _SAFE_QUANTITY_BOTTOM: int = 952
 _SAFE_QUANTITY_HALF_WIDTH: int = 45
-# 叠放核对只比格心附近 22 像素见方：再大就会带到底部数量文字，叠放后数量变化
-# 会被误判成图标变了，进而被当成对换。
-_STACK_VERIFY_HALF: int = 22
 
 
 class BagelStoreSafe(BagelOperation):
@@ -382,32 +375,6 @@ class BagelStoreSafe(BagelOperation):
             self._logged_progress = snapshot
         return ready
 
-    def _stack_destination(self, mark: BagelSlotMark, safes: list[BagelSlotMark]) -> int | None:
-        """在安全箱里找同一件材料；先比类型和品质，再用图标相似度确认。
-
-        只在材料里找，而且相关度必须过 STACK_MATCH_MIN：不同物品拖到一起会变成
-        对换，宁可占一个空格也不赌。试过错的一对记进 `_stack_blocked`，不再重试。
-        """
-        if mark.item_type != ITEM_TYPE_MATERIAL:
-            return None
-        screen = self.last_screenshot
-        icon = icon_patch(screen, mark.center)
-        if icon is None:
-            return None
-        best_index: int | None = None
-        best_score: float = STACK_MATCH_MIN
-        for safe_mark in safes:
-            if safe_mark.item_type != mark.item_type or safe_mark.quality != mark.quality:
-                continue
-            if (mark.index, safe_mark.index) in self._stack_blocked:
-                continue
-            window = icon_patch(screen, safe_mark.center, STACK_WINDOW_HALF)
-            score = icon_match_score(icon, window)
-            if score >= best_score:
-                best_score = score
-                best_index = safe_mark.index
-        return best_index
-
     @node_from(from_name='核对入箱变化', status=_STATUS_SKIP_SLOT)
     @node_from(from_name='核对入箱变化', status=_STATUS_RESELECT)
     @node_from(from_name='核对入箱变化', status='继续装入')
@@ -446,7 +413,7 @@ class BagelStoreSafe(BagelOperation):
             safes,
             safe.empty,
             self.blueprint_priority,
-            stack_target=lambda mark: self._stack_destination(mark, safes),
+            stack_target=lambda mark: find_stack_target(screen, mark, safes, self._stack_blocked),
         )
         if choice is None:
             self._safe_unknown_rounds = 0
@@ -724,13 +691,7 @@ class BagelStoreSafe(BagelOperation):
         if not slot_occupied(after, destination):
             self._clear_pending()
             return self._give_up('叠放后安全箱目标格为空，无法核对')
-        before_icon = icon_patch(before, destination, _STACK_VERIFY_HALF)
-        after_icon = icon_patch(after, destination, _STACK_VERIFY_HALF)
-        same_icon = (
-            before_icon is not None and after_icon is not None
-            and icons_same(before_icon, after_icon)
-        )
-        if not same_icon:
+        if not stack_icon_unchanged(before, after, destination):
             self._stack_blocked.add((source_index, destination_index))
             self._clear_pending()
             self._drag_item(destination, source)
