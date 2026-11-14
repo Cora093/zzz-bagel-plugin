@@ -174,9 +174,13 @@ class BagelOperation(ZOperation):
     STATUS_CONTAINER_FAILED: str = '贝果容器靠近或开箱恢复失败'
 
     def handle_init(self) -> None:
-        """每个子操作开始前确认插件画面还在；被其他插件的重载冲掉时补回来。"""
+        """每个子操作开始前补回被冲掉的插件画面，并注册进程退出松键兜底。
+
+        子类覆盖时必须调用 super()。
+        """
         super().handle_init()
         ensure_screens(self.ctx.screen_loader)
+        register_release_at_exit(self.ctx)
 
     def _execute_one_round(self) -> OperationRoundResult:
         """程序异常不在局内继续重试输入。"""
@@ -239,11 +243,6 @@ class BagelOperation(ZOperation):
     def is_failure_scene(self, result: OperationResult) -> bool:
         """本次结果是否算失败现场；子类可把流程内正常的未成功结果排除。"""
         return not result.success
-
-    def handle_init(self) -> None:
-        """注册进程退出松键兜底；子类覆盖时必须调用 super()。"""
-        super().handle_init()
-        register_release_at_exit(self.ctx)
 
     def after_operation_done(self, result: OperationResult) -> None:
         """松键后保存失败现场；截图写入异常不能阻止框架释放事件监听。"""

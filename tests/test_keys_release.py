@@ -134,12 +134,21 @@ class _FakeRunContext:
         self.event_bus = _FakeEventBus()
 
 
+class _FakeScreenLoader:
+    """画面定义一直在：handle_init 的画面自愈检查直接通过，不重注入。"""
+
+    def get_area(self, _screen_name: str, _area_name: str) -> object:
+        return object()
+
+
 class _IntegrationCtx(_FakeCtx):
-    """after_operation_done 会解订阅，需要 run_context 与 unlisten_all_event。"""
+    """after_operation_done 会解订阅，需要 run_context 与 unlisten_all_event；
+    handle_init 会检查插件画面，需要 screen_loader。"""
 
     def __init__(self, controller: object) -> None:
         super().__init__(controller)
         self.run_context = _FakeRunContext()
+        self.screen_loader = _FakeScreenLoader()
 
     def unlisten_all_event(self, _listener: object) -> None:
         pass
