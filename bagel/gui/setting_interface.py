@@ -49,9 +49,9 @@ from ..defs import (
     DEFAULT_CLEAN_STEPS,
     DIFFICULTY_HARD,
     DIFFICULTY_NORMAL,
+    MODE_DEFAULT_MAPS,
     MODE_DIFFICULTIES,
     MODE_KEYCARD,
-    MODE_MAPS,
 )
 from ..route.route_store import BagelRouteConfigError, BagelRouteStore
 from ..vision.template import template_exists
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from zzz_od.context.zzz_context import ZContext
 
     from ..config import BagelConfig
+    from ..route.route_model import BagelKeycardRoom
 
 
 class _UsageDialog(MessageBoxBase):
@@ -195,6 +196,8 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         self.config: BagelConfig | None = None
         self.clean_step_cards: list[CleanStepCard] = []
         self._config_loaded: bool = False
+        self._rooms: list[BagelKeycardRoom] = []
+        """开房卡房间清单；房间清单随插件发布，打开设置页时读一次。"""
 
     def get_content_widget(self) -> QWidget:
         """显示结束条件、入箱优先级与自动出售，首次清空提示放入使用说明。"""
@@ -306,14 +309,15 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             return
         mode = self.config.mode
         mode_name = BagelMode.KEYCARD.value.ui_text if mode == MODE_KEYCARD else BagelMode.RUN.value.ui_text
-        maps = MODE_MAPS[mode]
+        maps = self._allowed_maps()
         difficulties = MODE_DIFFICULTIES[mode]
         self.mode_segment.set_value(mode)
         self.map_segment.set_value(self.config.map_name)
         self.difficulty_segment.set_value(self.config.run_difficulty)
-        map_reason = f'{mode_name}仅支持{"、".join(maps)}'
+        disabled = [item.value.value for item in BagelMap if item.value.value not in maps]
+        map_reason = f'{"、".join(disabled)}还没有登记开房卡房间' if disabled else ''
         self.map_segment.set_allowed(maps, map_reason)
-        self.map_hint.setText(map_reason if len(maps) < len(BagelMap) else '')
+        self.map_hint.setText(map_reason)
         difficulty_reason = f'{mode_name}固定{"、".join(difficulties)}'
         self.difficulty_segment.set_allowed(difficulties, difficulty_reason)
         self.difficulty_hint.setText(difficulty_reason if len(difficulties) < len(BagelDifficulty) else '')
@@ -321,15 +325,46 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         if self.config.is_keycard:
             self._refresh_keycard_status()
 
-    def _load_rooms(self) -> None:
-        """读房间清单填下拉框；未选房间时选第一个并保存。"""
-        if self.config is None:
-            return
+    def _read_rooms(self) -> None:
+        """读开房卡房间清单；读不到时按没有房间处理。"""
         try:
-            rooms = BagelRouteStore(self.ctx).load_catalog().rooms
+            self._rooms = BagelRouteStore(self.ctx).load_catalog().rooms
         except (OSError, ValueError, BagelRouteConfigError):
             log.error('贝果设置页读取房间清单失败', exc_info=True)
-            rooms = []
+            self._rooms = []
+
+    def _allowed_maps(self) -> tuple[str, ...]:
+        """当前模式能选的地图：跑刀两张图都能选，开房卡只能选登记了房间的地图。
+
+        一个房间都读不到时，开房卡只放开默认地图，启动检查会报出具体原因。
+        """
+        all_maps = tuple(item.value.value for item in BagelMap)
+        if self.config is None or not self.config.is_keycard:
+            return all_maps
+        room_maps = {room.map_id for room in self._rooms}
+        maps = tuple(name for name in all_maps if name in room_maps)
+        return maps or (MODE_DEFAULT_MAPS[MODE_KEYCARD],)
+
+    def _fit_map(self) -> str | None:
+        """所选地图不在当前模式能选的范围内时，改成第一张能选的地图。
+
+        Returns:
+            改动前的地图；没有改动时返回 None。
+        """
+        if self.config is None:
+            return None
+        maps = self._allowed_maps()
+        previous = self.config.map_name
+        if previous in maps:
+            return None
+        self.config.map_name = maps[0]
+        return previous
+
+    def _fill_room_box(self) -> None:
+        """房间下拉框只列所选地图的房间；开房卡模式下所选房间不在其中时选第一个并保存。"""
+        if self.config is None:
+            return
+        rooms = [room for room in self._rooms if room.map_id == self.config.map_name]
         with QtCore.QSignalBlocker(self.room_box):
             self.room_box.clear()
             for room in rooms:
@@ -375,21 +410,20 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             self.keycard_status.setTextColor('#606060', '#a0a0a0')
 
     def _on_mode_changed(self, mode: str) -> None:
-        """切换模式；地图不被新模式支持时跳到它的默认地图。"""
+        """切换模式；切到开房卡时，所选地图没有房间就跳到第一张有房间的地图。"""
         if not self._config_loaded or self.config is None:
             return
         self.config.mode = mode
-        if not self.config.map_supported:
-            self.config.map_name = MODE_MAPS[mode][0]
-        if self.config.is_keycard and not self.config.keycard_room:
-            self._load_rooms()
+        self._fit_map()
+        self._fill_room_box()
         self._refresh_target()
 
     def _on_map_changed(self, map_name: str) -> None:
-        """保存地图。"""
+        """保存地图；开房卡模式下房间列表跟着换成这张图的房间。"""
         if not self._config_loaded or self.config is None:
             return
         self.config.map_name = map_name
+        self._fill_room_box()
         self._refresh_target()
 
     def _on_room_changed(self, index: int) -> None:
@@ -717,12 +751,12 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             log.warning('贝果设置：%s，已改回 %s · %s', problem, self.config.mode, self.config.map_name)
             self.config.mode = self.config.mode
             self.config.map_name = self.config.map_name
-        if not self.config.map_supported:
-            # 手改配置写进了不支持的组合：改回该模式的默认地图。
-            log.warning('贝果设置：%s 不支持 %s，已改回 %s',
-                        self.config.mode, self.config.map_name, MODE_MAPS[self.config.mode][0])
-            self.config.map_name = MODE_MAPS[self.config.mode][0]
-        self._load_rooms()
+        self._read_rooms()
+        previous = self._fit_map()
+        if previous is not None:
+            # 开房卡存了一张没有房间的地图（手改配置）：改到第一张有房间的地图。
+            log.warning('贝果设置：开房卡没有%s的房间，已改到 %s', previous, self.config.map_name)
+        self._fill_room_box()
         self._refresh_target()
         for control, field in (
             (self.success_count, 'max_success_rounds'),
