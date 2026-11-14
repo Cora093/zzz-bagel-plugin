@@ -221,6 +221,19 @@ def test_user_data_outside_plugin(empty_work_dir: Path, stub_ctx: _StubContext) 
     assert set(stub_ctx.requested_app_ids) == {'bagel'}, '插件应把 APP_ID 交给主程序分配目录'
 
 
+class _OldHostContext:
+    """旧版主程序（v2.6.1 之前）的上下文：没有 ``get_plugin_data_dir`` 接口。"""
+
+
+def test_user_data_dir_fallback_on_old_host(empty_work_dir: Path) -> None:
+    """主程序没有数据目录接口时，插件按同一规则自己拼，路径与新版一致。"""
+    defs = importlib.import_module('bagel.defs')
+    expected = empty_work_dir / 'plugin_data' / 'bagel'
+
+    assert defs.get_plugin_data_dir(_OldHostContext()).resolve() == expected.resolve()
+    assert defs.get_plugin_data_dir(_StubContext()).resolve() == expected.resolve()
+
+
 def test_readme_images_exist() -> None:
     """README 引用的截图都随插件分发，避免说明里的图裂掉。"""
     readme = REPO_DIR / 'README.md'
