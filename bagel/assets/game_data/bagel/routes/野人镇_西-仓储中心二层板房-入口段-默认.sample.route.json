@@ -1,0 +1,86 @@
+{
+ "version": 2,
+ "route_id": "野人镇_西-仓储中心二层板房-入口段-默认",
+ "name": "野人镇_西-仓储中心二层板房-入口段-默认",
+ "spawn_id": "bunless_bae_town_west",
+ "started_at": "2026-11-08T09:40:16-08:00",
+ "ended_at": "2026-11-11T08:53:34-08:00",
+ "keycard": {
+  "room": "bunless_storage_2f",
+  "segment": "entry"
+ },
+ "points": [
+  {
+   "x": 610,
+   "y": 421,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 663,
+   "y": 270,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 778,
+   "y": 273,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 933,
+   "y": 224,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 995,
+   "y": 213,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 1009,
+   "y": 185,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 1034,
+   "y": 181,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 1033,
+   "y": 225,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1048,
+   "y": 220,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1039,
+   "y": 176,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1077,
+   "y": 182,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  },
+  {
+   "x": 1077,
+   "y": 189,
+   "layer": "城郊幻境/Custom4_1",
+   "kind": "beacon"
+  }
+ ]
+}

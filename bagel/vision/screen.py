@@ -182,10 +182,12 @@ def entry_warning(text: str, target_recommended_value: str | None = None) -> str
             continue
         if name == '零装备价值':
             # 只判断四位及以上的数字串，避免把装备价值 0 或断开的残缺数字当成推荐价值。
-            value = max(re.findall(r'\d+', compact), key=len, default='')
+            # 开房卡带着门禁卡，提示里的装备价值也是四位以上的数，所以任一数字串对上推荐价值即可。
+            values = [value for value in re.findall(r'\d+', compact) if len(value) >= 4]
             expected_list = (target_recommended_value,) if target_recommended_value else tuple(DIFFICULTY_RECOMMENDED_VALUES.values())
-            if len(value) >= 4 and not any(
+            if values and not any(
                 str_utils.longest_common_subsequence_length(value, expected) >= len(expected) - 1
+                for value in values
                 for expected in expected_list
             ):
                 return None

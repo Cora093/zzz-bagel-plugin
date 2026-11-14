@@ -42,6 +42,9 @@ from ..defs import PLUGIN_DIR
 from ..route.route_model import (
     KIND_COLORS,
     POINT_KINDS,
+    SEGMENT_ROOM,
+    BagelKeycardRoom,
+    BagelKeycardTag,
     BagelRoute,
     BagelRoutePoint,
     BagelRouteRef,
@@ -315,15 +318,22 @@ class BagelRouteEditor(QDialog):
         配置损坏时仍推送出生点和路线供查看，开启状态全部显示为关闭，写入命令会报告错误。
         """
         problems: dict[str, str] = {}
+        room_problems: dict[str, str] = {}
+        rooms: list[BagelKeycardRoom] = []
         try:
             catalog = self.store.load_catalog()
             spawns = catalog.spawns
+            rooms = catalog.rooms
             routes = catalog.routes
             active = {route.ref for route in routes if catalog.is_active(route)}
             for spawn in spawns:
                 problem = catalog.selection_problem(spawn.spawn_id)
                 if problem is not None:
                     problems[spawn.spawn_id] = problem
+            for room in rooms:
+                problem = catalog.keycard_problem(room.room_id)
+                if problem is not None:
+                    room_problems[room.room_id] = problem
             if catalog.errors:
                 self.status_label.setText('；'.join(catalog.errors))
         except BagelRouteConfigError as error:
@@ -333,11 +343,18 @@ class BagelRouteEditor(QDialog):
                 spawns = self.store.load_spawns()
             except BagelRouteConfigError:
                 spawns = []
+            try:
+                rooms = self.store.load_rooms()
+            except BagelRouteConfigError:
+                rooms = []
             routes = self.store.load_routes()[0]
             active = set()
         payload = {
             'spawns': [
                 dict(spawn.to_json(), problem=problems.get(spawn.spawn_id, '')) for spawn in spawns
+            ],
+            'rooms': [
+                dict(room.to_json(), problem=room_problems.get(room.room_id, '')) for room in rooms
             ],
             'routes': [route.to_json(route.ref in active) for route in routes],
         }
@@ -398,6 +415,7 @@ class BagelRouteEditor(QDialog):
         handlers = {
             'save': self._cmd_save,
             'activate': self._cmd_activate,
+            'activate_keycard': self._cmd_activate_keycard,
             'create': self._cmd_create,
             'copy': self._cmd_copy,
             'rename': self._cmd_rename,
@@ -446,10 +464,30 @@ class BagelRouteEditor(QDialog):
         log.info('贝果出生点 %s 开启路线 %s', name, ref)
         return f'{name}已开启「{route.name if route else ref.route_id}」', None
 
+    def _cmd_activate_keycard(self, args: dict[str, Any]) -> tuple[str, Any]:
+        """设置房间的开房卡开启选择：spawn_id 为 null 表示房间段，否则为该出生点的入口段。"""
+        room_id = str(args['room_id'])
+        spawn_id = None if args.get('spawn_id') is None else str(args['spawn_id'])
+        ref = None if args.get('ref') is None else BagelRouteRef.from_json(args['ref'])
+        self.store.set_keycard_route(room_id, spawn_id, ref)
+        catalog = self.store.load_catalog()
+        room = catalog.room(room_id)
+        room_name = room.name if room is not None else room_id
+        spawn = catalog.spawn(spawn_id) if spawn_id is not None else None
+        where = f'{room_name}的房间段' if spawn_id is None else (
+            f'{spawn.name if spawn else spawn_id}去{room_name}的入口段'
+        )
+        log.info('贝果开房卡 %s 设为 %s', where, ref)
+        if ref is None:
+            return f'已关闭{where}', None
+        route = catalog.route(ref)
+        return f'{where}已开启「{route.name if route else ref.route_id}」', None
+
     def _cmd_create(self, args: dict[str, Any]) -> tuple[str, Any]:
-        """新增一条自定义路线，首点取出生点坐标。"""
+        """新增一条自定义路线，首点取出生点坐标；房间段取房间入口坐标。"""
         route = self.store.create_custom_route(
-            str(args['name']), str(args['spawn_id']), activate=bool(args.get('activate')),
+            str(args['name']), str(args.get('spawn_id') or ''), activate=bool(args.get('activate')),
+            keycard=_keycard_arg(args),
         )
         log.info('贝果新增自定义路线「%s」（%s）', route.name, route.ref)
         return f'已新增「{route.name}」', route.ref.to_json()
@@ -475,24 +513,35 @@ class BagelRouteEditor(QDialog):
         return '已删除路线', None
 
     def _cmd_record(self, args: dict[str, Any]) -> tuple[str, Any]:
-        """开始录制一条绑定出生点的自定义路线。"""
+        """开始录制一条自定义路线；房间段的首点对齐房间入口，其余对齐出生点。"""
         name = str(args['name']).strip()
         catalog = self.store.load_catalog()
-        spawn = catalog.spawn(str(args['spawn_id']))
-        if spawn is None:
-            raise ValueError('请选择出生点')
+        keycard = _keycard_arg(args)
+        spawn: BagelSpawnPoint | None
+        if keycard is not None and keycard.segment == SEGMENT_ROOM:
+            room = catalog.room(keycard.room_id)
+            if room is None:
+                raise ValueError('请选择房间')
+            spawn = room.as_spawn()
+        else:
+            spawn = catalog.spawn(str(args.get('spawn_id') or ''))
+            if spawn is None:
+                raise ValueError('请选择出生点')
+            if keycard is not None and catalog.room(keycard.room_id) is None:
+                raise ValueError('请选择房间')
         if not name:
             raise ValueError('路线名称不能为空')
         if any(route.name == name for route in catalog.routes):
             raise ValueError(f'已经有同名路线：{name}')
-        self._start_recording(name, spawn, bool(args.get('activate')))
+        self._start_recording(name, spawn, bool(args.get('activate')), keycard)
         return f'正在准备录制「{name}」', None
 
     def _cmd_test(self, args: dict[str, Any]) -> tuple[str, Any]:
         """试跑一条路线；关闭的路线也可以试跑。"""
         ref = BagelRouteRef.from_json(args['ref'])
-        route = self.store.load_route(ref)
-        self._start_test(route)
+        # 先按试跑方式读一遍：入口段要接得上房间段，问题在这里直接报给网页。
+        route = self.store.trial_route(ref)
+        self._start_test(self.store.load_route(ref))
         return f'正在切到游戏，准备试跑「{route.name}」', None
 
     def _cmd_locate(self, args: dict[str, Any]) -> tuple[str, Any]:
@@ -675,19 +724,24 @@ class BagelRouteEditor(QDialog):
 
     # ---------- 录制 ----------
 
-    def _start_recording(self, name: str, spawn: BagelSpawnPoint, activate: bool) -> None:
-        """开始录制；停止后保存为绑定出生点的自定义路线。
+    def _start_recording(
+        self, name: str, spawn: BagelSpawnPoint, activate: bool,
+        keycard: BagelKeycardTag | None = None,
+    ) -> None:
+        """开始录制；停止后保存为自定义路线。
 
         Args:
             name: 路线显示名称。
-            spawn: 绑定的出生点。
+            spawn: 首点要对齐的位置：出生点，或房间段的房间入口。
             activate: 保存后是否开启。
+            keycard: 开房卡段标记；None 表示跑刀路线。
         """
         recorder = BagelPointRecorder(
             self.ctx,
             name,
             spawn,
             activate=activate,
+            keycard=keycard,
             on_point=self._on_point,
             on_undo=self._on_undo,
             on_status=self._on_status,
@@ -956,3 +1010,9 @@ def _game_window_rect(ctx: ZContext) -> QRect | None:
     if rect is None:
         return None
     return QRect(rect.x1, rect.y1, rect.width, rect.height)
+
+
+def _keycard_arg(args: dict[str, Any]) -> BagelKeycardTag | None:
+    """从网页命令参数取开房卡段标记；没有或为 null 表示跑刀路线。"""
+    raw = args.get('keycard')
+    return None if raw is None else BagelKeycardTag.from_json(raw)
