@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -56,6 +57,34 @@ def release_flow_inputs(ctx: ZContext, *, release_mouse: bool = True) -> None:
         hwnd = controller.game_win.get_hwnd()
         if hwnd is not None:
             ctypes.windll.user32.PostMessageW(hwnd, 0x0202, 0, 0)  # WM_LBUTTONUP
+
+
+_EXIT_HOOK_REGISTERED: bool = False
+"""退出钩子只注册一次；插件热刷新会重载本模块，flag 随之重置、每个刷新周期会再注册一次。"""
+
+
+def release_inputs_safely(ctx: ZContext) -> None:
+    """释放流程输入，失败只记日志：收尾时 controller 可能已被清理。"""
+    try:
+        release_flow_inputs(ctx)
+    except Exception:
+        log.error('释放流程输入失败', exc_info=True)
+
+
+def register_release_at_exit(ctx: ZContext) -> None:
+    """注册进程退出时的松键兜底，同一模块实例只注册一次；回调退出时才取 ctx.controller。"""
+    global _EXIT_HOOK_REGISTERED
+    if _EXIT_HOOK_REGISTERED:
+        return
+    _EXIT_HOOK_REGISTERED = True
+
+    def _release_on_exit() -> None:
+        try:
+            release_inputs_safely(ctx)
+        except Exception:
+            log.error('退出时释放流程输入失败', exc_info=True)
+
+    atexit.register(_release_on_exit)
 
 
 CONTAINER_TITLE_AREAS: tuple[str, ...] = ('搜查容器标题', '搜查容器标题_包', '搜查容器标题_柜')
@@ -145,9 +174,13 @@ class BagelOperation(ZOperation):
     STATUS_CONTAINER_FAILED: str = '贝果容器靠近或开箱恢复失败'
 
     def handle_init(self) -> None:
-        """每个子操作开始前确认插件画面还在；被其他插件的重载冲掉时补回来。"""
+        """每个子操作开始前补回被冲掉的插件画面，并注册进程退出松键兜底。
+
+        子类覆盖时必须调用 super()。
+        """
         super().handle_init()
         ensure_screens(self.ctx.screen_loader)
+        register_release_at_exit(self.ctx)
 
     def _execute_one_round(self) -> OperationRoundResult:
         """程序异常不在局内继续重试输入。"""
@@ -212,8 +245,9 @@ class BagelOperation(ZOperation):
         return not result.success
 
     def after_operation_done(self, result: OperationResult) -> None:
-        """保存失败现场；截图写入异常不能阻止框架释放事件监听。"""
+        """松键后保存失败现场；截图写入异常不能阻止框架释放事件监听。"""
         try:
+            release_inputs_safely(self.ctx)
             if self.is_failure_scene(result) and self.last_screenshot is not None:
                 path = screenshot.save_screenshot(
                     self.last_screenshot, self.__class__.__name__,
