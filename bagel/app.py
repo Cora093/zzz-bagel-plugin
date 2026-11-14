@@ -22,6 +22,7 @@ from .operation.operation import (
     is_bagel_result,
     release_flow_inputs,
 )
+from .operation.buy_keycard import BagelBuyKeycard
 from .operation.organize_backpack import BagelOrganizeBackpack
 from .operation.pick_keycard import BagelPickKeycard
 from .operation.settle import BagelSettleWarehouse
@@ -116,6 +117,8 @@ class BagelApp(ZApplication):
         """本局路上为地面拾取物点按 F 的次数；为 0 时退出前不整理背包。"""
         self._cards_out: bool = False
         """开房卡模式：挑卡时仓库已没有该房间的卡；本局收尾后结束任务。"""
+        self._buy_card_attempted: bool = False
+        """开房卡模式：当前轮次是否已尝试过自动购买房卡，防止循环购买。"""
         self._keycard_room_name: str = ''
         """开房卡模式：目标房间的显示名称，启动检查时读出。"""
 
@@ -422,6 +425,7 @@ class BagelApp(ZApplication):
     @node_from(from_name='检查贝果运行条件')
     @node_from(from_name='返回入口')
     @node_from(from_name='判断成功局数', status='继续入场')
+    @node_from(from_name='自动购买房卡', status='购买房卡成功', ignore_status=False)
     @operation_node(name='零携带入场', screenshot_before_round=False)
     def enter(self) -> OperationRoundResult:
         """非支持出生点可继续重开，不受尝试次数限制。"""
@@ -468,6 +472,7 @@ class BagelApp(ZApplication):
         if keycard and result.success:
             # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
             self._card_in_safe = True
+            self._buy_card_attempted = False
         if retrying_failure and not result.success:
             return self._finish_failed_round(result, '额外入场')
         return self.round_by_op_result(result, wait=1)
@@ -487,6 +492,7 @@ class BagelApp(ZApplication):
         self.screenshot()
         if result.success:
             self._card_in_safe = True
+            self._buy_card_attempted = False
         elif result.status in BagelPickKeycard.STOP_STATUSES:
             self._cards_out = True
         else:
@@ -495,9 +501,37 @@ class BagelApp(ZApplication):
     @node_from(from_name='零携带入场', status=STATUS_CARDS_OUT, ignore_status=False)
     @operation_node(name='门禁卡用完结束', screenshot_before_round=False)
     def finish_cards_out(self) -> OperationRoundResult:
-        """入场挑卡时仓库已没有该房间的卡：不进局，正常结束任务。"""
+        """入场挑卡时仓库已没有该房间的卡：若开启自动买卡则去商店购买，否则正常结束任务。"""
+        if self.config.auto_buy_keycard and not self._buy_card_attempted:
+            self._buy_card_attempted = True
+            log.info('贝果开房卡：门禁卡不足，准备自动前往商店购买 %s 张', self.config.buy_keycard_count)
+            return self.round_success('需要自动购买房卡')
+        self._buy_card_attempted = False
         log.info('贝果开房卡：%s，任务结束。已成功 %s 局。', self.STATUS_CARDS_OUT, self.success_rounds)
         return self.round_success(self.STATUS_CARDS_OUT)
+
+    @node_from(from_name='门禁卡用完结束', status='需要自动购买房卡', ignore_status=False)
+    @node_from(from_name='判断成功局数', status='需要自动购买房卡', ignore_status=False)
+    @operation_node(name='自动购买房卡', screenshot_before_round=False)
+    def auto_buy_cards(self) -> OperationRoundResult:
+        """自动前往商店购买目标房间门禁卡。"""
+        log.info(
+            '贝果开房卡：自动购买房卡，目标房间「%s」，购买数量 %s 张',
+            self._keycard_room_name, self.config.buy_keycard_count,
+        )
+        op = BagelBuyKeycard(
+            self.ctx,
+            room_name=self._keycard_room_name,
+            count=self.config.buy_keycard_count,
+        )
+        result = op.execute()
+        self.screenshot()
+        if not result.success:
+            log.error('贝果自动购买房卡失败：%s (%s)', result.status, result.data)
+            return self.round_fail(f'自动购买房卡失败：{result.status}')
+        self._cards_out = False
+        log.info('贝果自动购买房卡成功，继续入场')
+        return self.round_success('购买房卡成功')
 
     @node_from(from_name='零携带入场')
     @operation_node(name='识别出生点', timeout_seconds=10)
@@ -718,6 +752,11 @@ class BagelApp(ZApplication):
         if self.empty_rounds >= 3:
             return self.round_fail('连续 3 局安全箱为空，未计成功，停止自动重开')
         if self.config.is_keycard and self._cards_out:
+            if self.config.auto_buy_keycard and not self._buy_card_attempted:
+                self._buy_card_attempted = True
+                log.info('贝果开房卡：结算挑卡时门禁卡不足，准备自动前往商店购买 %s 张', self.config.buy_keycard_count)
+                return self.round_success('需要自动购买房卡')
+            self._buy_card_attempted = False
             log.info('贝果开房卡：%s，任务结束。已成功 %s 局。', self.STATUS_CARDS_OUT, self.success_rounds)
             return self.round_success(self.STATUS_CARDS_OUT)
         return self.round_success('继续入场')
