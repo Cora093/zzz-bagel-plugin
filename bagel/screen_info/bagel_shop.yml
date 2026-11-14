@@ -1,0 +1,70 @@
+screen_id: bagel_shop
+screen_name: 贝果-商店
+app_id: bagel
+pc_alt: false
+area_list:
+- area_name: 标题
+  pc_rect:
+  - 180
+  - 20
+  - 420
+  - 80
+  id_mark: true
+  text: 大富豪商店
+  lcs_percent: 0.6
+- area_name: 常驻商店
+  pc_rect:
+  - 130
+  - 270
+  - 260
+  - 330
+  text: 常驻商店
+  lcs_percent: 0.7
+- area_name: 战备直售
+  pc_rect:
+  - 1130
+  - 130
+  - 1310
+  - 195
+  text: 战备直售
+  lcs_percent: 0.7
+- area_name: 兑换确认
+  pc_rect:
+  - 560
+  - 290
+  - 740
+  - 350
+  text: 兑换确认
+  lcs_percent: 0.7
+- area_name: 增加数量
+  pc_rect:
+  - 1240
+  - 650
+  - 1300
+  - 710
+- area_name: 减少数量
+  pc_rect:
+  - 610
+  - 650
+  - 670
+  - 710
+- area_name: 确认购买
+  pc_rect:
+  - 1050
+  - 720
+  - 1200
+  - 775
+  text: 确认
+  lcs_percent: 0.7
+- area_name: 关闭兑换
+  pc_rect:
+  - 1260
+  - 280
+  - 1360
+  - 345
+- area_name: 返回
+  pc_rect:
+  - 50
+  - 20
+  - 120
+  - 80

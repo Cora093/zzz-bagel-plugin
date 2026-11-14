@@ -190,11 +190,10 @@ def log_start(config: BagelConfig, room_name: str | None = None) -> None:
             '成功指刷开房卡门且有物资入仓。',
             config.run_difficulty, room_name or config.keycard_room, limit, config.max_consecutive_failures,
         )
-        log.info(
-            '每局带 1 张该房间的门禁卡：安全箱为空时从仓库挑卡，结算入仓后就地挑下一局的卡。'
-            '背包和装备槽须为空；没刷门的失败局只剩卡时卡留在安全箱。'
-            '仓库没有该房间的卡（不自动购买）或刷卡处显示没有该卡时任务结束。'
-        )
+        if config.auto_buy_keycard:
+            log.info('自动购买房卡：开启，缺卡时自动前往常驻商店购买 %s 张（上限 30 张）。', config.buy_keycard_count)
+        else:
+            log.info('仓库没有该房间的卡（不自动购买）或刷卡处显示没有该卡时任务结束。')
         if config.keycard_reserve > 0:
             log.info(
                 '保留张数：%s。每次挑卡前翻完仓库全部页，按图标数该房间的卡（不点开、不含安全箱），'
