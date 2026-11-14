@@ -34,6 +34,7 @@ from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 
 from ..defs import MAP_JANUS, PLUGIN_DIR
+from ..diag import diag
 from ..operation.close_search import BagelCloseSearch
 from ..operation.container import INTERACT_KEY_THRESHOLD
 from ..operation.operation import BagelOperation
@@ -2060,6 +2061,7 @@ class BagelRouteWalker(BagelOperation):
         angle_diff = cal_utils.angle_delta(controller_angle, target_angle)
         distance = hypot(point.x - position[0], point.y - position[1])
         near = distance <= NEAR_STEP_TURN_RADIUS
+        self._diag_cruise(point, position, angle_diff, distance)
         self._submit_turn(target_angle, cruise_only=near, deadband=TURN_DEADBAND_FAST)
         if abs(angle_diff) > WALK_TURN_ANGLE and not near:
             # 大偏差：松键停车等转向线程转到位再走。
@@ -2072,6 +2074,31 @@ class BagelRouteWalker(BagelOperation):
             self._record_input()
         self._set_sprint(distance)
         return self.round_wait('冲刺前进' if self.sprinting else '按住前进')
+
+    def _diag_cruise(
+        self, point: BagelRoutePoint, position: tuple[float, float],
+        angle_diff: float, distance: float,
+    ) -> None:
+        """巡航诊断一行：点位、距离、镜头差与横向偏，供离线算走偏分布。
+
+        字段顺序由 ``bagel/diag.py`` 的格式契约固定，新增字段只能往后追加。
+        """
+        off = self._off_track(point, position)
+        diag({
+            '点': self.cursor + 1,
+            '距': f'{distance:.1f}',
+            '差': f'{angle_diff:+.1f}',
+            '偏': '?' if off is None else f'{off:.1f}',
+            '位置': f'({position[0]:.0f},{position[1]:.0f})',
+        })
+
+    def _off_track(self, point: BagelRoutePoint, position: tuple[float, float]) -> float | None:
+        """当前位置到「上一个点→当前点」这条腿的垂直距离；没有上一个点时为 None。"""
+        origin = self._previous_point()
+        if origin is None:
+            return None
+        foot = _closest_on_segment(origin, point, position)
+        return hypot(position[0] - foot[0], position[1] - foot[1])
 
     def _submit_turn(self, target: float, cruise_only: bool = False, deadband: float = TURN_DEADBAND) -> None:
         """提交目标方向给转向线程；只存不定夺，不记输入。
