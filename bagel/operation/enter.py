@@ -16,7 +16,7 @@ from ..defs import (
     DIFFICULTY_RECOMMENDED_VALUES,
     MAP_JANUS,
     MAP_OUTSKIRTS,
-    OUTSKIRTS_RECOMMENDED_VALUE,
+    OUTSKIRTS_RECOMMENDED_VALUES,
     RECOMMENDED_VALUE,
 )
 from ..vision.screen import (
@@ -91,7 +91,7 @@ class BagelEnter(BagelOperation):
         self.other_map: str = MAP_OUTSKIRTS if map_name == MAP_JANUS else MAP_JANUS
         self.carry_card: bool = carry_card
         self.target_recommended_value: str | None = (
-            OUTSKIRTS_RECOMMENDED_VALUE if map_name == MAP_OUTSKIRTS
+            OUTSKIRTS_RECOMMENDED_VALUES.get(difficulty) if map_name == MAP_OUTSKIRTS
             else DIFFICULTY_RECOMMENDED_VALUES.get(difficulty, RECOMMENDED_VALUE)
         )
         """目标地图和难度的推荐价值；None 表示尚未标定。"""
@@ -386,7 +386,7 @@ class BagelEnter(BagelOperation):
     def choose_difficulty(self) -> OperationRoundResult:
         """选中后用对应推荐价值与地图名复核，不能只检测页签文字存在。
 
-        推荐价值未标定的地图（城郊幻境高危）：本次入场先点一次难度页签，
+        推荐价值未标定的地图和难度（城郊幻境的困难、常规）：本次入场先点一次难度页签，
         等 ``_UNCALIBRATED_SETTLE_SECONDS`` 后接受读到的数，写警告日志供标定。
         """
         if self._map_state() == 'ok':

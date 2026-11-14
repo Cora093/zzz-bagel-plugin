@@ -369,12 +369,15 @@ class BagelApp(ZApplication):
                 problems = catalog.selection_problems()
                 if problems:
                     raise ValueError('；'.join(problems))
-                if catalog.active_count() == 0:
-                    raise ValueError('没有开启的贝果路线，先在路线编辑器里为出生点开启路线')
+                map_name = self.config.map_name
+                if catalog.active_count(map_name) == 0:
+                    raise ValueError(f'{map_name}没有开启的跑刀路线，先在路线编辑器里为{map_name}的出生点开启路线')
         except (OSError, ValueError, BagelRouteConfigError) as error:
             return self.round_fail(f'贝果配置无效：{error}')
         if not self.config.is_keycard:
             for spawn in catalog.spawns:
+                if spawn.map_id != self.config.map_name:
+                    continue
                 ref = catalog.active_ref(spawn.spawn_id)
                 route = catalog.route(ref) if ref is not None else None
                 log.info('贝果出生点 %s：%s', spawn.name, f'开启「{route.name}」' if route is not None else '未开启路线')
@@ -382,7 +385,7 @@ class BagelApp(ZApplication):
         return self.round_success()
 
     def _check_keycard_ready(self, catalog: BagelRouteCatalog) -> str:
-        """开房卡启动检查：房间已登记、房间段与入口段有效、至少一个出生点开启了入口段。
+        """开房卡启动检查：房间已登记且与所选地图一致、房间段与入口段有效、至少一个出生点开启了入口段。
 
         Returns:
             房间显示名称。
@@ -394,6 +397,8 @@ class BagelApp(ZApplication):
         room = catalog.room(room_id)
         if room is None:
             raise ValueError(f'开房卡选择的房间 {room_id} 未登记')
+        if room.map_id != self.config.map_name:
+            raise ValueError(f'{room.name}在{room.map_id}，与所选地图{self.config.map_name}不一致，请在设置页重新选择')
         problem = catalog.keycard_problem(room_id)
         if problem is not None:
             raise ValueError(problem)

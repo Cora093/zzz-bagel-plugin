@@ -24,8 +24,8 @@ from .defs import (
     MAP_JANUS,
     MAP_OUTSKIRTS,
     MAPS,
+    MODE_DEFAULT_MAPS,
     MODE_KEYCARD,
-    MODE_MAPS,
     MODE_RUN,
     MODES,
 )
@@ -70,11 +70,11 @@ class BagelConfig(ApplicationConfig):
     def map_name(self) -> str:
         """进入的地图。缺项或不认识时按模式取默认地图，旧配置的跑刀仍是雅努斯幻境。
 
-        存下的组合可能不被当前模式支持（手改配置），由 ``validate`` 拒绝启动。
+        跑刀两张图都能选；开房卡要与所选房间同一张图，由启动检查对照房间清单确认。
         """
         value = self.get('map', None)
         if value not in MAPS:
-            return MODE_MAPS[self.mode][0]
+            return MODE_DEFAULT_MAPS[self.mode]
         return value
 
     @map_name.setter
@@ -99,11 +99,6 @@ class BagelConfig(ApplicationConfig):
         if map_name is not None and map_name not in MAPS:
             return f'map「{map_name}」无法识别，只能是 {"、".join(MAPS)}'
         return None
-
-    @property
-    def map_supported(self) -> bool:
-        """当前模式是否支持所选地图。"""
-        return self.map_name in MODE_MAPS[self.mode]
 
     @property
     def keycard_room(self) -> str:
@@ -338,13 +333,10 @@ class BagelConfig(ApplicationConfig):
             raise ValueError(f'{label}不能重复')
 
     def validate(self) -> None:
-        """启动前校验配置。房间是否已登记、是否开启了路线由启动检查对照路线配置确认。"""
+        """启动前校验配置。房间是否已登记、房间与地图是否一致、是否开启了路线由启动检查对照路线配置确认。"""
         problem = self.stored_mode_map_problem()
         if problem is not None:
             raise ValueError(f'{problem}；打开设置页会改回默认值，确认后再运行')
-        if not self.map_supported:
-            mode_name = BagelMode.KEYCARD.value.ui_text if self.is_keycard else BagelMode.RUN.value.ui_text
-            raise ValueError(f'{mode_name}暂不支持{self.map_name}，请在设置页重新选择地图')
         if self.is_keycard and not self.keycard_room:
             raise ValueError('开房卡模式还没有选择房间')
         reserve = self.get('keycard_reserve', 0)

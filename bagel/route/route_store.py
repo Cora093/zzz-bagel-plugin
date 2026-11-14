@@ -246,9 +246,25 @@ class BagelRouteCatalog:
         problems = [self.selection_problem(spawn_id) for spawn_id in self.active]
         return [item for item in problems if item is not None]
 
-    def active_count(self) -> int:
-        """开启了路线的出生点个数。"""
-        return sum(1 for ref in self.active.values() if ref is not None)
+    def active_count(self, map_id: str | None = None) -> int:
+        """开启了跑刀路线的出生点个数。
+
+        Args:
+            map_id: 只数这张地图的出生点；None 表示全部地图。
+        """
+        return sum(
+            1 for spawn in self.spawns
+            if self.active.get(spawn.spawn_id) is not None
+            and (map_id is None or spawn.map_id == map_id)
+        )
+
+    def room_maps(self) -> list[str]:
+        """登记了开房卡房间的地图，按房间清单里第一次出现的顺序。"""
+        maps: list[str] = []
+        for room in self.rooms:
+            if room.map_id not in maps:
+                maps.append(room.map_id)
+        return maps
 
     def keycard_route(self, room_id: str, spawn_id: str) -> BagelRoute | None:
         """按开启选择拼出某个出生点去某个房间的完整路线。

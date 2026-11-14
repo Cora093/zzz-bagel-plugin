@@ -85,12 +85,13 @@ MAP_OUTSKIRTS: str = '城郊幻境'
 MAPS: tuple[str, ...] = (MAP_JANUS, MAP_OUTSKIRTS)
 #: 开房卡模式固定的难度。
 KEYCARD_DIFFICULTY: str = DIFFICULTY_HAZARD
-#: 每种模式当前支持的地图，第一项是默认；其他组合拒绝启动。
-MODE_MAPS: dict[str, tuple[str, ...]] = {MODE_RUN: (MAP_JANUS,), MODE_KEYCARD: (MAP_OUTSKIRTS,)}
+#: 每种模式的默认地图：配置缺 ``map`` 时用。跑刀两张图都能选；开房卡的地图跟着房间走，
+#: 只能选登记了房间的地图，由启动检查和设置页对照房间清单确认。
+MODE_DEFAULT_MAPS: dict[str, str] = {MODE_RUN: MAP_JANUS, MODE_KEYCARD: MAP_OUTSKIRTS}
 #: 每种模式当前可选的难度。
 MODE_DIFFICULTIES: dict[str, tuple[str, ...]] = {MODE_RUN: DIFFICULTIES, MODE_KEYCARD: (KEYCARD_DIFFICULTY,)}
-#: 城郊幻境高危的推荐装备价值。取自用户录屏的城郊高危备战页（推荐价值：258000），选图页读数尚未实机核对；
-#: 改成 None 时入场按「点一次高危后接受读数」处理。
-OUTSKIRTS_RECOMMENDED_VALUE: str | None = '258000'
+#: 城郊幻境各难度的推荐装备价值。高危取自用户录屏的城郊高危备战页（推荐价值：258000），选图页读数尚未实机核对；
+#: 困难、常规尚未标定。表里没有的难度，入场按「点一次难度页签后接受读数」处理。
+OUTSKIRTS_RECOMMENDED_VALUES: dict[str, str] = {DIFFICULTY_HAZARD: '258000'}
 #: 开房卡模式出售时一律跳过的类型，防止卖掉要用的卡。
 KEYCARD_KEEP_TYPES: tuple[str, ...] = ('门禁卡',)
