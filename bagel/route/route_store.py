@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from one_dragon.utils.log_utils import log
@@ -46,6 +46,9 @@ from .route_model import (
     now_iso,
     validate_route_name,
 )
+
+if TYPE_CHECKING:
+    from zzz_od.context.zzz_context import ZContext
 
 SPAWN_FILE: tuple[str, ...] = ('assets', 'game_data', 'bagel', 'spawn_points.yml')
 """出生点清单相对插件目录的路径。"""
@@ -273,12 +276,13 @@ class BagelRouteCatalog:
 class BagelRouteStore:
     """路线文件与开启选择的读写入口。"""
 
-    def __init__(self, data_dir: Path | None = None) -> None:
+    def __init__(self, ctx: ZContext, data_dir: Path | None = None) -> None:
         """
         Args:
-            data_dir: 数据目录；None 表示插件数据目录 plugin_data/<APP_ID>。离线核对时可传临时目录。
+            ctx: 运行上下文，用来取插件数据目录。
+            data_dir: 数据目录；None 表示走主程序分配的插件数据目录。离线核对时可传临时目录。
         """
-        self.data_dir: Path = data_dir if data_dir is not None else get_plugin_data_dir()
+        self.data_dir: Path = data_dir if data_dir is not None else get_plugin_data_dir(ctx)
         self.custom_dir: Path = self.data_dir / 'routes'
         self.sample_dir: Path = PLUGIN_DIR.joinpath(*SAMPLE_DIR)
         self.settings_path: Path = self.data_dir / 'route_settings.yml'

@@ -326,7 +326,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         if self.config is None:
             return
         try:
-            rooms = BagelRouteStore().load_catalog().rooms
+            rooms = BagelRouteStore(self.ctx).load_catalog().rooms
         except (OSError, ValueError, BagelRouteConfigError):
             log.error('贝果设置页读取房间清单失败', exc_info=True)
             rooms = []
@@ -348,7 +348,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         problems: list[str] = []
         spawns: list[str] = []
         try:
-            catalog = BagelRouteStore().load_catalog()
+            catalog = BagelRouteStore(self.ctx).load_catalog()
         except (OSError, ValueError, BagelRouteConfigError) as error:
             catalog = None
             problems.append(str(error))

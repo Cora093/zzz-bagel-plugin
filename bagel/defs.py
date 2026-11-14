@@ -4,25 +4,41 @@
 那份文件由 ``scripts/generate_const.py`` 从 ``plugin.json`` 生成，不要手改。
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from one_dragon.utils import os_utils
 
 from .const import APP_ID
 
+if TYPE_CHECKING:
+    from zzz_od.context.zzz_context import ZContext
+
 PLUGIN_DIR: Path = Path(__file__).resolve().parent
 """插件根目录；模板、出生点、地图底图等自带资源都从这里取，不依赖工作目录。"""
 
-def get_plugin_data_dir() -> Path:
+
+def get_plugin_data_dir(ctx: ZContext) -> Path:
     """插件运行期数据目录，存放自定义路线、开启选择、路线记录与现场截图。
 
     放在插件目录之外，插件更新替换整个目录时用户数据不会被删掉。
-    路径是 ``plugin_data/<APP_ID>``，由主程序按 APP_ID 分配，插件代码装在哪里都不影响。
-    每次调用按当前工作目录现算，不缓存。
+    路径由主程序按 ``APP_ID`` 分配（当前是 ``plugin_data/<APP_ID>``），插件不自己拼，
+    主程序改了目录规则，插件跟着走。
+
+    主程序 v2.6.1 才提供 ``get_plugin_data_dir``。更早的版本没有这个接口，
+    这时按同一规则自己拼 ``plugin_data/<APP_ID>``，路径与新版一致，数据不会分家。
+
+    Args:
+        ctx: 运行上下文，用它提供的接口取目录。
 
     Returns:
-        工作目录下的 ``plugin_data/<APP_ID>``。
+        主程序分配的插件数据目录；旧版主程序下为工作目录里的 ``plugin_data/<APP_ID>``。
     """
+    getter = getattr(ctx, 'get_plugin_data_dir', None)
+    if callable(getter):
+        return Path(getter(APP_ID))
     return Path(os_utils.get_path_under_work_dir('plugin_data', APP_ID))
 
 DIFFICULTY_NORMAL: str = '常规'

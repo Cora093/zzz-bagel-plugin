@@ -352,7 +352,7 @@ class BagelPickKeycard(BagelOperation):
         Args:
             reason: 失败原因，作为操作结果的状态。
         """
-        path = save_screenshot(self.last_screenshot, 'BagelKeycardPickFail')
+        path = save_screenshot(self.ctx, self.last_screenshot, 'BagelKeycardPickFail')
         log.warning('贝果挑卡失败：%s；现场截图 %s', reason, path)
         return self._finish(self.round_fail(reason))
 
@@ -549,8 +549,8 @@ class BagelPickKeycard(BagelOperation):
                     before_rows, more_below(before) if before is not None else None,
                     rows, arrow, checks,
                 )
-                save_screenshot(before, 'BagelScrollBefore')
-                save_screenshot(screen, 'BagelScrollAfter')
+                save_screenshot(self.ctx, before, 'BagelScrollBefore')
+                save_screenshot(self.ctx, screen, 'BagelScrollAfter')
                 return self._fail(
                     f'第 {self.page + 1} 页滚动后行的位置与顶部不一致（{rows}），滚动不是整行，记账不可信，停止并保留现场')
         if effect == 'unknown':
@@ -570,7 +570,7 @@ class BagelPickKeycard(BagelOperation):
                  reason, self.room_name, counted, KEYCARD_SCORE_MIN, self.reserve)
         if counted <= self.reserve:
             if self.count_crops:
-                path = save_screenshot(np.vstack(self.count_crops), 'BagelKeycardCount')
+                path = save_screenshot(self.ctx, np.vstack(self.count_crops), 'BagelKeycardCount')
                 log.info('贝果挑卡：清点的各屏网格已拼图保存：%s', path)
             return self._finish(self.round_fail(self.STATUS_RESERVE))
         self.counting = False

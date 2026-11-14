@@ -25,6 +25,8 @@ from ..stats import (
 )
 
 if TYPE_CHECKING:
+    from zzz_od.context.zzz_context import ZContext
+
     from .route_model import BagelRoute
     from .route_store import BagelRouteCatalog
 
@@ -98,17 +100,19 @@ class BagelRouteRecord:
 class BagelRouteRecorder:
     """写入、清理和读取路线数据记录；出错只记警告，不影响流程。"""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, ctx: ZContext, path: Path | None = None) -> None:
         """
         Args:
-            path: 记录文件；None 表示 ``plugin_data/<APP_ID>/route_records.jsonl``。
+            ctx: 运行上下文，用来取插件数据目录。
+            path: 记录文件；None 表示插件数据目录下的 ``route_records.jsonl``。
         """
+        self.ctx: ZContext = ctx
         self._path: Path | None = path
 
     def path(self) -> Path:
         """记录文件路径；首次使用时创建目录。"""
         if self._path is None:
-            self._path = get_plugin_data_dir() / 'route_records.jsonl'
+            self._path = get_plugin_data_dir(self.ctx) / 'route_records.jsonl'
         return self._path
 
     def append(self, record: BagelRouteRecord) -> None:

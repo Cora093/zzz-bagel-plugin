@@ -532,7 +532,7 @@ class BagelRouteWalker(BagelOperation):
             ValueError: 出生点清单无法读取，或指定路线不存在、损坏、绑定的出生点未登记。
         """
         super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1)
-        self.store: BagelRouteStore = BagelRouteStore()
+        self.store: BagelRouteStore = BagelRouteStore(self.ctx)
         self.keycard_room: str | None = keycard_room if route_ref is None else None
         """正式运行开房卡模式的目标房间；跑刀与试跑为 None。"""
         try:

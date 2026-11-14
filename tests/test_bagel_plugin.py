@@ -63,6 +63,27 @@ def empty_work_dir(tmp_path: Path) -> Iterator[Path]:
         os_utils.set_work_dir(original)
 
 
+class _StubContext:
+    """最小上下文：只实现插件用到的主程序接口 ``get_plugin_data_dir``。
+
+    路径规则照主程序来（``plugin_data/<APP_ID>``），并记下传入的 APP_ID，
+    这样能验证插件是问主程序要目录，而不是自己拼。
+    """
+
+    def __init__(self) -> None:
+        self.requested_app_ids: list[str] = []
+
+    def get_plugin_data_dir(self, app_id: str) -> Path:
+        self.requested_app_ids.append(app_id)
+        return Path(os_utils.get_path_under_work_dir('plugin_data', app_id))
+
+
+@pytest.fixture
+def stub_ctx() -> _StubContext:
+    """给插件用的假上下文。"""
+    return _StubContext()
+
+
 def _module_name(path: Path) -> str:
     """把文件路径换算成导入名，子包按点号展开，__init__ 归到包本身。"""
     parts = list(path.relative_to(PLUGINS_DIR).with_suffix('').parts)
@@ -157,14 +178,14 @@ def test_spawn_points_inside_plugin() -> None:
     assert spawn.is_file()
 
 
-def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
+def test_default_routes_inside_plugin(empty_work_dir: Path, stub_ctx: _StubContext) -> None:
     """默认路线随插件分发：空工作目录下也能按出生点清单初始化出开启选择。
 
     这条守首次启动：默认路线若还留在工作目录，用户第一次跑就会得到
     「没有开启的贝果路线」，任务根本开不起来。
     """
     store_module = importlib.import_module('bagel.route.route_store')
-    store = store_module.BagelRouteStore()
+    store = store_module.BagelRouteStore(stub_ctx)
 
     assert store.sample_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
     defaults = sorted(store.sample_dir.glob('*.sample.route.json'))
@@ -176,25 +197,41 @@ def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
     assert active, '空工作目录下没有初始化出任何开启路线，首次运行会直接判配置无效'
 
 
-def test_user_data_outside_plugin(empty_work_dir: Path) -> None:
+def test_user_data_outside_plugin(empty_work_dir: Path, stub_ctx: _StubContext) -> None:
     """用户数据落在工作目录的 plugin_data/<APP_ID>/ 下，不进插件目录。
 
     插件升级是整个目录替换，数据写在插件目录里会随旧版本一起删掉。
+    目录由主程序分配，插件只把 APP_ID 传过去。
     """
     expected = empty_work_dir / 'plugin_data' / 'bagel'
 
     store_module = importlib.import_module('bagel.route.route_store')
-    store = store_module.BagelRouteStore()
+    store = store_module.BagelRouteStore(stub_ctx)
     assert store.custom_dir.resolve() == (expected / 'routes').resolve()
     assert store.settings_path.resolve() == (expected / 'route_settings.yml').resolve()
     assert not store.custom_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
 
     stats_module = importlib.import_module('bagel.route.route_stats')
-    records = stats_module.BagelRouteRecorder().path()
+    records = stats_module.BagelRouteRecorder(stub_ctx).path()
     assert records.resolve() == (expected / 'route_records.jsonl').resolve()
 
     shot_module = importlib.import_module('bagel.screenshot')
-    assert shot_module.screenshot_dir().resolve() == (expected / 'screenshots').resolve()
+    assert shot_module.screenshot_dir(stub_ctx).resolve() == (expected / 'screenshots').resolve()
+    assert stub_ctx.requested_app_ids
+    assert set(stub_ctx.requested_app_ids) == {'bagel'}, '插件应把 APP_ID 交给主程序分配目录'
+
+
+class _OldHostContext:
+    """旧版主程序（v2.6.1 之前）的上下文：没有 ``get_plugin_data_dir`` 接口。"""
+
+
+def test_user_data_dir_fallback_on_old_host(empty_work_dir: Path) -> None:
+    """主程序没有数据目录接口时，插件按同一规则自己拼，路径与新版一致。"""
+    defs = importlib.import_module('bagel.defs')
+    expected = empty_work_dir / 'plugin_data' / 'bagel'
+
+    assert defs.get_plugin_data_dir(_OldHostContext()).resolve() == expected.resolve()
+    assert defs.get_plugin_data_dir(_StubContext()).resolve() == expected.resolve()
 
 
 def test_readme_images_exist() -> None:
@@ -238,10 +275,10 @@ def test_safe_lock_template_readable() -> None:
     assert template.shape == (56, 48)
 
 
-def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
+def test_resources_survive_work_dir_change(empty_work_dir: Path, stub_ctx: _StubContext) -> None:
     """换一个空工作目录后，出生点、底图、角标、模板仍然读得到。"""
     store_module = importlib.import_module('bagel.route.route_store')
-    store = store_module.BagelRouteStore()
+    store = store_module.BagelRouteStore(stub_ctx)
     assert store.spawn_path.is_relative_to(PLUGIN_DIR.resolve())
     assert store.load_spawns()
 
