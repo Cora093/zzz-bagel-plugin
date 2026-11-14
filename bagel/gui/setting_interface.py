@@ -62,6 +62,7 @@ from .setting_widgets import (
     CountSpinBox,
     SaleModeSelector,
     SaleScopePreview,
+    SettingSwitch,
     tag_row,
 )
 
@@ -301,7 +302,36 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         reserve_row.addWidget(BodyLabel('张门禁卡', card))
         reserve_row.addStretch(1)
         layout.addLayout(reserve_row)
+
+        buy_switch_row = QHBoxLayout()
+        buy_switch_row.setSpacing(12)
+        buy_switch_row.addWidget(BodyLabel('是否自动购买房卡', card))
+        self.auto_buy_keycard: SettingSwitch = SettingSwitch('是否自动购买房卡', card)
+        self.auto_buy_keycard.state_changed.connect(self._refresh_buy_keycard_options)
+        buy_switch_row.addWidget(self.auto_buy_keycard)
+        buy_switch_row.addStretch(1)
+        layout.addLayout(buy_switch_row)
+
+        buy_count_row = QHBoxLayout()
+        buy_count_row.setSpacing(8)
+        self.buy_keycard_count: CountSpinBox = CountSpinBox(1, 30, card)
+        self.buy_keycard_count.setAccessibleName('确定购买房卡数量')
+        buy_count_row.addWidget(BodyLabel('确定购买房卡数量', card))
+        buy_count_row.addWidget(self.buy_keycard_count)
+        buy_count_row.addWidget(BodyLabel('张', card))
+        buy_count_row.addStretch(1)
+        layout.addLayout(buy_count_row)
+
+        self.buy_count_hint: CaptionLabel = CaptionLabel('上限30张', card)
+        self.buy_count_hint.setWordWrap(True)
+        layout.addWidget(self.buy_count_hint)
         return card
+
+    def _refresh_buy_keycard_options(self) -> None:
+        """根据是否自动购买开关刷新购买数量输入的可用状态。"""
+        if hasattr(self, 'auto_buy_keycard') and hasattr(self, 'buy_keycard_count'):
+            enabled = self.auto_buy_keycard.isChecked()
+            self.buy_keycard_count.setEnabled(enabled)
 
     def _refresh_target(self) -> None:
         """按配置刷新三组按钮的选中、置灰和开房卡卡片的显示。"""
@@ -324,6 +354,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         self.keycard_card.setVisible(self.config.is_keycard)
         if self.config.is_keycard:
             self._refresh_keycard_status()
+            self._refresh_buy_keycard_options()
 
     def _read_rooms(self) -> None:
         """读开房卡房间清单；读不到时按没有房间处理。"""
@@ -765,9 +796,12 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             (self.auto_clean_switch, 'auto_clean_warehouse'),
             (self.clean_mode, 'clean_mode'),
             (self.keycard_reserve, 'keycard_reserve'),
+            (self.auto_buy_keycard, 'auto_buy_keycard'),
+            (self.buy_keycard_count, 'buy_keycard_count'),
         ):
             control.setEnabled(False)
             control.init_with_adapter(get_prop_adapter(self.config, field))
+        self._refresh_buy_keycard_options()
         self._rebuild_clean_steps()
         self._config_loaded = True
 

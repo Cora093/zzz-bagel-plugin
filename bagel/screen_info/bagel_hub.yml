@@ -52,3 +52,11 @@ area_list:
   - 710
   text: 出发出发
   lcs_percent: 0.7
+- area_name: 商店
+  pc_rect:
+  - 1680
+  - 430
+  - 1850
+  - 580
+  text: 商店
+  lcs_percent: 0.7

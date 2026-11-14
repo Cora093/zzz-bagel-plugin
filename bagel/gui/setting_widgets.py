@@ -99,6 +99,34 @@ class AutoSaleSwitch(SwitchButton, AdapterInitMixin):
         self.state_changed.emit()
 
 
+class SettingSwitch(SwitchButton, AdapterInitMixin):
+    """通用配置开关，支持自定义无障碍名称和状态通知。"""
+
+    state_changed = Signal()
+
+    def __init__(self, name: str, parent: QWidget) -> None:
+        """沿用 Fluent 开关和适配器。"""
+        SwitchButton.__init__(self, parent, indicatorPos=IndicatorPosition.RIGHT)
+        AdapterInitMixin.__init__(self)
+        self.setOnText('已开启')
+        self.setOffText('已关闭')
+        self.setAccessibleName(name)
+        self.checkedChanged.connect(self._save_value)
+
+    def _set_value_from_adapter(self, value: bool) -> None:
+        """载入开关值，不发送保存信号。"""
+        with QtCore.QSignalBlocker(self):
+            self.setChecked(bool(value))
+        self.setEnabled(True)
+        self.state_changed.emit()
+
+    def _save_value(self, value: bool) -> None:
+        """先保存开关，再刷新可见区域。"""
+        if self.adapter is not None:
+            self.adapter.set_value(bool(value))
+        self.state_changed.emit()
+
+
 class ChoiceSegment(SegmentedWidget):
     """设置页顶部的单选分段按钮：固定总宽、各项平分，可以单项置灰。
 

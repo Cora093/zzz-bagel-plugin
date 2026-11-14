@@ -132,6 +132,32 @@ class BagelConfig(ApplicationConfig):
         self.update('keycard_reserve', value)
 
     @property
+    def auto_buy_keycard(self) -> bool:
+        """开房卡模式：仓库没有可用的门禁卡时是否自动在商店购买房卡。"""
+        value = self.get('auto_buy_keycard', False)
+        return value if type(value) is bool else False
+
+    @auto_buy_keycard.setter
+    def auto_buy_keycard(self, value: bool) -> None:
+        """保存是否自动购买房卡。"""
+        if type(value) is not bool:
+            raise ValueError('auto_buy_keycard 必须是布尔值')
+        self.update('auto_buy_keycard', value)
+
+    @property
+    def buy_keycard_count(self) -> int:
+        """自动购买房卡时的购买数量，上限 30 张；默认 1。"""
+        value = self.get('buy_keycard_count', 1)
+        return value if type(value) is int and 1 <= value <= 30 else 1
+
+    @buy_keycard_count.setter
+    def buy_keycard_count(self, value: int) -> None:
+        """保存自动购买房卡数量。"""
+        if type(value) is not int or not 1 <= value <= 30:
+            raise ValueError('buy_keycard_count 必须是 1 至 30 的整数')
+        self.update('buy_keycard_count', value)
+
+    @property
     def run_difficulty(self) -> str:
         """本次实际进入的难度：开房卡固定高危，跑刀按 ``difficulty``。"""
         return KEYCARD_DIFFICULTY if self.is_keycard else self.difficulty
@@ -342,6 +368,11 @@ class BagelConfig(ApplicationConfig):
         reserve = self.get('keycard_reserve', 0)
         if type(reserve) is not int or not 0 <= reserve <= 999:
             raise ValueError('keycard_reserve 必须是 0 至 999 的整数')
+        if type(self.auto_buy_keycard) is not bool:
+            raise ValueError('auto_buy_keycard 必须是布尔值')
+        buy_count = self.get('buy_keycard_count', 1)
+        if type(buy_count) is not int or not 1 <= buy_count <= 30:
+            raise ValueError('buy_keycard_count 必须是 1 至 30 的整数')
         if self.difficulty not in DIFFICULTIES:
             raise ValueError(f'difficulty 只能是 {"、".join(DIFFICULTIES)}')
         interval = self.sell_interval
