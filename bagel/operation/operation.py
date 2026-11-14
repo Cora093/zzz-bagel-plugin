@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from pynput import mouse
 from zzz_od.operation.zzz_operation import ZOperation
 
 from .. import screenshot
+from ..screens import ensure_screens
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -57,15 +59,52 @@ def release_flow_inputs(ctx: ZContext, *, release_mouse: bool = True) -> None:
             ctypes.windll.user32.PostMessageW(hwnd, 0x0202, 0, 0)  # WM_LBUTTONUP
 
 
-CONTAINER_TITLE_AREAS: tuple[str, ...] = ('搜查容器标题', '搜查容器标题_包', '搜查容器标题_柜')
+_EXIT_HOOK_REGISTERED: bool = False
+"""退出钩子只注册一次；插件热刷新会重载本模块，flag 随之重置、每个刷新周期会再注册一次。"""
+
+
+def release_inputs_safely(ctx: ZContext) -> None:
+    """释放流程输入，失败只记日志：收尾时 controller 可能已被清理。"""
+    try:
+        release_flow_inputs(ctx)
+    except Exception:
+        log.error('释放流程输入失败', exc_info=True)
+
+
+def register_release_at_exit(ctx: ZContext) -> None:
+    """注册进程退出时的松键兜底，同一模块实例只注册一次；回调退出时才取 ctx.controller。"""
+    global _EXIT_HOOK_REGISTERED
+    if _EXIT_HOOK_REGISTERED:
+        return
+    _EXIT_HOOK_REGISTERED = True
+
+    def _release_on_exit() -> None:
+        try:
+            release_inputs_safely(ctx)
+        except Exception:
+            log.error('退出时释放流程输入失败', exc_info=True)
+
+    atexit.register(_release_on_exit)
+
+
+CONTAINER_TITLE_AREAS: tuple[str, ...] = (
+    '搜查容器标题',
+    '搜查容器标题_包',
+    '搜查容器标题_柜',
+    '搜查容器标题_搜索物资',
+    '搜查容器标题_医疗站',
+)
 """普通容器搜查面板标题栏的识别区域。
 
-游戏里容器叫法有很多种：武备箱、公文包、某某柜……只认其中一个词会漏掉
-其它容器。漏认的后果不是少识别一次：面板明明开着却认为没开，调用方就会
-用「交互提示消失」推断已经完事，跳过收集入箱和关闭面板，面板一直盖住
-小地图，后面整段导航都定位失败。
+游戏里容器有纸箱、行李箱、提包、单斗柜、医疗站等。前四种的面板标题都是
+「搜索物资」，医疗站用自己的名字；只认箱、包、柜会漏掉这几种。漏认的后
+果不是少识别一次：面板明明开着却认为没开，调用方就会用「交互提示消失」
+推断已经完事，跳过收集入箱和关闭面板，面板一直盖住小地图，后面整段导航
+都定位失败。
 
-所以标题栏按结尾字分别建三个同坐标区域，箱、包、柜任一命中即算开到面板。
+所以标题栏按叫法分别建几个同坐标区域，箱、包、柜、搜索物资、医疗站任一
+命中即算开到面板。这些面板的格子、安全箱和「全部拾取」按钮位置都与普通
+容器相同，只有排数随容器大小变化，排数由「全部拾取」按钮位置另行判断。
 """
 
 
@@ -143,6 +182,15 @@ class BagelOperation(ZOperation):
     STATUS_ROUND_FAILED: str = '贝果局内流程失败'
     STATUS_CONTAINER_FAILED: str = '贝果容器靠近或开箱恢复失败'
 
+    def handle_init(self) -> None:
+        """每个子操作开始前补回被冲掉的插件画面，并注册进程退出松键兜底。
+
+        子类覆盖时必须调用 super()。
+        """
+        super().handle_init()
+        ensure_screens(self.ctx.screen_loader)
+        register_release_at_exit(self.ctx)
+
     def _execute_one_round(self) -> OperationRoundResult:
         """程序异常不在局内继续重试输入。"""
         return execute_bagel_round(self)
@@ -154,8 +202,8 @@ class BagelOperation(ZOperation):
     def _has(self, area: str, screen_name: str = '贝果-局内') -> bool:
         """只使用当前截图核对指定画面区域。
 
-        「搜查容器标题」会展开成箱、包、柜三个同坐标区域：容器叫法有很多种，
-        只认其中一个词就认不出其它容器，面板开着也会被当成没开。
+        「搜查容器标题」会展开成箱、包、柜、搜索物资、医疗站同坐标区域：容器
+        叫法有很多种，只认其中一个词就认不出其它容器，面板开着也会被当成没开。
         """
         if screen_name == '贝果-局内' and area == '搜查容器标题':
             return any(
@@ -201,10 +249,15 @@ class BagelOperation(ZOperation):
         """识别 DEFEAT，不以地图名称或单角色零血量判断失败结算。"""
         return is_bagel_result(self)
 
+    def is_failure_scene(self, result: OperationResult) -> bool:
+        """本次结果是否算失败现场；子类可把流程内正常的未成功结果排除。"""
+        return not result.success
+
     def after_operation_done(self, result: OperationResult) -> None:
-        """保存失败现场；截图写入异常不能阻止框架释放事件监听。"""
+        """松键后保存失败现场；截图写入异常不能阻止框架释放事件监听。"""
         try:
-            if not result.success and self.last_screenshot is not None:
+            release_inputs_safely(self.ctx)
+            if self.is_failure_scene(result) and self.last_screenshot is not None:
                 path = screenshot.save_screenshot(
                     self.ctx, self.last_screenshot, self.__class__.__name__,
                 )

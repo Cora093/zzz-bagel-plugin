@@ -3,101 +3,77 @@
  "route_id": "白鸽工地站-默认",
  "name": "白鸽工地站-默认",
  "spawn_id": "janus_worksite_station",
- "started_at": "2026-10-25T19:43:53+08:00",
- "ended_at": "2026-10-25T19:45:07+08:00",
+ "started_at": "2026-11-03T08:45:21-08:00",
+ "ended_at": "2026-11-06T08:59:55-08:00",
  "points": [
   {
-   "x": 342,
-   "y": 433,
+   "x": 341,
+   "y": 432,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 358,
-   "y": 433,
+   "x": 383,
+   "y": 400,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 381,
-   "y": 403,
-   "layer": "雅努斯幻境/Custom",
-   "kind": "beacon"
-  },
-  {
-   "x": 374,
-   "y": 397,
+   "x": 376,
+   "y": 400,
    "layer": "雅努斯幻境/Custom",
    "kind": "box"
   },
   {
    "x": 387,
-   "y": 439,
+   "y": 435,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 495,
-   "y": 437,
+   "x": 568,
+   "y": 435,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 530,
-   "y": 431,
+   "x": 586,
+   "y": 484,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 558,
-   "y": 404,
+   "x": 714,
+   "y": 483,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 585,
-   "y": 392,
+   "x": 733,
+   "y": 516,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 675,
-   "y": 394,
+   "x": 812,
+   "y": 517,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 842,
-   "y": 401,
+   "x": 848,
+   "y": 328,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 842,
-   "y": 334,
+   "x": 913,
+   "y": 333,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 905,
-   "y": 334,
-   "layer": "雅努斯幻境/Custom",
-   "kind": "beacon"
-  },
-  {
-   "x": 912,
-   "y": 341,
-   "layer": "雅努斯幻境/Custom",
-   "kind": "beacon"
-  },
-  {
-   "x": 912,
-   "y": 358,
-   "layer": "雅努斯幻境/Custom",
-   "kind": "beacon"
-  },
-  {
-   "x": 928,
+   "x": 934,
    "y": 358,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"

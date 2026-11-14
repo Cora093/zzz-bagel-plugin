@@ -132,16 +132,19 @@ class _Command:
 
     def __init__(
         self, kind: str, duration: float | None = None, angle: float = 0.0,
+        epoch: int = 0,
     ) -> None:
         """
         Args:
             kind: 指令类型，取本模块的常量。
             duration: 短按时长（秒），其它类型忽略。
             angle: 转向角度（度），仅转向使用。
+            epoch: 入队时的动作版本号；暂停后版本号前进，排队中的旧指令不再执行。
         """
         self.kind: str = kind
         self.duration: float | None = duration
         self.angle: float = angle
+        self.epoch: int = epoch
 
 
 class _InstantChannel:
@@ -176,6 +179,11 @@ class _InstantChannel:
                 return
             self._queue.append(command)
         self._wake.set()
+
+    def clear(self) -> None:
+        """丢掉还没执行的指令；已出队的那条由执行前的版本号检查拦下。"""
+        with self._lock:
+            self._queue.clear()
 
     def stop(self) -> None:
         """停止线程，丢掉未执行的指令。"""
@@ -512,6 +520,8 @@ class BagelInputWorker:
         """从实际按下开始计算的短按截止时刻，使用单调时钟。"""
         self._forward_released_at: float = 0.0
         """最近一次实际松键的系统时间，用于判断截图是否晚于动作。"""
+        self._forward_pressed_at: float | None = None
+        """本次实际按下 W 的时刻（单调时钟）；松键后为 None。"""
         self._forward_lock: threading.Lock = threading.Lock()
         self._backward_want: bool = False
         """主线意图：是否该一直按住后退（S）。电梯进出要用。"""
@@ -519,6 +529,8 @@ class BagelInputWorker:
         """实际状态：S 键现在是否真的按着。"""
         self._backward_lock: threading.Lock = threading.Lock()
         self._stopping: bool = False
+        self._action_epoch: int = 0
+        """即时动作的版本号：暂停时加一，入队早于暂停的指令随之作废。"""
 
         self._turn_worker: _TurnWorker = _TurnWorker(self._run_turn, self._sample_angle)
         self._instant_channel: _InstantChannel = _InstantChannel(
@@ -588,6 +600,13 @@ class BagelInputWorker:
                 return None
             return self._forward_released_at
 
+    def forward_held_seconds(self) -> float | None:
+        """W 已实际按住的秒数；当前没按住时返回 None。"""
+        with self._forward_lock:
+            if not self._forward_down or self._forward_pressed_at is None:
+                return None
+            return time.monotonic() - self._forward_pressed_at
+
     def hold_backward(self) -> None:
         """希望一直按住后退（S）；线程会把它对齐到真实按键状态。"""
         with self._backward_lock:
@@ -625,13 +644,18 @@ class BagelInputWorker:
         """本局补偿比例原始样本，供局末峰值平均写回现有灵敏度字段。"""
         return list(self._turn_worker._scale_samples)
 
+    def _enqueue(self, command: _Command) -> None:
+        """入队时记下当前版本号，暂停后这条指令就不再执行。"""
+        command.epoch = self._action_epoch
+        self._instant_channel.put(command)
+
     def tap_interact(self, duration: float = 0.2) -> None:
         """点按交互键。
 
         Args:
             duration: 按住时长（秒）。
         """
-        self._instant_channel.put(_Command(TAP_INTERACT, duration=duration))
+        self._enqueue(_Command(TAP_INTERACT, duration=duration))
 
     def tap_center(self, duration: float = 0.08) -> None:
         """点一下屏幕中间，推进对话。
@@ -641,19 +665,19 @@ class BagelInputWorker:
         Args:
             duration: 按住时长（秒）。
         """
-        self._instant_channel.put(_Command(TAP_CENTER, duration=duration))
+        self._enqueue(_Command(TAP_CENTER, duration=duration))
 
     def hold_interact(self) -> None:
         """按住交互键不松，用于机械保险箱长按。"""
-        self._instant_channel.put(_Command(HOLD_INTERACT))
+        self._enqueue(_Command(HOLD_INTERACT))
 
     def release_interact(self) -> None:
         """松开交互键。"""
-        self._instant_channel.put(_Command(RELEASE_INTERACT))
+        self._enqueue(_Command(RELEASE_INTERACT))
 
     def dodge(self) -> None:
         """点一下闪避，用于维持冲刺。"""
-        self._instant_channel.put(_Command(DODGE))
+        self._enqueue(_Command(DODGE))
 
     def side_step(self, direction: int, duration: float = 0.2) -> None:
         """点一下侧移，用来从卡住的位置挪回路径线。
@@ -662,24 +686,43 @@ class BagelInputWorker:
             direction: -1 向左（A），1 向右（D）。
             duration: 按住时长（秒）。
         """
-        self._instant_channel.put(
+        self._enqueue(
             _Command(SIDE_STEP, duration=duration, angle=1.0 if direction > 0 else -1.0),
         )
 
+    def release_all(self) -> None:
+        """暂停时调用：作废排队中的即时动作，并立刻松开全部按键。"""
+        self._action_epoch += 1
+        self._instant_channel.clear()
+        self.stop_forward()
+        self.stop_backward()
+        self._release_all_keys()
+
+    def _release_all_keys(self) -> None:
+        """逐个松开本模块会按的 W/S/A/D/F；一个键失败不影响其余键。"""
+        controller = self.ctx.controller
+        for release in (
+            controller.move_w, controller.move_s, controller.move_a,
+            controller.move_d, controller.interact,
+        ):
+            try:
+                release(release=True)
+            except Exception:
+                log.error('贝果输入线程松开按键失败', exc_info=True)
+
+    def _action_valid(self, epoch: int) -> bool:
+        """这条即时动作是否仍有效：停止后全部无效，暂停过的旧版本号无效。"""
+        return not self._stopping and epoch == self._action_epoch
+
     def shutdown(self) -> None:
-        """停止全部通道并松开前进；退出路径必须调用。"""
+        """停止全部通道并松开全部按键；退出路径必须调用。"""
         self._stopping = True
         self.stop_forward()
         self._forward_thread.join(timeout=1.0)
         self._backward_thread.join(timeout=1.0)
         self._turn_worker.stop()
         self._instant_channel.stop()
-        try:
-            self.ctx.controller.move_w(release=True)
-            self.ctx.controller.move_s(release=True)
-            self.ctx.controller.interact(release=True)
-        except Exception:
-            log.error('贝果输入线程退出时松开按键失败', exc_info=True)
+        self._release_all_keys()
 
     # ---------- 前进通道 ----------
 
@@ -706,13 +749,16 @@ class BagelInputWorker:
                     if starting_step and self._forward_down:
                         self.ctx.controller.move_w(release=True)
                         self._forward_down = False
+                        self._forward_pressed_at = None
                         self._forward_released_at = time.time()
                     want = self._forward_want
                     if want != self._forward_down:
                         if want:
                             self.ctx.controller.move_w(press=True)
+                            self._forward_pressed_at = time.monotonic()
                         else:
                             self.ctx.controller.move_w(release=True)
+                            self._forward_pressed_at = None
                             self._forward_released_at = time.time()
                         self._forward_down = want
                     if (
@@ -806,6 +852,7 @@ class BagelInputWorker:
             try:
                 self.ctx.controller.move_w(press=True)
                 self._forward_down = True
+                self._forward_pressed_at = time.monotonic()
                 if self._forward_step_duration is not None:
                     self._forward_step_until = time.monotonic() + self._forward_step_duration
             except Exception:
@@ -817,6 +864,10 @@ class BagelInputWorker:
         Args:
             command: 要执行的指令。
         """
+        if command.kind != RELEASE_INTERACT and not self._action_valid(command.epoch):
+            # 入队早于暂停或停止：按键已在 release_all / shutdown 里松开，不再补按。
+            # 松开 F 不拦：多松一次无害。
+            return
         controller = self.ctx.controller
         if command.kind == TAP_INTERACT:
             controller.interact(press=True)

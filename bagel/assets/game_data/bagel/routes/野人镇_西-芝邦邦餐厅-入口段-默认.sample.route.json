@@ -1,0 +1,62 @@
+{
+ "version": 2,
+ "route_id": "野人镇_西-芝邦邦餐厅-入口段-默认",
+ "name": "野人镇_西-芝邦邦餐厅-入口段-默认",
+ "spawn_id": "bunless_bae_town_west",
+ "started_at": "2026-11-08T05:41:24-08:00",
+ "ended_at": "2026-11-12T12:19:35-08:00",
+ "keycard": {
+  "room": "bunless_zhibangbang",
+  "segment": "entry"
+ },
+ "points": [
+  {
+   "x": 610,
+   "y": 421,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 628,
+   "y": 376,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 683,
+   "y": 390,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 732,
+   "y": 293,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 875,
+   "y": 234,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 937,
+   "y": 233,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 937,
+   "y": 133,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 950,
+   "y": 133,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  }
+ ]
+}

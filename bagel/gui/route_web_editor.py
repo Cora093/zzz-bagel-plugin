@@ -22,7 +22,15 @@ import PySide6.QtWebEngineWidgets as QtWebEngineWidgets
 from one_dragon.utils.log_utils import log
 from PySide6 import QtCore
 from PySide6.QtCore import QObject, QRect, Qt, QTimer, QUrl, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import (
     BodyLabel,
     PrimaryPushButton,
@@ -34,6 +42,9 @@ from ..defs import PLUGIN_DIR
 from ..route.route_model import (
     KIND_COLORS,
     POINT_KINDS,
+    SEGMENT_ROOM,
+    BagelKeycardRoom,
+    BagelKeycardTag,
     BagelRoute,
     BagelRoutePoint,
     BagelRouteRef,
@@ -159,6 +170,8 @@ class BagelRouteEditor(QDialog):
         self.thread: Any = None
         self.test_thread: Any = None
         self.locate_thread: Any = None
+        self.track_thread: Any = None
+        """地图工具栏「定位」开关打开时的持续定位线程。"""
         self._locate_index: int = -1
         """正在定位替换的点序号；-1 表示没有进行中的定位。"""
         self.run_overlay: BagelRunOverlay | None = None
@@ -240,6 +253,9 @@ class BagelRouteEditor(QDialog):
         bar_layout.addWidget(self.stop_button)
         bar_layout.addSpacing(12)
         self.status_label: BodyLabel = BodyLabel('就绪', bar)
+        # 状态文字长短不定：允许被截断，不按全文宽度撑大窗口。
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.status_label.setMinimumWidth(0)
         bar_layout.addWidget(self.status_label, 1)
         bar_layout.addWidget(self._build_key_hint(bar))
         layout.addWidget(bar)
@@ -302,15 +318,22 @@ class BagelRouteEditor(QDialog):
         配置损坏时仍推送出生点和路线供查看，开启状态全部显示为关闭，写入命令会报告错误。
         """
         problems: dict[str, str] = {}
+        room_problems: dict[str, str] = {}
+        rooms: list[BagelKeycardRoom] = []
         try:
             catalog = self.store.load_catalog()
             spawns = catalog.spawns
+            rooms = catalog.rooms
             routes = catalog.routes
             active = {route.ref for route in routes if catalog.is_active(route)}
             for spawn in spawns:
                 problem = catalog.selection_problem(spawn.spawn_id)
                 if problem is not None:
                     problems[spawn.spawn_id] = problem
+            for room in rooms:
+                problem = catalog.keycard_problem(room.room_id)
+                if problem is not None:
+                    room_problems[room.room_id] = problem
             if catalog.errors:
                 self.status_label.setText('；'.join(catalog.errors))
         except BagelRouteConfigError as error:
@@ -320,11 +343,18 @@ class BagelRouteEditor(QDialog):
                 spawns = self.store.load_spawns()
             except BagelRouteConfigError:
                 spawns = []
+            try:
+                rooms = self.store.load_rooms()
+            except BagelRouteConfigError:
+                rooms = []
             routes = self.store.load_routes()[0]
             active = set()
         payload = {
             'spawns': [
                 dict(spawn.to_json(), problem=problems.get(spawn.spawn_id, '')) for spawn in spawns
+            ],
+            'rooms': [
+                dict(room.to_json(), problem=room_problems.get(room.room_id, '')) for room in rooms
             ],
             'routes': [route.to_json(route.ref in active) for route in routes],
         }
@@ -366,13 +396,26 @@ class BagelRouteEditor(QDialog):
             self._close_confirmed = True
             self.close()
             return
+        if cmd == 'copy_text':
+            text = str(args.get('text') or '')
+            QApplication.clipboard().setText(text)
+            self._reply(request_id, True, f'已复制 {text}')
+            return
+        if cmd == 'track_stop':
+            self._stop_track()
+            self._reply(request_id, True, '正在停止定位')
+            return
         busy = self._busy_reason()
         if busy is not None:
             self._reply(request_id, False, busy)
             return
+        if self.track_thread is not None and cmd in ('record', 'test', 'locate', 'track_start'):
+            self._reply(request_id, False, '正在持续定位，请先停止定位')
+            return
         handlers = {
             'save': self._cmd_save,
             'activate': self._cmd_activate,
+            'activate_keycard': self._cmd_activate_keycard,
             'create': self._cmd_create,
             'copy': self._cmd_copy,
             'rename': self._cmd_rename,
@@ -380,6 +423,7 @@ class BagelRouteEditor(QDialog):
             'record': self._cmd_record,
             'test': self._cmd_test,
             'locate': self._cmd_locate,
+            'track_start': self._cmd_track_start,
         }
         handler = handlers.get(cmd)
         if handler is None:
@@ -420,10 +464,30 @@ class BagelRouteEditor(QDialog):
         log.info('贝果出生点 %s 开启路线 %s', name, ref)
         return f'{name}已开启「{route.name if route else ref.route_id}」', None
 
+    def _cmd_activate_keycard(self, args: dict[str, Any]) -> tuple[str, Any]:
+        """设置房间的开房卡开启选择：spawn_id 为 null 表示房间段，否则为该出生点的入口段。"""
+        room_id = str(args['room_id'])
+        spawn_id = None if args.get('spawn_id') is None else str(args['spawn_id'])
+        ref = None if args.get('ref') is None else BagelRouteRef.from_json(args['ref'])
+        self.store.set_keycard_route(room_id, spawn_id, ref)
+        catalog = self.store.load_catalog()
+        room = catalog.room(room_id)
+        room_name = room.name if room is not None else room_id
+        spawn = catalog.spawn(spawn_id) if spawn_id is not None else None
+        where = f'{room_name}的房间段' if spawn_id is None else (
+            f'{spawn.name if spawn else spawn_id}去{room_name}的入口段'
+        )
+        log.info('贝果开房卡 %s 设为 %s', where, ref)
+        if ref is None:
+            return f'已关闭{where}', None
+        route = catalog.route(ref)
+        return f'{where}已开启「{route.name if route else ref.route_id}」', None
+
     def _cmd_create(self, args: dict[str, Any]) -> tuple[str, Any]:
-        """新增一条自定义路线，首点取出生点坐标。"""
+        """新增一条自定义路线，首点取出生点坐标；房间段取房间入口坐标。"""
         route = self.store.create_custom_route(
-            str(args['name']), str(args['spawn_id']), activate=bool(args.get('activate')),
+            str(args['name']), str(args.get('spawn_id') or ''), activate=bool(args.get('activate')),
+            keycard=_keycard_arg(args),
         )
         log.info('贝果新增自定义路线「%s」（%s）', route.name, route.ref)
         return f'已新增「{route.name}」', route.ref.to_json()
@@ -449,24 +513,35 @@ class BagelRouteEditor(QDialog):
         return '已删除路线', None
 
     def _cmd_record(self, args: dict[str, Any]) -> tuple[str, Any]:
-        """开始录制一条绑定出生点的自定义路线。"""
+        """开始录制一条自定义路线；房间段的首点对齐房间入口，其余对齐出生点。"""
         name = str(args['name']).strip()
         catalog = self.store.load_catalog()
-        spawn = catalog.spawn(str(args['spawn_id']))
-        if spawn is None:
-            raise ValueError('请选择出生点')
+        keycard = _keycard_arg(args)
+        spawn: BagelSpawnPoint | None
+        if keycard is not None and keycard.segment == SEGMENT_ROOM:
+            room = catalog.room(keycard.room_id)
+            if room is None:
+                raise ValueError('请选择房间')
+            spawn = room.as_spawn()
+        else:
+            spawn = catalog.spawn(str(args.get('spawn_id') or ''))
+            if spawn is None:
+                raise ValueError('请选择出生点')
+            if keycard is not None and catalog.room(keycard.room_id) is None:
+                raise ValueError('请选择房间')
         if not name:
             raise ValueError('路线名称不能为空')
         if any(route.name == name for route in catalog.routes):
             raise ValueError(f'已经有同名路线：{name}')
-        self._start_recording(name, spawn, bool(args.get('activate')))
+        self._start_recording(name, spawn, bool(args.get('activate')), keycard)
         return f'正在准备录制「{name}」', None
 
     def _cmd_test(self, args: dict[str, Any]) -> tuple[str, Any]:
         """试跑一条路线；关闭的路线也可以试跑。"""
         ref = BagelRouteRef.from_json(args['ref'])
-        route = self.store.load_route(ref)
-        self._start_test(route)
+        # 先按试跑方式读一遍：入口段要接得上房间段，问题在这里直接报给网页。
+        route = self.store.trial_route(ref)
+        self._start_test(self.store.load_route(ref))
         return f'正在切到游戏，准备试跑「{route.name}」', None
 
     def _cmd_locate(self, args: dict[str, Any]) -> tuple[str, Any]:
@@ -474,6 +549,55 @@ class BagelRouteEditor(QDialog):
         index = int(args['index'])
         self._start_locate(index)
         return f'正在切到游戏定位第 {index + 1} 点…', None
+
+    def _cmd_track_start(self, args: dict[str, Any]) -> tuple[str, Any]:
+        """打开地图工具栏的「定位」开关：切到游戏持续定位，坐标推给网页显示。"""
+        self._start_track()
+        return '正在切到游戏定位…', None
+
+    # ---------- 持续定位 ----------
+
+    def _start_track(self) -> None:
+        """启动持续定位线程。"""
+        from .locate_thread import BagelTrackThread
+
+        thread = BagelTrackThread(self.ctx, self)
+        self.track_thread = thread
+        thread.status_changed.connect(self.status_label.setText)
+        thread.position_changed.connect(self._on_track_position)
+        thread.done.connect(self._on_track_done)
+        thread.finished.connect(self._clear_track_thread)
+        thread.start()
+
+    def _stop_track(self) -> None:
+        """请求停止持续定位；线程退出后由 ``_on_track_done`` 通知网页。"""
+        if self.track_thread is not None:
+            self.track_thread.stop()
+
+    def _on_track_position(self, layer_name: str, global_xy: object) -> None:
+        """把一次定位结果推给网页。
+
+        Args:
+            layer_name: 命中的分层名。
+            global_xy: 全局坐标。
+        """
+        if isinstance(global_xy, tuple):
+            self._call_js('updateLocated', layer_name, [round(global_xy[0]), round(global_xy[1])])
+
+    def _on_track_done(self, ok: bool, message: str) -> None:
+        """持续定位结束：通知网页把开关复原。
+
+        Args:
+            ok: 是否正常结束（手动停止算正常）。
+            message: 结论文案。
+        """
+        self.status_label.setText(message)
+        self._call_js('trackStopped', ok, message)
+
+    def _clear_track_thread(self) -> None:
+        """持续定位线程结束后放开引用。"""
+        self.track_thread = None
+        self._close_if_pending()
 
     # ---------- 定位 ----------
 
@@ -600,19 +724,24 @@ class BagelRouteEditor(QDialog):
 
     # ---------- 录制 ----------
 
-    def _start_recording(self, name: str, spawn: BagelSpawnPoint, activate: bool) -> None:
-        """开始录制；停止后保存为绑定出生点的自定义路线。
+    def _start_recording(
+        self, name: str, spawn: BagelSpawnPoint, activate: bool,
+        keycard: BagelKeycardTag | None = None,
+    ) -> None:
+        """开始录制；停止后保存为自定义路线。
 
         Args:
             name: 路线显示名称。
-            spawn: 绑定的出生点。
+            spawn: 首点要对齐的位置：出生点，或房间段的房间入口。
             activate: 保存后是否开启。
+            keycard: 开房卡段标记；None 表示跑刀路线。
         """
         recorder = BagelPointRecorder(
             self.ctx,
             name,
             spawn,
             activate=activate,
+            keycard=keycard,
             on_point=self._on_point,
             on_undo=self._on_undo,
             on_status=self._on_status,
@@ -801,7 +930,7 @@ class BagelRouteEditor(QDialog):
             仍有线程在运行时返回 True，调用方应推迟关闭。
         """
         running = [
-            thread for thread in (self.thread, self.test_thread, self.locate_thread)
+            thread for thread in (self.thread, self.test_thread, self.locate_thread, self.track_thread)
             if thread is not None and thread.isRunning()
         ]
         if not running:
@@ -813,6 +942,7 @@ class BagelRouteEditor(QDialog):
                 self.recorder.request_stop()
             if self.test_thread is not None:
                 self.test_thread.stop()
+            self._stop_track()
         return True
 
     def _close_if_pending(self) -> None:
@@ -880,3 +1010,9 @@ def _game_window_rect(ctx: ZContext) -> QRect | None:
     if rect is None:
         return None
     return QRect(rect.x1, rect.y1, rect.width, rect.height)
+
+
+def _keycard_arg(args: dict[str, Any]) -> BagelKeycardTag | None:
+    """从网页命令参数取开房卡段标记；没有或为 null 表示跑刀路线。"""
+    raw = args.get('keycard')
+    return None if raw is None else BagelKeycardTag.from_json(raw)

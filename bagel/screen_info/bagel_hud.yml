@@ -73,6 +73,23 @@ area_list:
   - 195
   text: 柜
   lcs_percent: 0.7
+# 纸箱、行李箱、提包、单斗柜的搜索面板标题都是「搜索物资」，医疗站用自己的名字。
+- area_name: 搜查容器标题_搜索物资
+  pc_rect:
+  - 1290
+  - 140
+  - 1745
+  - 195
+  text: 搜索物资
+  lcs_percent: 0.6
+- area_name: 搜查容器标题_医疗站
+  pc_rect:
+  - 1290
+  - 140
+  - 1745
+  - 195
+  text: 医疗站
+  lcs_percent: 0.6
 - area_name: 搜查完成
   pc_rect:
   - 1650
@@ -213,4 +230,17 @@ area_list:
   - 430
   - 1640
   - 760
-
+- area_name: 背包页签
+  pc_rect:
+  - 200
+  - 28
+  - 380
+  - 75
+  text: 背包
+  lcs_percent: 0.7
+- area_name: 背包标题
+  pc_rect:
+  - 200
+  - 90
+  - 720
+  - 800

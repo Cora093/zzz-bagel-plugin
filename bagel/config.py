@@ -13,6 +13,21 @@ from .defs import (
     CLEAN_QUALITIES,
     CLEAN_TYPES,
     DEFAULT_CLEAN_FILTER_GROUPS,
+    DEFAULT_DIFFICULTY,
+    DEFAULT_MODE,
+    DIFFICULTIES,
+    DIFFICULTY_HARD,
+    DIFFICULTY_HAZARD,
+    DIFFICULTY_NORMAL,
+    KEYCARD_DIFFICULTY,
+    KEYCARD_KEEP_TYPES,
+    MAP_JANUS,
+    MAP_OUTSKIRTS,
+    MAPS,
+    MODE_KEYCARD,
+    MODE_MAPS,
+    MODE_RUN,
+    MODES,
 )
 
 
@@ -32,6 +47,116 @@ class BagelConfig(ApplicationConfig):
         super().__init__(APP_ID, instance_idx, group_id)
 
     @property
+    def mode(self) -> str:
+        """运行模式：run 跑刀，keycard 开房卡；默认跑刀，旧配置缺项也按跑刀。"""
+        value = self.get('mode', DEFAULT_MODE)
+        if value not in MODES:
+            return DEFAULT_MODE
+        return value
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        """保存运行模式。"""
+        if value not in MODES:
+            raise ValueError(f'mode 只能是 {"、".join(MODES)}')
+        self.update('mode', value)
+
+    @property
+    def is_keycard(self) -> bool:
+        """当前是否为开房卡模式。"""
+        return self.mode == MODE_KEYCARD
+
+    @property
+    def map_name(self) -> str:
+        """进入的地图。缺项或不认识时按模式取默认地图，旧配置的跑刀仍是雅努斯幻境。
+
+        存下的组合可能不被当前模式支持（手改配置），由 ``validate`` 拒绝启动。
+        """
+        value = self.get('map', None)
+        if value not in MAPS:
+            return MODE_MAPS[self.mode][0]
+        return value
+
+    @map_name.setter
+    def map_name(self, value: str) -> None:
+        """保存地图。"""
+        if value not in MAPS:
+            raise ValueError(f'map 只能是 {"、".join(MAPS)}')
+        self.update('map', value)
+
+    def stored_mode_map_problem(self) -> str | None:
+        """检查存下的 ``mode`` 与 ``map`` 原值；缺项按默认，不算问题。
+
+        读取属性时不认识的值会按默认处理，界面据此显示；启动校验看原值，免得拼错的配置静默按默认运行。
+
+        Returns:
+            有不认识的值时返回原因，否则返回 None。
+        """
+        mode = self.get('mode', DEFAULT_MODE)
+        if mode not in MODES:
+            return f'mode「{mode}」无法识别，只能是 {"、".join(MODES)}'
+        map_name = self.get('map', None)
+        if map_name is not None and map_name not in MAPS:
+            return f'map「{map_name}」无法识别，只能是 {"、".join(MAPS)}'
+        return None
+
+    @property
+    def map_supported(self) -> bool:
+        """当前模式是否支持所选地图。"""
+        return self.map_name in MODE_MAPS[self.mode]
+
+    @property
+    def keycard_room(self) -> str:
+        """开房卡模式的目标房间标识，对应 ``keycard_rooms.yml`` 的 ``id``；未选为空串。"""
+        value = self.get('keycard_room', '')
+        return value if type(value) is str else ''
+
+    @property
+    def keycard_template(self) -> str:
+        """目标房间门禁卡的图标模板 id。"""
+        return f'keycard_{self.keycard_room}'
+
+    @keycard_room.setter
+    def keycard_room(self, value: str) -> None:
+        """保存目标房间；是否已登记由启动检查对照房间清单确认。"""
+        if type(value) is not str:
+            raise ValueError('keycard_room 必须是文本')
+        self.update('keycard_room', value)
+
+    @property
+    def keycard_reserve(self) -> int:
+        """开房卡保留张数：挑卡前清点仓库，本房间的卡不多于这个数就不再挑、结束任务；0 表示用到没卡为止。"""
+        value = self.get('keycard_reserve', 0)
+        return value if type(value) is int and 0 <= value <= 999 else 0
+
+    @keycard_reserve.setter
+    def keycard_reserve(self, value: int) -> None:
+        """保存保留张数。"""
+        if type(value) is not int or not 0 <= value <= 999:
+            raise ValueError('keycard_reserve 必须是 0 至 999 的整数')
+        self.update('keycard_reserve', value)
+
+    @property
+    def run_difficulty(self) -> str:
+        """本次实际进入的难度：开房卡固定高危，跑刀按 ``difficulty``。"""
+        return KEYCARD_DIFFICULTY if self.is_keycard else self.difficulty
+
+    @property
+    def difficulty(self) -> str:
+        """跑刀的挑战难度：高危、困难、常规；默认高危。开房卡模式不读这一项。"""
+        value = self.get('difficulty', DEFAULT_DIFFICULTY)
+        if value not in DIFFICULTIES:
+            return DEFAULT_DIFFICULTY
+        return value
+
+    @difficulty.setter
+    def difficulty(self, value: str) -> None:
+        """保存挑战难度。"""
+        if value not in DIFFICULTIES:
+            raise ValueError(f'difficulty 只能是 {"、".join(DIFFICULTIES)}')
+        self.update('difficulty', value)
+
+    @property
     def max_success_rounds(self) -> int:
         """成功入仓多少局后结束；0 不限制成功次数。"""
         return self.get('max_success_rounds', 1)
@@ -44,16 +169,16 @@ class BagelConfig(ApplicationConfig):
         self.update('max_success_rounds', value)
 
     @property
-    def max_failure_retries(self) -> int:
-        """本次任务因失败最多额外入场多少次；成功不清零。"""
-        return self.get('max_failure_retries', 5)
+    def max_consecutive_failures(self) -> int:
+        """全局或同一路线连续失败达到多少局时停止；成功入仓后清零。"""
+        return self.get('max_consecutive_failures', 5)
 
-    @max_failure_retries.setter
-    def max_failure_retries(self, value: int) -> None:
-        """保存累计失败重试上限，0 表示失败后只结算。"""
-        if type(value) is not int or not 0 <= value <= 100:
-            raise ValueError('max_failure_retries 必须是 0 至 100 的整数')
-        self.update('max_failure_retries', value)
+    @max_consecutive_failures.setter
+    def max_consecutive_failures(self, value: int) -> None:
+        """保存连续失败上限，1 表示首次失败结算后停止。"""
+        if type(value) is not int or not 1 <= value <= 10:
+            raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
+        self.update('max_consecutive_failures', value)
 
     @property
     def blueprint_priority(self) -> bool:
@@ -150,13 +275,33 @@ class BagelConfig(ApplicationConfig):
         self.clean_steps = steps
 
     def clean_filter_groups(self) -> tuple[tuple[str, ...], ...]:
-        """每步快速选择要点中的区域名，默认与自定义都保留步骤边界。"""
+        """每步快速选择要点中的区域名，默认与自定义都保留步骤边界。
+
+        开房卡模式去掉 ``KEYCARD_KEEP_TYPES`` 里的类型；去掉后一步不剩任何类型时整步跳过，
+        不能只留品质，否则会卖掉该品质的全部类型。
+        """
         if self.clean_mode != CLEAN_MODE_CUSTOM:
             return DEFAULT_CLEAN_FILTER_GROUPS
+        steps = self.clean_steps
+        if self.is_keycard:
+            steps = [
+                BagelCleanStep(tuple(name for name in step.types if name not in KEYCARD_KEEP_TYPES), step.qualities)
+                for step in steps
+                if not step.types or any(name not in KEYCARD_KEEP_TYPES for name in step.types)
+            ]
         return tuple(
             tuple(f'筛选-{name}' for name in (*step.types, *step.qualities))
-            for step in self.clean_steps
+            for step in steps
         )
+
+    def keycard_skipped_steps(self) -> list[int]:
+        """开房卡模式下因只含门禁卡而整步跳过的自定义步骤序号（从 1 起）。"""
+        if not self.is_keycard or self.clean_mode != CLEAN_MODE_CUSTOM:
+            return []
+        return [
+            index for index, step in enumerate(self.clean_steps, start=1)
+            if step.types and all(name in KEYCARD_KEEP_TYPES for name in step.types)
+        ]
 
     def _parse_step(self, value: object) -> BagelCleanStep:
         """读取一步；名单外或重复的名字留给启动校验拒绝。"""
@@ -193,16 +338,29 @@ class BagelConfig(ApplicationConfig):
             raise ValueError(f'{label}不能重复')
 
     def validate(self) -> None:
-        """启动前校验配置。"""
+        """启动前校验配置。房间是否已登记、是否开启了路线由启动检查对照路线配置确认。"""
+        problem = self.stored_mode_map_problem()
+        if problem is not None:
+            raise ValueError(f'{problem}；打开设置页会改回默认值，确认后再运行')
+        if not self.map_supported:
+            mode_name = BagelMode.KEYCARD.value.ui_text if self.is_keycard else BagelMode.RUN.value.ui_text
+            raise ValueError(f'{mode_name}暂不支持{self.map_name}，请在设置页重新选择地图')
+        if self.is_keycard and not self.keycard_room:
+            raise ValueError('开房卡模式还没有选择房间')
+        reserve = self.get('keycard_reserve', 0)
+        if type(reserve) is not int or not 0 <= reserve <= 999:
+            raise ValueError('keycard_reserve 必须是 0 至 999 的整数')
+        if self.difficulty not in DIFFICULTIES:
+            raise ValueError(f'difficulty 只能是 {"、".join(DIFFICULTIES)}')
         interval = self.sell_interval
         if type(interval) is not int or not 1 <= interval <= 999:
             raise ValueError('sell_interval 必须是 1 至 999 的整数')
         value = self.max_success_rounds
         if type(value) is not int or not 0 <= value <= 1000:
             raise ValueError('max_success_rounds 必须是 0 至 1000 的整数')
-        retries = self.max_failure_retries
-        if type(retries) is not int or not 0 <= retries <= 100:
-            raise ValueError('max_failure_retries 必须是 0 至 100 的整数')
+        failures = self.max_consecutive_failures
+        if type(failures) is not int or not 1 <= failures <= 10:
+            raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
         if type(self.blueprint_priority) is not bool:
             raise ValueError('blueprint_priority 必须是布尔值')
         if type(self.auto_clean_warehouse) is not bool:
@@ -223,6 +381,28 @@ class BagelConfig(ApplicationConfig):
             and (not steps or any(not step.types or not step.qualities for step in steps))
         ):
             raise ValueError('自定义清理每一步都要同时选择类型和品质')
+
+
+class BagelMode(Enum):
+    """运行模式。"""
+
+    RUN = ConfigItem('跑刀', MODE_RUN, '零携带、零投资入场')
+    KEYCARD = ConfigItem('开房卡', MODE_KEYCARD, '安全箱带 1 张门禁卡')
+
+
+class BagelMap(Enum):
+    """地图。"""
+
+    JANUS = ConfigItem('雅努斯幻境', MAP_JANUS)
+    OUTSKIRTS = ConfigItem('城郊幻境', MAP_OUTSKIRTS)
+
+
+class BagelDifficulty(Enum):
+    """挑战难度。"""
+
+    HAZARD = ConfigItem('高危', DIFFICULTY_HAZARD)
+    HARD = ConfigItem('困难', DIFFICULTY_HARD)
+    NORMAL = ConfigItem('常规', DIFFICULTY_NORMAL)
 
 
 class BagelCleanMode(Enum):

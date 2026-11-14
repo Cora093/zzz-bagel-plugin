@@ -17,11 +17,18 @@ from ..stats import (
 )
 from ..vision.item_vision import (
     ACTION_FILL,
+    ACTION_STACK,
     ACTION_SWAP,
     ITEM_TYPE_CURRENCY,
+    ITEM_TYPE_MATERIAL,
     ITEM_TYPE_OTHER,
+    STACK_MATCH_MIN,
+    STACK_WINDOW_HALF,
     BagelSlotMark,
     choose_store_action,
+    icon_match_score,
+    icon_patch,
+    icons_same,
     identify_quality,
     identify_type,
     inspect_occupied,
@@ -49,14 +56,20 @@ if TYPE_CHECKING:
 _DEST_LABEL: dict[str, str] = {
     ACTION_FILL: '安全箱',
     ACTION_SWAP: '安全箱对换',
+    ACTION_STACK: '安全箱叠放',
 }
 # 源格物品搬不动时返回的状态。节点边声明和返回值共用同一个常量：两处写错的字符串
 # 不会报错，只会让框架找不到下一个节点、把「跳过这一格」静默当成整步结束。
 _STATUS_SKIP_SLOT: str = '跳过不入箱的格子'
+# 叠放没成、已经恢复原位置，回挑选节点重新挑；不能留在核对节点，那里没有待核对数据。
+_STATUS_RESELECT: str = '重新挑选'
 # 安全箱格子下方数量文字的纵向范围与半宽，按局内 1080p 画面。
 _SAFE_QUANTITY_TOP: int = 922
 _SAFE_QUANTITY_BOTTOM: int = 952
 _SAFE_QUANTITY_HALF_WIDTH: int = 45
+# 叠放核对只比格心附近 22 像素见方：再大就会带到底部数量文字，叠放后数量变化
+# 会被误判成图标变了，进而被当成对换。
+_STACK_VERIFY_HALF: int = 22
 
 
 class BagelStoreSafe(BagelOperation):
@@ -83,6 +96,11 @@ class BagelStoreSafe(BagelOperation):
     # 面板刚打开、以及拖拽后物品落地都有动画，留足时间；每次发出拖拽前会清零，
     # 所以这是「一件物品一次」的预算，不会跨件累计。
     PANEL_WAIT_ROUNDS_LIMIT: int = 10
+    # 判「搜查被打断」要连续这么多帧都成立：单帧同时满足「面板没就绪 + 无标题 +
+    # 无大保险提示 + 能看到普通攻击键」时，物品落地动画或 HUD 遮挡也会让四个条件
+    # 短暂同时成立，实测因此误判过两局（面板明明开着、格子里已经识别出物品）。
+    # 真的被打断会一直成立，多等一帧不会漏判。
+    INTERRUPT_ROUNDS_LIMIT: int = 2
     # 无确认进展与总用时分别限制；进展不能刷新总用时。
     NO_PROGRESS_SECONDS: float = 10.0
     TOTAL_TIMEOUT_SECONDS: float = 30.0
@@ -111,6 +129,8 @@ class BagelStoreSafe(BagelOperation):
         self._pending_destination: Point | None = None
         self._pending_kind: str | None = None
         self._swap_seen: set[int] = set()
+        self._stack_blocked: set[tuple[int, int]] = set()
+        """试过叠放却变成对换的（结果格, 安全箱格）；同一容器里不再重试这一对。"""
         self._unstorable: set[int] = set()
         self._consecutive_failures: int = 0
         self._drag_repeated: int = 0
@@ -125,6 +145,7 @@ class BagelStoreSafe(BagelOperation):
         self._logged_items: dict[str, tuple[tuple[int, str, str], ...]] = {}
         self._panel_guard: SearchPanelGuard = SearchPanelGuard()
         self._panel_wait_rounds: int = 0
+        self._interrupt_rounds: int = 0
         self._safe_unknown_rounds: int = 0
         self._paused_usage_time: float | None = None
         self._first_pause_start_time: float | None = None
@@ -165,6 +186,7 @@ class BagelStoreSafe(BagelOperation):
         self._pending_destination = None
         self._pending_kind = None
         self._swap_seen = set()
+        self._stack_blocked = set()
         self._unstorable = set()
         self._consecutive_failures = 0
         self._drag_repeated = 0
@@ -179,6 +201,7 @@ class BagelStoreSafe(BagelOperation):
         self._logged_items.clear()
         self._panel_guard.reset()
         self._panel_wait_rounds = 0
+        self._interrupt_rounds = 0
         self._safe_unknown_rounds = 0
 
     def _check_search_panel(self) -> OperationRoundResult | None:
@@ -197,21 +220,32 @@ class BagelStoreSafe(BagelOperation):
             return deadline
         if not self._search_ready():
             self._panel_guard.reset()
-            if (not self._has_search_title()
-                    and not self.round_by_find_area(
-                        self.last_screenshot, '贝果-局内', '大保险解锁提示',
-                    ).is_success
-                    and self.round_by_find_area(
-                        self.last_screenshot, '战斗画面', '按键-普通攻击',
-                    ).is_success):
-                self._clear_pending()
-                return self.round_fail(self.STATUS_INTERRUPTED)
-        elif self._observe_panel():
-            centers = self._panel_guard.result_centers
-            assert centers is not None
-            self._result_centers = centers
-            self._panel_wait_rounds = 0
-            return None
+            interrupted = (
+                not self._has_search_title()
+                and not self.round_by_find_area(
+                    self.last_screenshot, '贝果-局内', '大保险解锁提示',
+                ).is_success
+                and self.round_by_find_area(
+                    self.last_screenshot, '战斗画面', '按键-普通攻击',
+                ).is_success
+            )
+            if interrupted:
+                self._interrupt_rounds += 1
+                if self._interrupt_rounds >= self.INTERRUPT_ROUNDS_LIMIT:
+                    self._clear_pending()
+                    return self.round_fail(self.STATUS_INTERRUPTED)
+            else:
+                self._interrupt_rounds = 0
+        else:
+            # 面板已就绪就不算「连续被打断」，不管这一帧稳不稳：
+            # 否则「打断 → 就绪但未稳定 → 打断」会被当成两次连续打断而中止转存。
+            self._interrupt_rounds = 0
+            if self._observe_panel():
+                centers = self._panel_guard.result_centers
+                assert centers is not None
+                self._result_centers = centers
+                self._panel_wait_rounds = 0
+                return None
         if self._result_layout_changed:
             self._clear_pending()
             return self.round_recoverable_fail('结果格位置变化，无法沿用本次搜查登记')
@@ -348,7 +382,34 @@ class BagelStoreSafe(BagelOperation):
             self._logged_progress = snapshot
         return ready
 
+    def _stack_destination(self, mark: BagelSlotMark, safes: list[BagelSlotMark]) -> int | None:
+        """在安全箱里找同一件材料；先比类型和品质，再用图标相似度确认。
+
+        只在材料里找，而且相关度必须过 STACK_MATCH_MIN：不同物品拖到一起会变成
+        对换，宁可占一个空格也不赌。试过错的一对记进 `_stack_blocked`，不再重试。
+        """
+        if mark.item_type != ITEM_TYPE_MATERIAL:
+            return None
+        screen = self.last_screenshot
+        icon = icon_patch(screen, mark.center)
+        if icon is None:
+            return None
+        best_index: int | None = None
+        best_score: float = STACK_MATCH_MIN
+        for safe_mark in safes:
+            if safe_mark.item_type != mark.item_type or safe_mark.quality != mark.quality:
+                continue
+            if (mark.index, safe_mark.index) in self._stack_blocked:
+                continue
+            window = icon_patch(screen, safe_mark.center, STACK_WINDOW_HALF)
+            score = icon_match_score(icon, window)
+            if score >= best_score:
+                best_score = score
+                best_index = safe_mark.index
+        return best_index
+
     @node_from(from_name='核对入箱变化', status=_STATUS_SKIP_SLOT)
+    @node_from(from_name='核对入箱变化', status=_STATUS_RESELECT)
     @node_from(from_name='核对入箱变化', status='继续装入')
     @operation_node(name='逐件装入安全箱', is_start_node=True)
     def store_next(self) -> OperationRoundResult:
@@ -385,6 +446,7 @@ class BagelStoreSafe(BagelOperation):
             safes,
             safe.empty,
             self.blueprint_priority,
+            stack_target=lambda mark: self._stack_destination(mark, safes),
         )
         if choice is None:
             self._safe_unknown_rounds = 0
@@ -519,7 +581,7 @@ class BagelStoreSafe(BagelOperation):
 
         返回的状态必须是 `贝果局内流程失败`：正式应用只对它有「退出本局再重开」的
         分支，其它自造状态会一路走到任务结束。原因放进 data，日志和现场截图都带上。
-        退出时游戏只保留安全箱物资，比把整个任务停在这里更划算；整体重试次数照常扣。
+        退出时游戏只保留安全箱物资，比把整个任务停在这里更划算；这一局照常计入连续失败。
         """
         return self.round_fail(self.STATUS_ROUND_FAILED, data=reason)
 
@@ -567,6 +629,8 @@ class BagelStoreSafe(BagelOperation):
             return self.round_fail('拖拽前目标格状态不符，停止并保留现场')
         if kind == ACTION_SWAP and destination_index not in safe.occupied:
             return self.round_fail('对换后安全箱目标格不再占用，停止并保留现场')
+        if kind == ACTION_STACK:
+            return self._confirm_stack(before, source, source_index, destination, destination_index)
         if destination_index in safe.occupied and self._drag_visually_ok(kind, before, source, destination):
             self._confirm_ledger_transfer()
             self._clear_pending()
@@ -636,11 +700,79 @@ class BagelStoreSafe(BagelOperation):
         self._clear_pending()
         return self._give_up('入箱画面无变化，源格和目标格都没动')
 
+    def _confirm_stack(
+        self,
+        before: MatLike,
+        source: Point,
+        source_index: int,
+        destination: Point,
+        destination_index: int,
+    ) -> OperationRoundResult:
+        """核对一次叠放：先看目标格图标变没变，再看源格。
+
+        判断顺序不能反过来。两件物品不是同一种时，游戏把拖拽当成对换：源格
+        换进安全箱原来那件，仍然占着。只看源格会把对换当成「拖拽没生效」去重拖，
+        来回对换几次，停在哪边取决于重拖次数的奇偶。
+
+        - 目标格图标变了：是对换（或别的意外）。把安全箱这一格拖回结果格，
+          对换就换回来，源格空着就搬回去；这一对记为不可叠放，回挑选节点重挑。
+        - 图标没变、源格空了：叠放成功。
+        - 图标没变、源格还在：拖拽没生效，或目标格已经叠满。按重拖预算再试，
+          用完后这一对记为不可叠放，改走空格。
+        """
+        after = self.last_screenshot
+        if not slot_occupied(after, destination):
+            self._clear_pending()
+            return self._give_up('叠放后安全箱目标格为空，无法核对')
+        before_icon = icon_patch(before, destination, _STACK_VERIFY_HALF)
+        after_icon = icon_patch(after, destination, _STACK_VERIFY_HALF)
+        same_icon = (
+            before_icon is not None and after_icon is not None
+            and icons_same(before_icon, after_icon)
+        )
+        if not same_icon:
+            self._stack_blocked.add((source_index, destination_index))
+            self._clear_pending()
+            self._drag_item(destination, source)
+            log.warning(
+                '贝果入箱：叠放后安全箱第 %s 格图标变了，不是同一种物品，已把该格拖回结果格 %s',
+                destination_index + 1, source_index + 1,
+            )
+            return self.round_success(_STATUS_RESELECT, wait=0.7)
+        if not slot_occupied(after, source):
+            self._confirm_ledger_transfer()
+            self._clear_pending()
+            self._drag_repeated = 0
+            self._left_grid_waited = False
+            self._consecutive_failures = 0
+            self.moved += 1
+            self.acted = True
+            log.info(
+                '贝果入箱：结果格 %s 已叠到安全箱第 %s 格',
+                source_index + 1, destination_index + 1,
+            )
+            return self.round_success('继续装入', wait=0.2)
+        if self._drag_repeated < self.DRAG_REPEAT_LIMIT:
+            self._drag_repeated += 1
+            self._pending_before = after.copy()
+            self._drag_item(source, destination)
+            return self.round_wait(f'叠放画面无变化，第 {self._drag_repeated} 次重拖', wait=0.7)
+        log.info(
+            '贝果入箱：结果格 %s 叠到安全箱第 %s 格 %s 次都没变化（可能已叠满），改走空格',
+            source_index + 1, destination_index + 1, self.DRAG_REPEAT_LIMIT + 1,
+        )
+        self._stack_blocked.add((source_index, destination_index))
+        self._clear_pending()
+        return self.round_success(_STATUS_RESELECT, wait=0.2)
+
     def _confirm_ledger_transfer(self) -> None:
         """入箱已确认，账本里该格换成拖入的物品。"""
         source_index = self._pending_source_index
         if source_index is not None:
-            reason = '已对换' if self._pending_kind == ACTION_SWAP else '已入箱'
+            reason = {
+                ACTION_SWAP: '已对换',
+                ACTION_STACK: '已叠放',
+            }.get(self._pending_kind or '', '已入箱')
             self._search_progress.mark_handled(
                 source_index, reason, self.operation_usage_time, transferred=True,
             )
@@ -655,28 +787,8 @@ class BagelStoreSafe(BagelOperation):
         super().after_operation_done(result)
 
     def _record_safe_items(self) -> None:
-        """记下装箱结束时安全箱各格的类型和品质，只读红色物品的数量；只用于统计日志。"""
-        if self.ledger is None:
-            return
-        try:
-            safe = inspect_safe_slots(self.last_screenshot)
-            if safe is None:
-                return
-            items: dict[int, tuple[str, str, int | None]] = {}
-            for mark in inspect_occupied(self.last_screenshot, SAFE_SLOT_CENTERS, safe.occupied):
-                if mark.quality != QUALITY_RED:
-                    items[mark.index] = (mark.item_type, mark.quality, None)
-                    continue
-                rect = Rect(
-                    mark.center.x - _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_TOP,
-                    mark.center.x + _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_BOTTOM,
-                )
-                texts = self.ctx.ocr_service.get_ocr_result_list(image=self.last_screenshot, rect=rect)
-                quantity = parse_quantity(''.join(item.data for item in texts))
-                items[mark.index] = (mark.item_type, mark.quality, quantity)
-            self.ledger.slot_items = items
-        except Exception:
-            log.error('记录安全箱物品失败，本次不计入统计', exc_info=True)
+        """装箱结束时按画面覆盖账本里的安全箱物品；只用于统计日志。"""
+        record_safe_items(self.ctx, self.last_screenshot, self.ledger)
 
     def _drag_item(self, source: Point, destination: Point) -> None:
         """先按住再移动，给游戏时间抓起物品，避免拖成结果列表滚动。"""
@@ -709,3 +821,31 @@ class BagelStoreSafe(BagelOperation):
     def _has_search_title(self) -> bool:
         """箱子或电子保险箱标题任一可见即仍在搜查面板。"""
         return self._has('搜查容器标题') or self._has('电子保险箱标题')
+
+
+def record_safe_items(ctx: ZContext, screen: MatLike, ledger: BagelSafeLedger | None) -> None:
+    """记下安全箱各格的类型和品质，只读红色物品的数量；只用于统计日志。
+
+    搜查面板和局内背包页的安全箱位置相同，两处共用。
+    """
+    if ledger is None:
+        return
+    try:
+        safe = inspect_safe_slots(screen)
+        if safe is None:
+            return
+        items: dict[int, tuple[str, str, int | None]] = {}
+        for mark in inspect_occupied(screen, SAFE_SLOT_CENTERS, safe.occupied):
+            if mark.quality != QUALITY_RED:
+                items[mark.index] = (mark.item_type, mark.quality, None)
+                continue
+            rect = Rect(
+                mark.center.x - _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_TOP,
+                mark.center.x + _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_BOTTOM,
+            )
+            texts = ctx.ocr_service.get_ocr_result_list(image=screen, rect=rect)
+            quantity = parse_quantity(''.join(item.data for item in texts))
+            items[mark.index] = (mark.item_type, mark.quality, quantity)
+        ledger.slot_items = items
+    except Exception:
+        log.error('记录安全箱物品失败，本次不计入统计', exc_info=True)

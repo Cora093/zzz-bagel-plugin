@@ -11,6 +11,7 @@ from .defs import (
     CLEAN_MODE_CUSTOM,
     CLEAN_QUALITIES,
     CLEAN_TYPES,
+    DIFFICULTY_HAZARD,
 )
 
 if TYPE_CHECKING:
@@ -41,7 +42,19 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ('选择角色', ROLE_HINT),
             (
                 '核对设置',
-                '设置只用于当前账号和应用组。切换后，请核对次数、蓝图优先、自动出售和出售范围。',
+                '设置只用于当前账号和应用组。切换后，请核对模式、地图、难度、次数、蓝图优先、自动出售和出售范围。',
+            ),
+            (
+                '挑战难度',
+                '默认高危。可选常规、困难、高危。'
+                '常规的推荐装备价值是 12000，困难是 72100，高危是 258000。',
+            ),
+            (
+                '非高危路线',
+                '切到困难或常规时会提示换路线，确定前需等待 10 秒。'
+                '请改开「录像店-非高危」和「白鸽工地站-非高危」，并关闭其他出生点。'
+                '点确定不会自动改开启选择，已有的开启选择也不会因新路线发布而改变。'
+                '高危路线在困难或常规里可能卡在助战物资上；天赋未满时，卸装后的血量也不够跑完较长路线。',
             ),
         ),
     ),
@@ -54,13 +67,14 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
                 '达到上限后，程序完成结算和返回，再结束任务。',
             ),
             (
-                '失败次数：1–101',
-                '失败后，程序先退出并结算。达到上限则停止，否则重开。'
+                '连续失败次数：1–10',
+                '失败后，程序先退出并结算。全局或同一路线连续失败达到上限则停止，否则重开。'
                 '填 1 表示首次失败结算后停止。',
             ),
             (
                 '计数方式',
-                '成功和失败次数按本次任务累计。成功或暂停恢复不清零；新任务重新计数。',
+                '成功次数按本次任务累计。成功入仓后，全局和这条路线的连续失败清零，其他路线的计数保留。'
+                '空箱局和非支持出生点既不增加也不清零；暂停恢复不清零；新任务重新计数。',
             ),
             ('提前停止', '未达到次数上限时，程序也可能停止。条件见「满仓或异常」。'),
         ),
@@ -128,7 +142,8 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ),
             (
                 '每次入场前',
-                '程序核对已装备槽位为空，背包和安全箱占用、入场投资金额均为 0。'
+                '程序核对已装备槽位为空，背包和安全箱占用为 0。'
+                '高危再核对投资金额为 0。困难和常规不要求投资确认；若仍出现投资页，程序仍按零投资处理。'
                 '读数或提示不明时停止。后续局发现非零携带时停止，不再次清空。',
             ),
             ('从局内启动', '程序先退出，不继续当前局。退出只保留安全箱内物品。'),
@@ -161,14 +176,38 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 
-def log_start(config: BagelConfig) -> None:
-    """仅在配置和资源校验通过后说明本次将执行的动作。"""
+def log_start(config: BagelConfig, room_name: str | None = None) -> None:
+    """仅在配置和资源校验通过后说明本次将执行的动作。
+
+    Args:
+        config: 本次任务的配置。
+        room_name: 开房卡模式的房间显示名称；跑刀为 None。
+    """
     limit = str(config.max_success_rounds) if config.max_success_rounds else '不限'
-    log.info(
-        '即将进入雅努斯高危。成功次数上限：%s。整体重试次数上限：%s。',
-        limit,
-        config.max_failure_retries,
-    )
+    if config.is_keycard:
+        log.info(
+            '开房卡模式：即将进入城郊幻境%s，开「%s」。成功次数上限：%s。连续失败上限：%s。'
+            '成功指刷开房卡门且有物资入仓。',
+            config.run_difficulty, room_name or config.keycard_room, limit, config.max_consecutive_failures,
+        )
+        log.info(
+            '每局带 1 张该房间的门禁卡：安全箱为空时从仓库挑卡，结算入仓后就地挑下一局的卡。'
+            '背包和装备槽须为空；没刷门的失败局只剩卡时卡留在安全箱。'
+            '仓库没有该房间的卡（不自动购买）或刷卡处显示没有该卡时任务结束。'
+        )
+        if config.keycard_reserve > 0:
+            log.info(
+                '保留张数：%s。每次挑卡前翻完仓库全部页，按图标数该房间的卡（不点开、不含安全箱），'
+                '不多于 %s 张就不再挑卡，任务结束。',
+                config.keycard_reserve, config.keycard_reserve,
+            )
+    else:
+        log.info(
+            '即将进入雅努斯%s。成功次数上限：%s。连续失败上限：%s。',
+            config.difficulty,
+            limit,
+            config.max_consecutive_failures,
+        )
     log.info(
         '蓝图优先：%s。仅影响局内入箱，仓库出售按当前方案执行。',
         '开启' if config.blueprint_priority else '关闭',
@@ -188,6 +227,11 @@ def log_start(config: BagelConfig) -> None:
             types = '、'.join(name for name in CLEAN_TYPES if f'筛选-{name}' in areas)
             qualities = '/'.join(name for name in CLEAN_QUALITIES if f'筛选-{name}' in areas)
             log.info('第 %s 步：类型「%s」；品质「%s」。', index, types, qualities)
+        skipped = config.keycard_skipped_steps()
+        if skipped:
+            log.info('开房卡模式不出售门禁卡：自定义第 %s 步只含门禁卡，整步跳过。', '、'.join(map(str, skipped)))
+        elif config.is_keycard and custom:
+            log.info('开房卡模式不出售门禁卡：自定义步骤里的「门禁卡」已去掉。')
         if not custom:
             log.info('默认保留 S 品质其他物品，包括金色蓝图和材料；同时保留全部 Z 品质、装备、战术道具和门禁卡。')
         elif any('筛选-其他' in areas and '筛选-S' in areas for areas in groups):
@@ -202,10 +246,15 @@ def log_start(config: BagelConfig) -> None:
         '首次入场时，程序先传送到「录像店－房间」，再从快捷手册进入贝果。'
         '后续各局正常返回贝果主界面时，不重复传送。'
     )
-    log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
+    if config.is_keycard:
+        log.info('开房卡模式首次入场时先清空全部携带，再从仓库挑卡；之后的入场携带不符时停止。随后核对零投资。')
+    elif config.difficulty == DIFFICULTY_HAZARD:
+        log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
+    else:
+        log.info('%s随后核对零携带。', LOADOUT_HINT)
     log.info(
-        '出生点重选规则：只收集已在路线编辑器中开启路线的出生点；其他出生点退出重选，'
-        '不计成功、不清理仓库、不消耗整体重试，重选次数不限；如需结束请手动停止。'
+        '出生点重选规则：只收集已在路线编辑器中开启路线（开房卡为入口段）的出生点；其他出生点退出重选，'
+        '不计成功、不清理仓库、不计入连续失败，重选次数不限；如需结束请手动停止。'
     )
 
 
@@ -236,7 +285,7 @@ def stop_guidance(status: str | None) -> str:
         return '连续 3 次空箱结算，未计成功。程序已完成返回流程，停止重开。'
     if '已完成仓库结算，停止自动重开' in reason:
         return (
-            '失败局已完成结算，不再重开。本局不计成功。当前停在结算仓库。'
+            '连续失败达到上限，失败局已完成结算，不再重开。本局不计成功。当前停在结算仓库。'
             '请查看日志和现场截图，检查失败原因，再决定是否重新启动任务。'
         )
     if '自定义清理每一步都要同时选择类型和品质' in reason:

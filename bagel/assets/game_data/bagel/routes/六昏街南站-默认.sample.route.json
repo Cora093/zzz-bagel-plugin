@@ -3,8 +3,8 @@
  "route_id": "六昏街南站-默认",
  "name": "六昏街南站-默认",
  "spawn_id": "janus_south_station",
- "started_at": "2026-10-27T03:24:08+08:00",
- "ended_at": "2026-10-30T21:50:36+08:00",
+ "started_at": "2026-10-31T10:15:23-08:00",
+ "ended_at": "2026-11-03T09:11:57-08:00",
  "points": [
   {
    "x": 1003,
@@ -13,14 +13,8 @@
    "kind": "beacon"
   },
   {
-   "x": 1008,
-   "y": 445,
-   "layer": "雅努斯幻境/Custom",
-   "kind": "beacon"
-  },
-  {
-   "x": 955,
-   "y": 413,
+   "x": 1004,
+   "y": 443,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
@@ -49,25 +43,19 @@
    "kind": "beacon"
   },
   {
-   "x": 843,
-   "y": 336,
+   "x": 842,
+   "y": 331,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 915,
-   "y": 336,
+   "x": 912,
+   "y": 334,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"
   },
   {
-   "x": 928,
-   "y": 360,
-   "layer": "雅努斯幻境/Custom",
-   "kind": "beacon"
-  },
-  {
-   "x": 938,
+   "x": 935,
    "y": 357,
    "layer": "雅努斯幻境/Custom",
    "kind": "beacon"

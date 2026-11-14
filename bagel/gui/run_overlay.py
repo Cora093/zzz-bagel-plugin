@@ -43,13 +43,22 @@ KIND_COLORS: dict[str, QColor] = {
     'electronic_safe': QColor('#FFA033'),
     'mechanical_safe': QColor('#C77DFF'),
     'box': QColor('#4ED07A'),
+    'cardboard_box': QColor('#4ED07A'),
+    'crate': QColor('#4ED07A'),
+    'trash_can': QColor('#4ED07A'),
+    'medical_station': QColor('#4ED07A'),
+    'suitcase': QColor('#4ED07A'),
+    'handbag': QColor('#4ED07A'),
+    'cabinet': QColor('#4ED07A'),
     'door': QColor('#3FC4D8'),
     'elevator': QColor('#F0618F'),
+    'keycard_door': QColor('#9BD83F'),
 }
 """点位类型到颜色，语义与编辑器网页一致：电子橙、机械紫、普通箱绿。
 
 网页是浅底用深一档，悬浮窗是黑底用亮一档，色相保持相同。
-六类色相任意两者至少差 41 度，见网页里的自检。
+七类色相任意两者至少差 41 度，见网页里的自检。普通箱子的具体类别
+沿用普通箱的绿色，执行上没有区别。
 """
 
 KIND_LABELS: dict[str, str] = {
@@ -57,8 +66,16 @@ KIND_LABELS: dict[str, str] = {
     'electronic_safe': '电子箱',
     'mechanical_safe': '机械箱',
     'box': '普通箱',
+    'cardboard_box': '纸箱',
+    'crate': '板条箱',
+    'trash_can': '垃圾桶',
+    'medical_station': '医疗站',
+    'suitcase': '行李箱',
+    'handbag': '提包',
+    'cabinet': '单斗柜',
     'door': '门',
     'elevator': '电梯',
+    'keycard_door': '房卡门',
 }
 """点位类型到短名，用于决策行里的目标描述。"""
 

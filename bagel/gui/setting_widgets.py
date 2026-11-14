@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from one_dragon_qt.widgets.adapter_init_mixin import AdapterInitMixin
 from one_dragon_qt.widgets.multi_selection_combo_box import MultiSelectionComboBox
 from PySide6 import QtCore
@@ -47,29 +45,19 @@ from ..defs import (
     CLEAN_TYPES,
 )
 
-if TYPE_CHECKING:
-    from one_dragon_qt.widgets.setting_card.yaml_config_adapter import YamlConfigAdapter
-
 
 class CountSpinBox(SpinBox, AdapterInitMixin):
-    """句式中的计数输入；显示偏移只用于界面，不改变配置语义。"""
+    """句式中的计数输入。"""
 
-    def __init__(
-        self, minimum: int, maximum: int, parent: QWidget, display_offset: int = 0
-    ) -> None:
-        """设置范围，失败上限通过偏移 1 显示为累计失败次数。"""
+    def __init__(self, minimum: int, maximum: int, parent: QWidget) -> None:
+        """设置范围和宽度。"""
         SpinBox.__init__(self, parent)
         AdapterInitMixin.__init__(self)
-        self._display_offset: int = display_offset
         self.setRange(minimum, maximum)
         # Fluent 的两个步进按钮并排显示，须为四位数保留输入宽度。
         self.setFixedWidth(140)
         self.setKeyboardTracking(False)
         self.valueChanged.connect(self._save_value)
-
-    def _get_adapter_value(self, adapter: YamlConfigAdapter) -> int:
-        """读取后加上显示偏移。"""
-        return adapter.get_value() + self._display_offset
 
     def _set_value_from_adapter(self, value: int) -> None:
         """阻断初始化信号，防止加载时写回。"""
@@ -78,9 +66,9 @@ class CountSpinBox(SpinBox, AdapterInitMixin):
         self.setEnabled(True)
 
     def _save_value(self, value: int) -> None:
-        """用户修改后减去偏移，再即时保存。"""
+        """用户修改后即时保存。"""
         if self.adapter is not None:
-            self.adapter.set_value(value - self._display_offset)
+            self.adapter.set_value(value)
 
 
 class AutoSaleSwitch(SwitchButton, AdapterInitMixin):
@@ -109,6 +97,48 @@ class AutoSaleSwitch(SwitchButton, AdapterInitMixin):
         if self.adapter is not None:
             self.adapter.set_value(value)
         self.state_changed.emit()
+
+
+class ChoiceSegment(SegmentedWidget):
+    """设置页顶部的单选分段按钮：固定总宽、各项平分，可以单项置灰。
+
+    不绑定配置；由页面读写，因为模式、地图、难度之间互相约束。
+    """
+
+    WIDTH: int = 270
+    """三组按钮统一的总宽，让左右边缘对齐。"""
+
+    def __init__(self, options: list[tuple[str, str]], name: str, parent: QWidget) -> None:
+        """
+        Args:
+            options: (取值, 显示文字) 列表。
+            name: 无障碍名称。
+        """
+        super().__init__(parent)
+        for key, text in options:
+            item = self.addItem(key, text)
+            setCustomStyleSheet(
+                item,
+                'SegmentedItem:disabled { color: rgba(0, 0, 0, 0.32); }',
+                'SegmentedItem:disabled { color: rgba(255, 255, 255, 0.32); }',
+            )
+        # Pivot 的布局默认按内容收缩并靠左，会让固定宽度失效；改成各项平分整宽。
+        self.hBoxLayout.setSizeConstraint(QHBoxLayout.SizeConstraint.SetDefaultConstraint)
+        self.hBoxLayout.setAlignment(Qt.AlignmentFlag(0))
+        self.setFixedWidth(self.WIDTH)
+        self.setAccessibleName(name)
+
+    def set_value(self, key: str) -> None:
+        """切换选中项，不发出变更信号。"""
+        with QtCore.QSignalBlocker(self):
+            self.setCurrentItem(key)
+
+    def set_allowed(self, allowed: tuple[str, ...], reason: str) -> None:
+        """不在 ``allowed`` 里的项置灰，悬停提示 ``reason``。"""
+        for key, item in self.items.items():
+            enabled = key in allowed
+            item.setEnabled(enabled)
+            item.setToolTip('' if enabled else reason)
 
 
 class SaleModeSelector(SegmentedWidget, AdapterInitMixin):

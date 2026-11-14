@@ -1,0 +1,50 @@
+{
+ "version": 2,
+ "route_id": "风蚀公路_低-汽车旅馆二层-入口段-默认",
+ "name": "风蚀公路_低-汽车旅馆二层-入口段-默认",
+ "spawn_id": "windworn_highway_low",
+ "started_at": "2026-11-07T07:46:49-08:00",
+ "ended_at": "2026-11-11T09:25:41-08:00",
+ "keycard": {
+  "room": "windworn_motel_2f",
+  "segment": "entry"
+ },
+ "points": [
+  {
+   "x": 145,
+   "y": 513,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  },
+  {
+   "x": 183,
+   "y": 456,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  },
+  {
+   "x": 168,
+   "y": 371,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  },
+  {
+   "x": 146,
+   "y": 355,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  },
+  {
+   "x": 156,
+   "y": 353,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  },
+  {
+   "x": 160,
+   "y": 319,
+   "layer": "城郊幻境/Custom3",
+   "kind": "beacon"
+  }
+ ]
+}
