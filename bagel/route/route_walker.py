@@ -2643,8 +2643,10 @@ class BagelRouteWalker(BagelOperation):
 
         暂停期间主线不再提交，靠提交新鲜度线程 1 秒后也会自己停；
         这里主动清一次，不等那 1 秒，避免暂停瞬间按旧目标转镜头。
+        排队中的侧移、长按 F 等即时动作随 ``release_all`` 作废，暂停期间不会再按下。
         """
         self._release_forward()
+        self.input_worker.release_all()
         self.input_worker.submit_turn(None)
         super().handle_pause()
 
