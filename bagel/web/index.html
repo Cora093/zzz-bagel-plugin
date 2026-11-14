@@ -162,11 +162,20 @@
 // 电子=橙、机械=紫、普通箱=绿，是用户指定的语义色，不要随意换。
 // 其余四类按色相环尽量拉开：途径点深蓝、门青蓝、电梯玫红、房卡门黄绿，
 // 任意两类的色相至少差 41 度，肉眼可辨。
+// 普通箱子的具体容器类别沿用普通箱的绿色：执行上没有区别，只用来标注。
+const BOX_COLOR = '#1f8a4c';
 const KIND_COLORS = {
   beacon: '#2233b4',
   electronic_safe: '#d97400',
   mechanical_safe: '#8b3fc4',
-  box: '#1f8a4c',
+  box: BOX_COLOR,
+  cardboard_box: BOX_COLOR,
+  crate: BOX_COLOR,
+  trash_can: BOX_COLOR,
+  medical_station: BOX_COLOR,
+  suitcase: BOX_COLOR,
+  handbag: BOX_COLOR,
+  cabinet: BOX_COLOR,
   door: '#238495',
   elevator: '#bc2f5e',
   keycard_door: '#518a10'
@@ -176,10 +185,26 @@ const KIND_LABELS = {
   electronic_safe: '电子保险箱',
   mechanical_safe: '机械保险箱',
   box: '普通箱子',
+  cardboard_box: '纸箱',
+  crate: '板条箱',
+  trash_can: '垃圾桶',
+  medical_station: '医疗站',
+  suitcase: '行李箱',
+  handbag: '提包',
+  cabinet: '单斗柜',
   door: '门',
   elevator: '电梯',
   keycard_door: '房卡门'
 };
+// 路线内容的类型下拉按组排列；普通箱子的具体容器类别都归在「普通箱子」下面。
+const KIND_GROUPS = [
+  { label: '', kinds: ['beacon', 'electronic_safe', 'mechanical_safe'] },
+  { label: '普通箱子', kinds: ['box', 'cardboard_box', 'crate', 'trash_can', 'medical_station', 'suitcase', 'handbag', 'cabinet'] },
+  { label: '', kinds: ['door', 'elevator', 'keycard_door'] }
+];
+// 漏进分组的类型追加在末尾：新增类型时忘了改这里，下拉框也不会丢掉当前类型。
+const GROUPED_KINDS = new Set(KIND_GROUPS.flatMap(group => group.kinds));
+const UNGROUPED_KINDS = Object.keys(KIND_LABELS).filter(kind => !GROUPED_KINDS.has(kind));
 
 // 网页只负责显示和收集操作；路线文件与开启选择都由 Python 校验后写入。
 const state = {
@@ -1287,13 +1312,24 @@ function renderDetail() {
     // 首点必须是出生点附近的途径点，类型不可改。
     if (editable && index > 0) {
       const sel = document.createElement('select');
-      Object.keys(KIND_LABELS).forEach(kind => {
+      const addKind = (parent, kind) => {
         const opt = document.createElement('option');
         opt.value = kind;
-        opt.textContent = KIND_LABELS[kind];
+        opt.textContent = KIND_LABELS[kind] || kind;
         if (kind === d.kind) opt.selected = true;
-        sel.appendChild(opt);
+        parent.appendChild(opt);
+      };
+      KIND_GROUPS.forEach(group => {
+        if (!group.label) {
+          group.kinds.forEach(kind => addKind(sel, kind));
+          return;
+        }
+        const holder = document.createElement('optgroup');
+        holder.label = group.label;
+        group.kinds.forEach(kind => addKind(holder, kind));
+        sel.appendChild(holder);
       });
+      UNGROUPED_KINDS.forEach(kind => addKind(sel, kind));
       sel.onclick = (ev) => ev.stopPropagation();
       sel.onchange = () => {
         recordHistory();

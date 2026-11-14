@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -22,6 +22,7 @@ QUALITY_RANK: dict[str, int] = {'Z': 5, 'S': 4, 'A': 3, 'B': 2, 'C': 1, '?': 0}
 ITEM_TYPE_OTHER: str = '其他'
 ITEM_TYPE_CURRENCY: str = '金币'
 ITEM_TYPE_BLUEPRINT: str = '蓝图'
+ITEM_TYPE_MATERIAL: str = '材料'
 # 特殊奖励专指使用切面钻石角标的菲林、零号业绩，不代表全部撤离奖励。
 ITEM_TYPE_SPECIAL_REWARD: str = '特殊奖励'
 QUALITY_UNKNOWN: str = '?'
@@ -36,12 +37,14 @@ TYPE_RANK: dict[str, int] = {
     '装备': 2,
     '战术道具': 1,
     ITEM_TYPE_OTHER: 0,
-    '材料': -1,
+    ITEM_TYPE_MATERIAL: -1,
     ITEM_TYPE_CURRENCY: -2,
 }
 
 ACTION_FILL: str = 'fill'
 ACTION_SWAP: str = 'swap'
+ACTION_STACK: str = 'stack'
+"""同一种物品已经有一格，直接叠到那一格上，不占新的安全箱格子。"""
 
 # 相对已校准格心，40x36 搜索窗完整覆盖 24x24 / 24x26 模板并保留边缘余量。
 # 宽度比高度多 4：第 1 列格心 x=1353，金币圆形角标右缘在 x≈1335，窗口右缘原为 1333，
@@ -103,7 +106,7 @@ class BagelSlotMark:
             return -1, -1, self.type_rank
         if blueprint_priority and self.item_type == ITEM_TYPE_BLUEPRINT:
             return 2, self.quality_rank, 0
-        if self.item_type == '材料':
+        if self.item_type == ITEM_TYPE_MATERIAL:
             return 0, self.quality_rank, self.type_rank
         return 1, self.quality_rank, self.type_rank
 
@@ -217,15 +220,27 @@ def choose_store_action(
     safes: Sequence[BagelSlotMark],
     safe_empty: Sequence[int],
     blueprint_priority: bool = True,
+    stack_target: Callable[[BagelSlotMark], int | None] | None = None,
 ) -> StoreChoice | None:
-    """用同一优先级选择非金币候选和箱内目标；满箱时仅严格更优才对换。"""
+    """用同一优先级选择非金币候选和箱内目标；满箱时仅严格更优才对换。
+
+    传了 ``stack_target`` 时，先按同一优先级逐个找能叠放的格子；叠放不占新
+    格子，优先于填空和对换。找不到才走原来的填空或对换。
+    """
     candidates = [mark for mark in results if mark.item_type != ITEM_TYPE_CURRENCY]
     if not candidates:
         return None
-    candidate = max(
+    ordered = sorted(
         candidates,
         key=lambda mark: (*mark.priority(blueprint_priority), -mark.index),
+        reverse=True,
     )
+    if stack_target is not None:
+        for mark in ordered:
+            destination = stack_target(mark)
+            if destination is not None:
+                return StoreChoice(ACTION_STACK, mark.index, destination, mark)
+    candidate = ordered[0]
     if safe_empty:
         return StoreChoice(ACTION_FILL, candidate.index, safe_empty[0], candidate)
     if safes:
@@ -270,3 +285,73 @@ def _badge_templates() -> tuple[tuple[str, MatLike], ...]:
 def _badge_dir() -> Path:
     """角标模板目录；模板随插件分发，不再回退工作目录里的旧副本。"""
     return PLUGIN_DIR / 'assets' / 'game_data' / 'bagel' / 'item_badges'
+
+
+# 叠放判断只比格心附近的图标，避开左上角标（约 -56,-64）和底部数量文字（约 +31）。
+# 结果格外框 91x109、安全箱外框 97x116，图标在安全箱里约大 6%，比对时按几档比例缩放。
+STACK_ICON_HALF: int = 26
+STACK_WINDOW_HALF: int = 34
+_STACK_SCALES: tuple[float, ...] = (0.90, 0.92, 0.94, 0.96, 0.98, 1.0, 1.02)
+STACK_MATCH_MIN: float = 0.9
+"""同一种物品的最低相关度；实测同一件 0.95–0.98，外形相近但颜色不同的物品约 0.72。"""
+_STACK_SAME_MAX_DIFF: float = 10.0
+"""同一格拖拽前后图标的最大平均差；同一件物品接近 0，换成别的物品会远大于它。"""
+
+
+def icon_patch(screen: MatLike, center: Point, half: int = STACK_ICON_HALF) -> MatLike | None:
+    """裁出格心周围的图标区；越界返回 None。
+
+    Args:
+        screen: 整屏 RGB。
+        center: 格心。
+        half: 裁剪半边长；叠放比对用 STACK_ICON_HALF，安全箱搜索窗用 STACK_WINDOW_HALF。
+    """
+    x1, y1 = int(center.x) - half, int(center.y) - half
+    x2, y2 = int(center.x) + half, int(center.y) + half
+    if x1 < 0 or y1 < 0 or x2 > screen.shape[1] or y2 > screen.shape[0]:
+        return None
+    return screen[y1:y2, x1:x2].copy()
+
+
+def icon_match_score(item_icon: MatLike, safe_window: MatLike) -> float:
+    """结果格图标在安全箱格子里的最高相关度，取三个颜色通道里最低的一个。
+
+    两种格子的外框尺寸不同，图标在安全箱里约大 6%；按几档比例缩放后取最高分，
+    避免固定比例对不上。只看灰度会让颜色不同、外形相近的两件物品也拿到高分
+    （实测外形相近的黄针剂和银罐子灰度 0.92），所以每个通道单独比、取最差通道；
+    同一种物品三个通道都在 0.95 以上，看似相近的不同物品会有一两个通道明显偏低。
+
+    Args:
+        item_icon: 结果格图标裁剪。
+        safe_window: 安全箱格子的图标搜索窗。
+    """
+    if item_icon is None or safe_window is None or item_icon.size == 0 or safe_window.size == 0:
+        return -1.0
+    item = item_icon.astype(np.float32)
+    safe = safe_window.astype(np.float32)
+    best: list[float] = [-1.0, -1.0, -1.0]
+    for scale in _STACK_SCALES:
+        size = (
+            max(item.shape[1], round(safe.shape[1] * scale)),
+            max(item.shape[0], round(safe.shape[0] * scale)),
+        )
+        scaled = cv2.resize(safe, size, interpolation=cv2.INTER_AREA)
+        for channel in range(3):
+            score = float(cv2.matchTemplate(
+                scaled[:, :, channel], item[:, :, channel], cv2.TM_CCOEFF_NORMED,
+            ).max())
+            if score > best[channel]:
+                best[channel] = score
+    return min(best)
+
+
+def icons_same(before: MatLike, after: MatLike) -> bool:
+    """同一格拖拽前后的图标是否没变。
+
+    只用来区分「叠放」和「对换」：叠放后图标还是同一件，数量文字在下方、
+    不在裁剪范围内；对换后图标会换成另一件物品。
+    """
+    if before is None or after is None or before.shape != after.shape:
+        return False
+    return float(np.mean(np.abs(before.astype(np.float32) - after.astype(np.float32)))) <= _STACK_SAME_MAX_DIFF
+

@@ -56,19 +56,36 @@ POINT_KINDS: dict[str, tuple[str, str]] = {
 }
 """打点键到（类型标识, 中文名）的映射。"""
 
+BOX_CATEGORIES: dict[str, str] = {
+    'cardboard_box': '纸箱',
+    'crate': '板条箱',
+    'trash_can': '垃圾桶',
+    'medical_station': '医疗站',
+    'suitcase': '行李箱',
+    'handbag': '提包',
+    'cabinet': '单斗柜',
+}
+"""普通箱子的具体容器类别，只用于在路线内容里标注。
+
+这几种容器的搜索面板、格子和「全部拾取」按钮位置都一样，执行时与普通箱子
+完全相同；分类只记下这里是什么容器，不改变走法和收集规则。
+"""
+
 KIND_ALIASES: dict[str, str] = {
     'briefcase': 'box',
 }
 """旧路线文件里的类型名到当前类型名；改名后仍能读回。"""
 
 KIND_LABELS: dict[str, str] = dict(POINT_KINDS.values())
-"""类型标识到中文名，供界面与网页显示。"""
+KIND_LABELS.update(BOX_CATEGORIES)
+"""类型标识到中文名，供界面与网页显示；普通箱子的具体类别也在这里。"""
 
 KIND_COLORS: dict[str, str] = {
     BEACON: '#2233b4',
     'electronic_safe': '#d97400',
     'mechanical_safe': '#8b3fc4',
     'box': '#1f8a4c',
+    **dict.fromkeys(BOX_CATEGORIES, '#1f8a4c'),
     'door': '#238495',
     ELEVATOR: '#bc2f5e',
     KEYCARD_DOOR: '#518a10',
@@ -77,7 +94,8 @@ KIND_COLORS: dict[str, str] = {
 
 电子=橙、机械=紫、普通箱=绿是语义色，其余四类按色相环拉开，
 任意两类的色相至少差 41 度，肉眼可辨。房卡门取黄绿（约 88 度），
-落在电子橙（约 32 度）与普通箱绿（约 145 度）之间。
+落在电子橙（约 32 度）与普通箱绿（约 145 度）之间。普通箱子的具体类别
+沿用普通箱的绿色：执行上没有区别，不需要另配颜色。
 """
 
 POINT_MIN_DISTANCE: float = 8.0

@@ -61,6 +61,7 @@ from .route_model import (
     ELEVATOR,
     ELEVATOR_EXIT_BACKWARD,
     KEYCARD_DOOR,
+    KIND_LABELS,
     BagelRoute,
     BagelRoutePoint,
     BagelRouteRef,
@@ -743,7 +744,7 @@ class BagelRouteWalker(BagelOperation):
         if status:
             parts.append(status)
         if point is not None:
-            parts.append(f'第{self.cursor + 1}点 {point.kind}')
+            parts.append(f'第{self.cursor + 1}点 {KIND_LABELS.get(point.kind, point.kind)}')
         arrived = node_name == '导航移动' and status.startswith('已到点')
         if point is not None and self.position is not None and not arrived:
             distance = hypot(point.x - self.position[0], point.y - self.position[1])
@@ -1990,7 +1991,7 @@ class BagelRouteWalker(BagelOperation):
                 return self._start_card_probe('到点等 1 秒没有刷卡提示')
             log.info(
                 '贝果第 %s 点（%s）原地等 %ss 无提示，跳到下一个点',
-                self.cursor + 1, point.kind, f'{BOX_PROMPT_SECONDS:.0f}',
+                self.cursor + 1, KIND_LABELS.get(point.kind, point.kind), f'{BOX_PROMPT_SECONDS:.0f}',
             )
             self._enter_point(self.route_index, self.cursor + 1)
             return self.round_success('跳过此点')
@@ -2245,7 +2246,7 @@ class BagelRouteWalker(BagelOperation):
     def _current_kind_name(self) -> str:
         """当前游标点的类型名，只用于日志。"""
         point = self._current_point()
-        return point.kind if point is not None else '无'
+        return KIND_LABELS.get(point.kind, point.kind) if point is not None else '无'
 
     def _slow_step(
         self, point: BagelRoutePoint, position: tuple[float, float],
@@ -2494,7 +2495,7 @@ class BagelRouteWalker(BagelOperation):
         if time.monotonic() - self.point_started_at >= limit:
             self._release_forward()
             return self.round_recoverable_fail(
-                f'第 {self.cursor + 1} 点（{point.kind}）超时 {limit:.0f}s',
+                f'第 {self.cursor + 1} 点（{KIND_LABELS.get(point.kind, point.kind)}）超时 {limit:.0f}s',
             )
         return None
 
