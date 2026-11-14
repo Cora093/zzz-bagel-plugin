@@ -1,0 +1,39 @@
+# 开房卡房间清单。
+#
+# 房间入口（layer、x、y）是入口段与房间段的接缝：入口段末点、房间段首点都要在入口
+# radius 像素内。入口取房卡门外一小段的途径点，不取房卡门本身。
+# 单独试跑或录制房间段时，角色也要站在入口 radius 像素内。
+# name 与游戏刷卡提示的房间名一致。
+# initial_room_route、initial_entry_routes：新装或升级后尚未配置的房间自动开启的默认段。
+# 已有房间记录时保留用户选择，包括关闭的段。
+rooms:
+  - id: windworn_motel_2f
+    name: 风蚀公路汽车旅馆二层
+    layer: 城郊幻境/Custom3
+    x: 160
+    y: 319
+    radius: 20
+    initial_room_route: 汽车旅馆二层-房间段-默认
+    initial_entry_routes:
+      windworn_highway_high: 风蚀公路_高-汽车旅馆二层-入口段-默认
+      windworn_highway_low: 风蚀公路_低-汽车旅馆二层-入口段-默认
+  - id: bunless_zhibangbang
+    name: 无力野人镇芝邦邦餐厅
+    layer: 城郊幻境/Custom4
+    x: 950
+    y: 133
+    radius: 20
+    initial_room_route: 芝邦邦餐厅-房间段-默认
+    initial_entry_routes:
+      bunless_bae_town_east: 野人镇_东-芝邦邦餐厅-入口段-默认
+      bunless_bae_town_west: 野人镇_西-芝邦邦餐厅-入口段-默认
+  - id: bunless_storage_2f
+    name: 无力野人镇仓储中心二层板房
+    layer: 城郊幻境/Custom4_1
+    x: 1077
+    y: 189
+    radius: 20
+    initial_room_route: 仓储中心二层板房-房间段-默认
+    initial_entry_routes:
+      bunless_bae_town_east: 野人镇_东-仓储中心二层板房-入口段-默认
+      bunless_bae_town_west: 野人镇_西-仓储中心二层板房-入口段-默认

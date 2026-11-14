@@ -48,6 +48,7 @@ MARKER_COLORS: dict[str, QColor] = {
     'box': QColor('#D282FF'),
     'door': QColor('#64F096'),
     'elevator': QColor('#FF64A0'),
+    'keycard_door': QColor('#B4F03C'),
     'delete': QColor('#B0B0B0'),
 }
 """点位类型到显示颜色，与插件保持一致。"""

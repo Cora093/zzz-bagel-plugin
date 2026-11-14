@@ -11,6 +11,7 @@
 | [minimap_heading](minimap_heading/README.md) | 小地图镜头朝向识别的离线对比基准 |
 | [safe_and_notice](safe_and_notice/README.md) | 安全箱锁定格、时钟空格与拟态单质提示 |
 | [spawn_points](spawn_points/README.md) | 出生位置代表帧与小地图定位对照 |
+| [keycard](keycard/README.md) | 门禁卡浮窗与房卡门刷卡提示 |
 | [misc](misc/README.md) | 不成专题的单张画面 |
 
 ## 素材规范

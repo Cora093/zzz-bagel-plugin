@@ -21,6 +21,12 @@ TEMPLATE_ROOT: Path = PLUGIN_DIR / 'assets' / 'template' / 'bagel'
 
 
 @cache
+def template_exists(template_id: str) -> bool:
+    """模板原图是否存在；只看文件，不读图，也不写缺失警告。"""
+    return (TEMPLATE_ROOT / template_id / 'raw.png').is_file()
+
+
+@cache
 def load_template(template_id: str) -> tuple[MatLike, MatLike | None] | None:
     """读模板原图与掩码，同一个模板只读一次。
 

@@ -1,0 +1,44 @@
+{
+ "version": 2,
+ "route_id": "野人镇_东-芝邦邦餐厅-入口段-默认",
+ "name": "野人镇_东-芝邦邦餐厅-入口段-默认",
+ "spawn_id": "bunless_bae_town_east",
+ "started_at": "2026-11-08T08:05:56-08:00",
+ "ended_at": "2026-11-12T12:19:45-08:00",
+ "keycard": {
+  "room": "bunless_zhibangbang",
+  "segment": "entry"
+ },
+ "points": [
+  {
+   "x": 904,
+   "y": 303,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 933,
+   "y": 299,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 937,
+   "y": 235,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 937,
+   "y": 132,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
+   "x": 950,
+   "y": 133,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  }
+ ]
+}

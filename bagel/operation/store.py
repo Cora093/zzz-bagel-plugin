@@ -655,28 +655,8 @@ class BagelStoreSafe(BagelOperation):
         super().after_operation_done(result)
 
     def _record_safe_items(self) -> None:
-        """记下装箱结束时安全箱各格的类型和品质，只读红色物品的数量；只用于统计日志。"""
-        if self.ledger is None:
-            return
-        try:
-            safe = inspect_safe_slots(self.last_screenshot)
-            if safe is None:
-                return
-            items: dict[int, tuple[str, str, int | None]] = {}
-            for mark in inspect_occupied(self.last_screenshot, SAFE_SLOT_CENTERS, safe.occupied):
-                if mark.quality != QUALITY_RED:
-                    items[mark.index] = (mark.item_type, mark.quality, None)
-                    continue
-                rect = Rect(
-                    mark.center.x - _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_TOP,
-                    mark.center.x + _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_BOTTOM,
-                )
-                texts = self.ctx.ocr_service.get_ocr_result_list(image=self.last_screenshot, rect=rect)
-                quantity = parse_quantity(''.join(item.data for item in texts))
-                items[mark.index] = (mark.item_type, mark.quality, quantity)
-            self.ledger.slot_items = items
-        except Exception:
-            log.error('记录安全箱物品失败，本次不计入统计', exc_info=True)
+        """装箱结束时按画面覆盖账本里的安全箱物品；只用于统计日志。"""
+        record_safe_items(self.ctx, self.last_screenshot, self.ledger)
 
     def _drag_item(self, source: Point, destination: Point) -> None:
         """先按住再移动，给游戏时间抓起物品，避免拖成结果列表滚动。"""
@@ -709,3 +689,31 @@ class BagelStoreSafe(BagelOperation):
     def _has_search_title(self) -> bool:
         """箱子或电子保险箱标题任一可见即仍在搜查面板。"""
         return self._has('搜查容器标题') or self._has('电子保险箱标题')
+
+
+def record_safe_items(ctx: ZContext, screen: MatLike, ledger: BagelSafeLedger | None) -> None:
+    """记下安全箱各格的类型和品质，只读红色物品的数量；只用于统计日志。
+
+    搜查面板和局内背包页的安全箱位置相同，两处共用。
+    """
+    if ledger is None:
+        return
+    try:
+        safe = inspect_safe_slots(screen)
+        if safe is None:
+            return
+        items: dict[int, tuple[str, str, int | None]] = {}
+        for mark in inspect_occupied(screen, SAFE_SLOT_CENTERS, safe.occupied):
+            if mark.quality != QUALITY_RED:
+                items[mark.index] = (mark.item_type, mark.quality, None)
+                continue
+            rect = Rect(
+                mark.center.x - _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_TOP,
+                mark.center.x + _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_BOTTOM,
+            )
+            texts = ctx.ocr_service.get_ocr_result_list(image=screen, rect=rect)
+            quantity = parse_quantity(''.join(item.data for item in texts))
+            items[mark.index] = (mark.item_type, mark.quality, quantity)
+        ledger.slot_items = items
+    except Exception:
+        log.error('记录安全箱物品失败，本次不计入统计', exc_info=True)

@@ -198,6 +198,15 @@
         570,
         0
       ]
+    },
+    {
+      "map_id": "城郊幻境",
+      "name": "Custom4_1",
+      "image": "layers/suburb/Custom4_1.png",
+      "origin": [
+        1006,
+        165
+      ]
     }
   ]
 }

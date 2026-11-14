@@ -222,7 +222,12 @@ class MapLocator:
 
 
 class MultiMapLocator:
-    """未定位时搜全部层，成功后追踪当前层，丢失时逐步放开搜索。"""
+    """未定位时搜全部层，成功后追踪当前层，丢失时逐步放开搜索。
+
+    锁定地图后，所有搜索只在该地图的层里进行。全屏界面挡住小地图时，
+    全层搜索会以门槛附近的分数锁到其它地图；一局只在一张地图里，
+    出生点确定后锁定，就不会跨地图误锁。
+    """
 
     def __init__(self, locators: list[MapLocator], near_radius: int = NEAR_RADIUS) -> None:
         """
@@ -240,14 +245,41 @@ class MultiMapLocator:
         self._current: int | None = None
         self._last_center: tuple[int, int] | None = None
         self._last_hit_time: float = 0.0
+        self._map_id: str | None = None
+        """锁定的地图；None 表示搜索全部地图。"""
 
     @property
     def current(self) -> MapLocator | None:
         """当前命中的独立层。"""
         return None if self._current is None else self.locators[self._current]
 
+    @property
+    def map_id(self) -> str | None:
+        """锁定的地图，未锁定时为 None。"""
+        return self._map_id
+
+    def lock_map(self, map_id: str) -> None:
+        """之后只在指定地图的层里搜索。
+
+        当前层不属于该地图时清掉追踪状态，下一帧在该地图内重新全层搜索。
+
+        Args:
+            map_id: 要锁定的地图标识。
+
+        Raises:
+            ValueError: 没有任何层属于该地图。
+        """
+        if not any(locator.map_id == map_id for locator in self.locators):
+            raise ValueError(f'没有属于地图 {map_id} 的分层')
+        self._map_id = map_id
+        if self._current is not None and self.locators[self._current].map_id != map_id:
+            self._current = None
+            self._last_center = None
+
     def locate(self, minimap_rgb: MatLike) -> tuple[MapLocator, float, tuple[int, int]] | None:
         """当前层失败后，先比较同地图附近各层，丢失满一秒再搜索全部层。
+
+        锁定地图后，“全部层”只含该地图的层。
 
         Args:
             minimap_rgb: 小地图 RGB 图。
@@ -274,7 +306,11 @@ class MultiMapLocator:
                 best = self._search(indices, texture, reference, self.near_radius)
                 return None if best is None else self._accept(best[0], (best[1], best[2]))
 
-        best = self._search(list(range(len(self.locators))), texture, None, None)
+        indices = [
+            index for index, locator in enumerate(self.locators)
+            if self._map_id is None or locator.map_id == self._map_id
+        ]
+        best = self._search(indices, texture, None, None)
         return None if best is None else self._accept(best[0], (best[1], best[2]))
 
     def _search(
