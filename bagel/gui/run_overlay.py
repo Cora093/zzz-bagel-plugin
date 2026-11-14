@@ -52,6 +52,7 @@ KIND_COLORS: dict[str, QColor] = {
     'cabinet': QColor('#4ED07A'),
     'door': QColor('#3FC4D8'),
     'elevator': QColor('#F0618F'),
+    'keycard_door': QColor('#9BD83F'),
 }
 """点位类型到颜色，语义与编辑器网页一致：电子橙、机械紫、普通箱绿。
 
@@ -74,6 +75,7 @@ KIND_LABELS: dict[str, str] = {
     'cabinet': '单斗柜',
     'door': '门',
     'elevator': '电梯',
+    'keycard_door': '房卡门',
 }
 """点位类型到短名，用于决策行里的目标描述。"""
 

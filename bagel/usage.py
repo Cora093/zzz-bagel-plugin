@@ -42,7 +42,7 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ('选择角色', ROLE_HINT),
             (
                 '核对设置',
-                '设置只用于当前账号和应用组。切换后，请核对挑战难度、次数、蓝图优先、自动出售和出售范围。',
+                '设置只用于当前账号和应用组。切换后，请核对模式、地图、难度、次数、蓝图优先、自动出售和出售范围。',
             ),
             (
                 '挑战难度',
@@ -176,15 +176,38 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 
-def log_start(config: BagelConfig) -> None:
-    """仅在配置和资源校验通过后说明本次将执行的动作。"""
+def log_start(config: BagelConfig, room_name: str | None = None) -> None:
+    """仅在配置和资源校验通过后说明本次将执行的动作。
+
+    Args:
+        config: 本次任务的配置。
+        room_name: 开房卡模式的房间显示名称；跑刀为 None。
+    """
     limit = str(config.max_success_rounds) if config.max_success_rounds else '不限'
-    log.info(
-        '即将进入雅努斯%s。成功次数上限：%s。连续失败上限：%s。',
-        config.difficulty,
-        limit,
-        config.max_consecutive_failures,
-    )
+    if config.is_keycard:
+        log.info(
+            '开房卡模式：即将进入城郊幻境%s，开「%s」。成功次数上限：%s。连续失败上限：%s。'
+            '成功指刷开房卡门且有物资入仓。',
+            config.run_difficulty, room_name or config.keycard_room, limit, config.max_consecutive_failures,
+        )
+        log.info(
+            '每局带 1 张该房间的门禁卡：安全箱为空时从仓库挑卡，结算入仓后就地挑下一局的卡。'
+            '背包和装备槽须为空；没刷门的失败局只剩卡时卡留在安全箱。'
+            '仓库没有该房间的卡（不自动购买）或刷卡处显示没有该卡时任务结束。'
+        )
+        if config.keycard_reserve > 0:
+            log.info(
+                '保留张数：%s。每次挑卡前翻完仓库全部页，按图标数该房间的卡（不点开、不含安全箱），'
+                '不多于 %s 张就不再挑卡，任务结束。',
+                config.keycard_reserve, config.keycard_reserve,
+            )
+    else:
+        log.info(
+            '即将进入雅努斯%s。成功次数上限：%s。连续失败上限：%s。',
+            config.difficulty,
+            limit,
+            config.max_consecutive_failures,
+        )
     log.info(
         '蓝图优先：%s。仅影响局内入箱，仓库出售按当前方案执行。',
         '开启' if config.blueprint_priority else '关闭',
@@ -204,6 +227,11 @@ def log_start(config: BagelConfig) -> None:
             types = '、'.join(name for name in CLEAN_TYPES if f'筛选-{name}' in areas)
             qualities = '/'.join(name for name in CLEAN_QUALITIES if f'筛选-{name}' in areas)
             log.info('第 %s 步：类型「%s」；品质「%s」。', index, types, qualities)
+        skipped = config.keycard_skipped_steps()
+        if skipped:
+            log.info('开房卡模式不出售门禁卡：自定义第 %s 步只含门禁卡，整步跳过。', '、'.join(map(str, skipped)))
+        elif config.is_keycard and custom:
+            log.info('开房卡模式不出售门禁卡：自定义步骤里的「门禁卡」已去掉。')
         if not custom:
             log.info('默认保留 S 品质其他物品，包括金色蓝图和材料；同时保留全部 Z 品质、装备、战术道具和门禁卡。')
         elif any('筛选-其他' in areas and '筛选-S' in areas for areas in groups):
@@ -218,12 +246,14 @@ def log_start(config: BagelConfig) -> None:
         '首次入场时，程序先传送到「录像店－房间」，再从快捷手册进入贝果。'
         '后续各局正常返回贝果主界面时，不重复传送。'
     )
-    if config.difficulty == DIFFICULTY_HAZARD:
+    if config.is_keycard:
+        log.info('开房卡模式首次入场时先清空全部携带，再从仓库挑卡；之后的入场携带不符时停止。随后核对零投资。')
+    elif config.difficulty == DIFFICULTY_HAZARD:
         log.info('%s随后核对零携带和零投资。', LOADOUT_HINT)
     else:
         log.info('%s随后核对零携带。', LOADOUT_HINT)
     log.info(
-        '出生点重选规则：只收集已在路线编辑器中开启路线的出生点；其他出生点退出重选，'
+        '出生点重选规则：只收集已在路线编辑器中开启路线（开房卡为入口段）的出生点；其他出生点退出重选，'
         '不计成功、不清理仓库、不计入连续失败，重选次数不限；如需结束请手动停止。'
     )
 

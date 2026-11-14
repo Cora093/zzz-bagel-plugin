@@ -6,6 +6,8 @@
 - 出生点：入场时角色所在的固定位置，独立于路线首点登记。
 - 路线：一串有序点位，顺序本身就是路线；每条路线绑定一个出生点。
 - 路线来源：默认路线随程序发布、内容只读；自定义路线由用户新增、录制或复制。
+- 开房卡路线分两段：入口段从出生点走到房间入口，绑定出生点；房间段从房间入口
+  刷卡进门搜完容器，绑定房间、不绑定出生点。执行前按「入口段 + 房间段」拼成一条。
 """
 
 from __future__ import annotations
@@ -36,6 +38,13 @@ ELEVATOR_EXIT_FORWARD: str = 'forward'
 ELEVATOR_EXIT_BACKWARD: str = 'backward'
 """电梯出来时朝哪个方向走。"""
 
+KEYCARD_DOOR: str = 'keycard_door'
+"""房卡门：要刷门禁卡（长按 F）才开的门。
+
+和普通门分开：只有这类点识别刷卡提示并长按刷卡；其它点遇到刷卡提示一律忽略，
+免得跑刀路线零携带经过刷卡处时读到「0/1」把任务停掉。
+"""
+
 POINT_KINDS: dict[str, tuple[str, str]] = {
     '1': (BEACON, '途径点'),
     '2': ('electronic_safe', '电子保险箱'),
@@ -43,6 +52,7 @@ POINT_KINDS: dict[str, tuple[str, str]] = {
     '4': ('box', '普通箱子'),
     '5': ('door', '门'),
     '6': (ELEVATOR, '电梯'),
+    '7': (KEYCARD_DOOR, '房卡门'),
 }
 """打点键到（类型标识, 中文名）的映射。"""
 
@@ -78,12 +88,14 @@ KIND_COLORS: dict[str, str] = {
     **dict.fromkeys(BOX_CATEGORIES, '#1f8a4c'),
     'door': '#238495',
     ELEVATOR: '#bc2f5e',
+    KEYCARD_DOOR: '#518a10',
 }
 """类型标识到标注色，与网页画点用的颜色是同一套。
 
-电子=橙、机械=紫、普通箱=绿是语义色，其余三类按色相环拉开，
-任意两类的色相至少差 41 度，肉眼可辨。普通箱子的具体类别沿用
-普通箱的绿色：执行上没有区别，不需要另配颜色。
+电子=橙、机械=紫、普通箱=绿是语义色，其余四类按色相环拉开，
+任意两类的色相至少差 41 度，肉眼可辨。房卡门取黄绿（约 88 度），
+落在电子橙（约 32 度）与普通箱绿（约 145 度）之间。普通箱子的具体类别
+沿用普通箱的绿色：执行上没有区别，不需要另配颜色。
 """
 
 POINT_MIN_DISTANCE: float = 8.0
@@ -94,6 +106,15 @@ COORDINATE_LIMIT: float = 4000.0
 
 ROUTE_NAME_LIMIT: int = 40
 """路线显示名称的最大字符数。"""
+
+SEGMENT_ENTRY: str = 'entry'
+"""开房卡入口段：出生点 → 房间入口，绑定出生点。"""
+
+SEGMENT_ROOM: str = 'room'
+"""开房卡房间段：房间入口 → 刷卡进门 → 搜完容器，绑定房间，不绑定出生点。"""
+
+SEGMENT_LABELS: dict[str, str] = {SEGMENT_ENTRY: '入口段', SEGMENT_ROOM: '房间段'}
+"""段类型到中文名。"""
 
 
 def now_iso() -> str:
@@ -223,6 +244,105 @@ class BagelSpawnPoint:
 
 
 @dataclass(frozen=True)
+class BagelKeycardRoom:
+    """一个已登记的开房卡房间。
+
+    房间入口是入口段与房间段的接缝：入口段末点、房间段首点都要落在入口附近。
+    入口取在房卡门外一小段的途径点上，不取房卡门本身，让刷卡点留在房间段里。
+    """
+
+    room_id: str
+    """稳定标识，路线文件与开启选择都用它引用房间。"""
+    name: str
+    """显示名称，与游戏刷卡提示的房间名一致，如「风蚀公路汽车旅馆二层」。"""
+    layer: str
+    """房间入口所在完整分层。"""
+    x: float
+    y: float
+    """房间入口的全局坐标。"""
+    radius: float
+    """接缝半径（地图像素）：入口段末点、房间段首点与入口的距离不超过它才算接上。
+    单独试跑房间段时，角色也要站在入口这个半径内。"""
+    initial_room_route: str | None = None
+    """新装或升级后尚未配置的房间自动开启的默认房间段；None 表示不开启。"""
+    initial_entry_routes: dict[str, str] = field(default_factory=dict)
+    """随默认房间段自动开启的入口段：出生点标识 → 路线标识。"""
+
+    @property
+    def map_id(self) -> str:
+        """房间所在地图。"""
+        return map_id_of(self.layer)
+
+    def distance_to(self, x: float, y: float) -> float:
+        """与某个全局坐标的距离。"""
+        return hypot(self.x - x, self.y - y)
+
+    def as_spawn(self) -> BagelSpawnPoint:
+        """把房间入口当作出生点，供单独试跑和录制房间段时锚定起点。"""
+        return BagelSpawnPoint(
+            spawn_id=room_anchor_id(self.room_id),
+            name=f'{self.name}入口',
+            layer=self.layer,
+            x=self.x,
+            y=self.y,
+            radius=self.radius,
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """网页使用的房间数据。"""
+        return {
+            'room_id': self.room_id,
+            'name': self.name,
+            'layer': self.layer,
+            'map_id': self.map_id,
+            'x': round(self.x),
+            'y': round(self.y),
+            'radius': self.radius,
+        }
+
+
+def room_anchor_id(room_id: str) -> str:
+    """房间入口当作出生点时使用的标识；与真实出生点标识不会重名。"""
+    return f'keycard_room:{room_id}'
+
+
+@dataclass(frozen=True)
+class BagelKeycardTag:
+    """开房卡路线的段标记，写在路线文件的 ``keycard`` 字段。"""
+
+    room_id: str
+    """所属房间。"""
+    segment: str
+    """段类型：``SEGMENT_ENTRY`` 或 ``SEGMENT_ROOM``。"""
+
+    def to_json(self) -> dict[str, str]:
+        """写入文件或推给网页的形式。"""
+        return {'room': self.room_id, 'segment': self.segment}
+
+    @classmethod
+    def from_json(cls, data: Any) -> BagelKeycardTag:
+        """从文件或网页还原段标记。
+
+        Raises:
+            ValueError: 字段缺失或段类型不支持。
+        """
+        if not isinstance(data, dict):
+            raise ValueError('开房卡段标记不是对象')
+        room_id = str(data.get('room', '')).strip()
+        segment = str(data.get('segment', ''))
+        if not room_id:
+            raise ValueError('开房卡段标记缺少房间')
+        if segment not in SEGMENT_LABELS:
+            raise ValueError(f'不支持的开房卡段类型：{segment}')
+        return cls(room_id, segment)
+
+    @property
+    def label(self) -> str:
+        """段类型中文名。"""
+        return SEGMENT_LABELS[self.segment]
+
+
+@dataclass(frozen=True)
 class BagelRouteRef:
     """对一条路线的引用：来源加路线标识。
 
@@ -266,12 +386,24 @@ class BagelRoute:
     name: str
     """显示名称；自定义路线可以改名，改名不改标识。"""
     spawn_id: str
-    """绑定的出生点标识。"""
+    """绑定的出生点标识；开房卡房间段不绑定出生点，为空串。"""
     source: str = SOURCE_CUSTOM
     """来源，由实际文件所在位置决定，不写进文件。"""
     started_at: str = field(default_factory=now_iso)
     ended_at: str | None = None
     points: list[BagelRoutePoint] = field(default_factory=list)
+    keycard: BagelKeycardTag | None = None
+    """开房卡段标记；跑刀路线为 None。"""
+
+    @property
+    def is_room_segment(self) -> bool:
+        """是否为开房卡房间段。"""
+        return self.keycard is not None and self.keycard.segment == SEGMENT_ROOM
+
+    @property
+    def is_entry_segment(self) -> bool:
+        """是否为开房卡入口段。"""
+        return self.keycard is not None and self.keycard.segment == SEGMENT_ENTRY
 
     @property
     def ref(self) -> BagelRouteRef:
@@ -314,16 +446,19 @@ class BagelRoute:
         return replace(self, points=list(self.points))
 
     def to_dict(self) -> dict[str, Any]:
-        """生成待写入文件的数据；来源由文件位置决定，不写入。"""
-        return {
+        """生成待写入文件的数据；来源由文件位置决定，不写入。跑刀路线不写 ``keycard``。"""
+        data: dict[str, Any] = {
             'version': ROUTE_VERSION,
             'route_id': self.route_id,
             'name': self.name,
             'spawn_id': self.spawn_id,
             'started_at': self.started_at,
             'ended_at': self.ended_at,
-            'points': [point.to_dict() for point in self.points],
         }
+        if self.keycard is not None:
+            data['keycard'] = self.keycard.to_json()
+        data['points'] = [point.to_dict() for point in self.points]
+        return data
 
     def to_json(self, active: bool) -> dict[str, Any]:
         """网页使用的路线数据。
@@ -336,6 +471,7 @@ class BagelRoute:
             'route_id': self.route_id,
             'name': self.name,
             'spawn_id': self.spawn_id,
+            'keycard': None if self.keycard is None else self.keycard.to_json(),
             'active': active,
             'points': [point.to_dict() for point in self.points],
         }
@@ -357,9 +493,17 @@ class BagelRoute:
             raise ValueError(f'不支持的路线文件版本：{data.get("version")}')
         route_id = str(data.get('route_id', '')).strip()
         name = str(data.get('name', '')).strip()
-        spawn_id = str(data.get('spawn_id', '')).strip()
-        if not route_id or not name or not spawn_id:
-            raise ValueError('路线缺少标识、名称或出生点')
+        spawn_id = str(data.get('spawn_id', '') or '').strip()
+        raw_keycard = data.get('keycard')
+        keycard = None if raw_keycard is None else BagelKeycardTag.from_json(raw_keycard)
+        if not route_id or not name:
+            raise ValueError('路线缺少标识或名称')
+        # 房间段不绑定出生点，其余路线必须绑定。
+        if keycard is not None and keycard.segment == SEGMENT_ROOM:
+            if spawn_id:
+                raise ValueError('开房卡房间段不能绑定出生点')
+        elif not spawn_id:
+            raise ValueError('路线缺少出生点')
         raw_points = data.get('points')
         if not isinstance(raw_points, list):
             raise ValueError('路线点位不是数组')
@@ -371,6 +515,7 @@ class BagelRoute:
             started_at=str(data.get('started_at') or now_iso()),
             ended_at=data.get('ended_at'),
             points=[BagelRoutePoint.from_dict(item) for item in raw_points],
+            keycard=keycard,
         )
 
 
@@ -406,8 +551,88 @@ def check_route_start(route: BagelRoute, spawn: BagelSpawnPoint) -> str | None:
     if first.kind != BEACON:
         return f'首点必须是途径点，当前是{KIND_LABELS.get(first.kind, first.kind)}'
     if first.layer != spawn.layer:
-        return f'首点分层 {first.layer} 与出生点分层 {spawn.layer} 不一致'
+        return f'首点分层 {first.layer} 与{spawn.name}分层 {spawn.layer} 不一致'
     distance = spawn.distance_to(first.x, first.y)
     if distance > spawn.radius:
-        return f'首点距出生点 {distance:.0f}px，超出识别半径 {spawn.radius:.0f}px'
+        return f'首点距{spawn.name} {distance:.0f}px，超出识别半径 {spawn.radius:.0f}px'
     return None
+
+
+def check_run_points(route: BagelRoute) -> str | None:
+    """检查跑刀路线的点类型：不允许房卡门点。
+
+    房卡门点会识别刷卡提示，零携带时读到持卡计数 0 就按没带卡停止任务；
+    刷卡只属于开房卡的房间段。
+
+    Returns:
+        不满足时返回原因；满足或不是跑刀路线时返回 None。
+    """
+    if route.keycard is None and any(point.kind == KEYCARD_DOOR for point in route.points):
+        return '跑刀路线里不能有房卡门点，刷卡只放在开房卡的房间段'
+    return None
+
+
+def check_room_segment(route: BagelRoute, room: BagelKeycardRoom) -> str | None:
+    """检查房间段能否接在房间入口之后执行。
+
+    首点必须是途径点、与入口同层且在接缝半径内；段内必须有房卡门点，否则进不了房间。
+
+    Returns:
+        不满足时返回原因；满足时返回 None。
+    """
+    problem = check_route_start(route, room.as_spawn())
+    if problem is not None:
+        return problem
+    if not any(point.kind == KEYCARD_DOOR for point in route.points):
+        return '房间段里没有房卡门点'
+    return None
+
+
+def check_entry_segment(route: BagelRoute, room: BagelKeycardRoom) -> str | None:
+    """检查入口段的末点能否接上房间入口。
+
+    入口段不允许出现房卡门点：刷卡属于房间段，免得同一扇门刷两次。
+
+    Returns:
+        不满足时返回原因；满足时返回 None。
+    """
+    if not route.points:
+        return '入口段没有点'
+    if any(point.kind == KEYCARD_DOOR for point in route.points):
+        return '入口段里不能有房卡门点，刷卡放在房间段'
+    last = route.points[-1]
+    if last.layer != room.layer:
+        return f'入口段末点分层 {last.layer} 与房间入口分层 {room.layer} 不一致'
+    distance = room.distance_to(last.x, last.y)
+    if distance > room.radius:
+        return f'入口段末点距房间入口 {distance:.0f}px，超出接缝半径 {room.radius:.0f}px'
+    return None
+
+
+def join_keycard_route(entry: BagelRoute, room_route: BagelRoute) -> BagelRoute:
+    """把入口段和房间段拼成一条可执行路线。
+
+    拼出的路线只在内存里使用，不写盘。标识与名称由两段组合，日志与统计据此区分组合。
+    只有两段都是默认路线时，拼出的路线才算默认来源。
+
+    Args:
+        entry: 入口段，提供出生点绑定。
+        room_route: 房间段。
+
+    Returns:
+        新路线，点位依次为入口段全部点、房间段全部点。入口段末点与房间段首点
+        完全相同（同一个入口途径点）时只保留一个。
+    """
+    room_points = list(room_route.points)
+    if entry.points and room_points and entry.points[-1] == room_points[0]:
+        room_points = room_points[1:]
+    both_default = entry.source == room_route.source == SOURCE_DEFAULT
+    return BagelRoute(
+        route_id=f'{entry.route_id}+{room_route.route_id}',
+        name=f'{entry.name} + {room_route.name}',
+        spawn_id=entry.spawn_id,
+        source=SOURCE_DEFAULT if both_default else SOURCE_CUSTOM,
+        started_at=entry.started_at,
+        ended_at=entry.ended_at,
+        points=list(entry.points) + room_points,
+    )
