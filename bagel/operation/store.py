@@ -708,47 +708,59 @@ class BagelStoreSafe(BagelOperation):
         destination: Point,
         destination_index: int,
     ) -> OperationRoundResult:
-        """核对一次叠放：源格清空、目标格图标没变且外观变了才算成功。
+        """核对一次叠放：先看目标格图标变没变，再看源格。
 
-        目标格图标变了说明两件物品不是同一种，拖拽成了对换。这时把安全箱里的
-        物品拖回结果格，恢复拖拽前的摆放，再把这一对格号记为不可叠放，改走空格；
-        不能把一件已经安全箱里的物品留在搜索结果里。
+        判断顺序不能反过来。两件物品不是同一种时，游戏把拖拽当成对换：源格
+        换进安全箱原来那件，仍然占着。只看源格会把对换当成「拖拽没生效」去重拖，
+        来回对换几次，停在哪边取决于重拖次数的奇偶。
+
+        - 目标格图标变了：是对换（或别的意外）。把安全箱这一格拖回结果格，
+          对换就换回来，源格空着就搬回去；这一对记为不可叠放，回挑选节点重挑。
+        - 图标没变、源格空了：叠放成功。
+        - 图标没变、源格还在：拖拽没生效，或目标格已经叠满。按重拖预算再试，
+          用完后这一对记为不可叠放，改走空格。
         """
         after = self.last_screenshot
         if not slot_occupied(after, destination):
             self._clear_pending()
             return self._give_up('叠放后安全箱目标格为空，无法核对')
-        source_now = slot_occupied(after, source)
-        if not source_now:
-            before_icon = icon_patch(before, destination, _STACK_VERIFY_HALF)
-            after_icon = icon_patch(after, destination, _STACK_VERIFY_HALF)
-            if before_icon is not None and after_icon is not None and icons_same(before_icon, after_icon):
-                self._confirm_ledger_transfer()
-                self._clear_pending()
-                self._drag_repeated = 0
-                self._left_grid_waited = False
-                self._consecutive_failures = 0
-                self.moved += 1
-                self.acted = True
-                log.info(
-                    '贝果入箱：结果格 %s 已叠到安全箱第 %s 格',
-                    source_index + 1, destination_index + 1,
-                )
-                return self.round_success('继续装入', wait=0.2)
+        before_icon = icon_patch(before, destination, _STACK_VERIFY_HALF)
+        after_icon = icon_patch(after, destination, _STACK_VERIFY_HALF)
+        same_icon = (
+            before_icon is not None and after_icon is not None
+            and icons_same(before_icon, after_icon)
+        )
+        if not same_icon:
             self._stack_blocked.add((source_index, destination_index))
             self._clear_pending()
             self._drag_item(destination, source)
             log.warning(
-                '贝果入箱：安全箱第 %s 格不是同一种物品，已把该格物品拖回结果格 %s',
+                '贝果入箱：叠放后安全箱第 %s 格图标变了，不是同一种物品，已把该格拖回结果格 %s',
                 destination_index + 1, source_index + 1,
             )
             return self.round_success(_STATUS_RESELECT, wait=0.7)
-        # 源格还在：拖拽没生效，按填空的重拖预算再试几次；还不行就改用空格。
+        if not slot_occupied(after, source):
+            self._confirm_ledger_transfer()
+            self._clear_pending()
+            self._drag_repeated = 0
+            self._left_grid_waited = False
+            self._consecutive_failures = 0
+            self.moved += 1
+            self.acted = True
+            log.info(
+                '贝果入箱：结果格 %s 已叠到安全箱第 %s 格',
+                source_index + 1, destination_index + 1,
+            )
+            return self.round_success('继续装入', wait=0.2)
         if self._drag_repeated < self.DRAG_REPEAT_LIMIT:
             self._drag_repeated += 1
             self._pending_before = after.copy()
             self._drag_item(source, destination)
             return self.round_wait(f'叠放画面无变化，第 {self._drag_repeated} 次重拖', wait=0.7)
+        log.info(
+            '贝果入箱：结果格 %s 叠到安全箱第 %s 格 %s 次都没变化（可能已叠满），改走空格',
+            source_index + 1, destination_index + 1, self.DRAG_REPEAT_LIMIT + 1,
+        )
         self._stack_blocked.add((source_index, destination_index))
         self._clear_pending()
         return self.round_success(_STATUS_RESELECT, wait=0.2)

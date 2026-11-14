@@ -200,8 +200,11 @@ const KIND_LABELS = {
 const KIND_GROUPS = [
   { label: '', kinds: ['beacon', 'electronic_safe', 'mechanical_safe'] },
   { label: '普通箱子', kinds: ['box', 'cardboard_box', 'crate', 'trash_can', 'medical_station', 'suitcase', 'handbag', 'cabinet'] },
-  { label: '', kinds: ['door', 'elevator'] }
+  { label: '', kinds: ['door', 'elevator', 'keycard_door'] }
 ];
+// 漏进分组的类型追加在末尾：新增类型时忘了改这里，下拉框也不会丢掉当前类型。
+const GROUPED_KINDS = new Set(KIND_GROUPS.flatMap(group => group.kinds));
+const UNGROUPED_KINDS = Object.keys(KIND_LABELS).filter(kind => !GROUPED_KINDS.has(kind));
 
 // 网页只负责显示和收集操作；路线文件与开启选择都由 Python 校验后写入。
 const state = {
@@ -1326,6 +1329,7 @@ function renderDetail() {
         group.kinds.forEach(kind => addKind(holder, kind));
         sel.appendChild(holder);
       });
+      UNGROUPED_KINDS.forEach(kind => addKind(sel, kind));
       sel.onclick = (ev) => ev.stopPropagation();
       sel.onchange = () => {
         recordHistory();
