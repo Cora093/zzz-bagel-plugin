@@ -1,7 +1,8 @@
 """正常退出前整理背包：把背包里比安全箱更值钱的物品换进安全箱。
 
 退出时游戏只保留安全箱物资，背包里的东西带不出去。路上直接拾取的物品都进背包，
-所以退出前按 B 打开局内背包页，按入箱同一套优先级逐件填空或对换。
+所以退出前按 B 打开局内背包页，按入箱同一套优先级逐件叠放、填空或对换。
+安全箱里已有同一种材料时先叠上去，不占格子，也不把箱里别的物品换出来。
 
 背包页左栏（队伍、道具、背包）整体可以滚动，打开时的滚动位置不固定，背包格不能写死。
 每次先用 OCR 找「背包(n/20)」标题，按标题定各排格心；件数多于可见格时先往下滚。
@@ -24,10 +25,14 @@ from one_dragon.utils.log_utils import log
 
 from ..vision.item_vision import (
     ACTION_FILL,
+    ACTION_STACK,
+    ACTION_SWAP,
     QUALITY_UNKNOWN,
     BagelSlotMark,
     choose_store_action,
+    find_stack_target,
     inspect_occupied,
+    stack_icon_unchanged,
 )
 from ..vision.slots import (
     SAFE_SLOT_CENTERS,
@@ -63,6 +68,7 @@ _SCROLL_LIMIT: int = 6
 _HEADER_PATTERN: re.Pattern[str] = re.compile(r'背包.*?(\d+)/(\d+)')
 
 _STATUS_NEXT: str = '继续整理'
+_KIND_LABEL: dict[str, str] = {ACTION_FILL: '填空', ACTION_SWAP: '对换', ACTION_STACK: '叠放'}
 _REPRESS_SECONDS: float = 3.0
 """按 B 后这么久还没看到背包页，才允许再按一次；过早再按会把刚打开的背包又关掉。"""
 
@@ -100,8 +106,11 @@ class BagelOrganizeBackpack(BagelOperation):
         self.ledger: BagelSafeLedger | None = ledger
         self.moved: int = 0
         self.swapped: int = 0
+        self.stacked: int = 0
         self._actions: int = 0
         self._skipped: set[int] = set()
+        self._stack_blocked: set[tuple[int, int]] = set()
+        """试过叠放却没成的（背包格, 安全箱格）；本次整理不再试这一对。"""
         self._panel_wait: int = 0
         self._pending_before: MatLike | None = None
         self._pending_source: int | None = None
@@ -119,8 +128,10 @@ class BagelOrganizeBackpack(BagelOperation):
         super().handle_init()
         self.moved = 0
         self.swapped = 0
+        self.stacked = 0
         self._actions = 0
         self._skipped = set()
+        self._stack_blocked = set()
         self._panel_wait = 0
         self._pressed_at = None
         self._centers = ()
@@ -216,16 +227,20 @@ class BagelOrganizeBackpack(BagelOperation):
     @node_from(from_name='核对整理变化', status=_STATUS_NEXT)
     @operation_node(name='逐件换入安全箱')
     def store_next(self) -> OperationRoundResult:
-        """每次只拖一件：有空格就填，满了只和箱内最差的一格严格更优才对换。"""
+        """每次只拖一件：能叠放先叠放；有空格就填，满了只和箱内最差的一格严格更优才对换。"""
         if not self._backpack_open():
             return self._wait_panel('背包页不在画面内')
-        safe = inspect_safe_slots(self.last_screenshot)
+        screen = self.last_screenshot
+        safe = inspect_safe_slots(screen)
         if safe is None:
             return self._wait_panel('安全箱格子状态不明')
         self._panel_wait = 0
         backpack = self._backpack_marks()
-        safes = inspect_occupied(self.last_screenshot, SAFE_SLOT_CENTERS, safe.occupied)
-        choice = choose_store_action(backpack, safes, safe.empty, self.blueprint_priority)
+        safes = inspect_occupied(screen, SAFE_SLOT_CENTERS, safe.occupied)
+        choice = choose_store_action(
+            backpack, safes, safe.empty, self.blueprint_priority,
+            stack_target=lambda mark: find_stack_target(screen, mark, safes, self._stack_blocked),
+        )
         if choice is None:
             return self.round_success(self.STATUS_DONE)
         if self._actions >= self.ACTION_LIMIT:
@@ -235,7 +250,7 @@ class BagelOrganizeBackpack(BagelOperation):
         log.info(
             '贝果整理背包：%s %s 背包格 %s -> 安全箱格 %s（%s）；目标=%s，蓝图优先=%s',
             choice.mark.quality, choice.mark.item_type, choice.source_index + 1, choice.dest_index + 1,
-            '填空' if choice.kind == ACTION_FILL else '对换',
+            _KIND_LABEL[choice.kind],
             f'{target.quality} {target.item_type}' if target is not None else '空格',
             self.blueprint_priority,
         )
@@ -252,7 +267,7 @@ class BagelOrganizeBackpack(BagelOperation):
     @node_from(from_name='逐件换入安全箱', status='已拖拽一件')
     @operation_node(name='核对整理变化')
     def confirm_transfer(self) -> OperationRoundResult:
-        """填空看安全箱目标格由空变有；对换看目标格外观变了。
+        """填空看安全箱目标格由空变有；对换看目标格外观变了；叠放见 `_confirm_stack`。
 
         不要求背包源格变空：背包取走一件后其余物品可能前移补位，这一点还没实机确认。
         """
@@ -266,6 +281,8 @@ class BagelOrganizeBackpack(BagelOperation):
             return self._wait_panel('拖拽后背包页不在画面内')
         destination = SAFE_SLOT_CENTERS[dest]
         after = self.last_screenshot
+        if kind == ACTION_STACK:
+            return self._confirm_stack(before, after, source, dest)
         if kind == ACTION_FILL:
             done = not slot_occupied(before, destination) and slot_occupied(after, destination)
         else:
@@ -291,6 +308,60 @@ class BagelOrganizeBackpack(BagelOperation):
         self._clear_pending()
         return self.round_success(_STATUS_NEXT, wait=0.2)
 
+    def _confirm_stack(self, before: MatLike, after: MatLike, source: int, dest: int) -> OperationRoundResult:
+        """核对一次叠放：先看安全箱目标格图标变没变，再看背包源格。
+
+        顺序与开箱入箱的叠放核对相同，理由也相同：两件不是同一种时游戏按对换处理，
+        背包源格换进安全箱原来那件，仍然占着，只看源格会把对换当成没生效。
+
+        - 目标格图标变了：是对换。把安全箱这一格拖回背包源格换回原样，
+          这一对记为不可叠放，回挑选节点重挑。
+        - 图标没变、源格外观变了：叠放成功。源格可能变空，也可能被后面的物品前移补上，
+          两种都算；目标格图标没变，说明源格的东西没有换进别的格子。
+        - 图标没变、源格也没变：拖拽没生效，或目标格已经叠满。重拖一次，
+          仍不变就把这一对记为不可叠放，改走空格或对换。
+        """
+        destination = SAFE_SLOT_CENTERS[dest]
+        source_center = self._centers[source]
+        if not slot_occupied(after, destination):
+            if self.ledger is not None:
+                self.ledger.cancel_transfer()
+            self._clear_pending()
+            return self.round_fail('叠放后安全箱目标格为空，无法核对')
+        if not stack_icon_unchanged(before, after, destination):
+            if self.ledger is not None:
+                self.ledger.cancel_transfer()
+            self._stack_blocked.add((source, dest))
+            self._clear_pending()
+            self._actions += 1
+            self.ctx.controller.drag_to(end=source_center, start=destination, timing=self._drag_timing())
+            log.warning(
+                '贝果整理背包：叠放后安全箱第 %s 格图标变了，不是同一种物品，已把该格拖回背包格 %s',
+                dest + 1, source + 1,
+            )
+            return self.round_success(_STATUS_NEXT, wait=0.7)
+        if not slot_occupied(after, source_center) or slot_appearance_changed(before, after, source_center):
+            if self.ledger is not None:
+                self.ledger.confirm_transfer()
+            self.stacked += 1
+            self._clear_pending()
+            log.info('贝果整理背包：背包格 %s 已叠到安全箱第 %s 格', source + 1, dest + 1)
+            return self.round_success(_STATUS_NEXT, wait=0.2)
+        if self._repeated < self.DRAG_REPEAT_LIMIT:
+            self._repeated += 1
+            self._pending_before = after.copy()
+            self._drag(source, dest)
+            return self.round_wait(f'叠放画面无变化，第 {self._repeated} 次重拖', wait=0.7)
+        log.info(
+            '贝果整理背包：背包格 %s 叠到安全箱第 %s 格 %s 次都没变化（可能已叠满），改走空格或对换',
+            source + 1, dest + 1, self.DRAG_REPEAT_LIMIT + 1,
+        )
+        if self.ledger is not None:
+            self.ledger.cancel_transfer()
+        self._stack_blocked.add((source, dest))
+        self._clear_pending()
+        return self.round_success(_STATUS_NEXT, wait=0.2)
+
     @node_from(from_name='逐件换入安全箱', status=STATUS_DONE)
     @node_from(from_name='打开背包', success=False)
     @node_from(from_name='定位背包格', success=False)
@@ -303,9 +374,12 @@ class BagelOrganizeBackpack(BagelOperation):
             return self.round_fail(self.STATUS_DEFEATED)
         if (self.round_by_find_area(self.last_screenshot, '战斗画面', '按键-普通攻击').is_success
                 or self._has('按钮-退出战斗', '战斗-菜单')):
-            log.info('贝果整理背包：填入安全箱 %s 件，对换 %s 件，跳过 %s 格',
-                     self.moved, self.swapped, len(self._skipped))
-            return self.round_success(self.STATUS_DONE, data={'moved': self.moved, 'swapped': self.swapped})
+            log.info('贝果整理背包：填入安全箱 %s 件，对换 %s 件，叠放 %s 件，跳过 %s 格',
+                     self.moved, self.swapped, self.stacked, len(self._skipped))
+            return self.round_success(
+                self.STATUS_DONE,
+                data={'moved': self.moved, 'swapped': self.swapped, 'stacked': self.stacked},
+            )
         if self._backpack_open():
             record_safe_items(self.ctx, self.last_screenshot, self.ledger)
             self.ctx.controller.btn_press('esc', press_time=0.1)
@@ -338,11 +412,14 @@ class BagelOrganizeBackpack(BagelOperation):
 
     def _drag(self, source: int, dest: int) -> None:
         """先按住再移动，与开箱入箱同一套拖拽时序。"""
-        timing = self.BACKGROUND_DRAG_TIMING if self.ctx.controller.background_mode else self.FOREGROUND_DRAG_TIMING
         self._actions += 1
         self.ctx.controller.drag_to(
-            end=SAFE_SLOT_CENTERS[dest], start=self._centers[source], timing=timing,
+            end=SAFE_SLOT_CENTERS[dest], start=self._centers[source], timing=self._drag_timing(),
         )
+
+    def _drag_timing(self) -> DragTiming:
+        """按前后台选拖拽时序。"""
+        return self.BACKGROUND_DRAG_TIMING if self.ctx.controller.background_mode else self.FOREGROUND_DRAG_TIMING
 
     def _clear_pending(self) -> None:
         """丢掉这一次拖拽的前后对照。"""

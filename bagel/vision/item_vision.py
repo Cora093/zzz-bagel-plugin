@@ -294,6 +294,8 @@ STACK_WINDOW_HALF: int = 34
 _STACK_SCALES: tuple[float, ...] = (0.90, 0.92, 0.94, 0.96, 0.98, 1.0, 1.02)
 STACK_MATCH_MIN: float = 0.9
 """同一种物品的最低相关度；实测同一件 0.95–0.98，外形相近但颜色不同的物品约 0.72。"""
+STACK_VERIFY_HALF: int = 22
+"""叠放核对的裁剪半边长，格心 44 像素见方，避开左上角标和底部数量文字。"""
 _STACK_SAME_MAX_DIFF: float = 10.0
 """同一格拖拽前后图标的最大平均差；同一件物品接近 0，换成别的物品会远大于它。"""
 
@@ -354,4 +356,53 @@ def icons_same(before: MatLike, after: MatLike) -> bool:
     if before is None or after is None or before.shape != after.shape:
         return False
     return float(np.mean(np.abs(before.astype(np.float32) - after.astype(np.float32)))) <= _STACK_SAME_MAX_DIFF
+
+
+def find_stack_target(
+    screen: MatLike,
+    mark: BagelSlotMark,
+    safes: Sequence[BagelSlotMark],
+    blocked: set[tuple[int, int]],
+) -> int | None:
+    """在安全箱里找能叠放 ``mark`` 的格子；找不到返回 None。
+
+    只在材料里找，类型和品质都要相同，再用图标相关度确认，必须过 STACK_MATCH_MIN：
+    不同物品拖到一起会变成对换，宁可占一个空格也不赌。搜查结果格和局内背包格
+    都用这一个函数：两处的图标和安全箱里的比例都落在 _STACK_SCALES 覆盖的范围内。
+
+    Args:
+        screen: 整屏 RGB，源格和安全箱都在这张画面里。
+        mark: 待拖的源格。
+        safes: 安全箱里已占用的格子。
+        blocked: 试过不能叠放的（源格, 安全箱格）组合，跳过不再试。
+    """
+    if mark.item_type != ITEM_TYPE_MATERIAL:
+        return None
+    icon = icon_patch(screen, mark.center)
+    if icon is None:
+        return None
+    best_index: int | None = None
+    best_score: float = STACK_MATCH_MIN
+    for safe_mark in safes:
+        if safe_mark.item_type != mark.item_type or safe_mark.quality != mark.quality:
+            continue
+        if (mark.index, safe_mark.index) in blocked:
+            continue
+        window = icon_patch(screen, safe_mark.center, STACK_WINDOW_HALF)
+        score = icon_match_score(icon, window)
+        if score >= best_score:
+            best_score = score
+            best_index = safe_mark.index
+    return best_index
+
+
+def stack_icon_unchanged(before: MatLike, after: MatLike, center: Point) -> bool:
+    """叠放核对：安全箱目标格拖拽前后图标没变。
+
+    只比格心 STACK_VERIFY_HALF 见方：再大就会带到底部数量文字，叠放后数量变化
+    会被误判成图标变了，进而被当成对换。
+    """
+    before_icon = icon_patch(before, center, STACK_VERIFY_HALF)
+    after_icon = icon_patch(after, center, STACK_VERIFY_HALF)
+    return before_icon is not None and after_icon is not None and icons_same(before_icon, after_icon)
 
