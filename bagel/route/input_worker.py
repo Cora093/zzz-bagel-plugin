@@ -126,6 +126,17 @@ TURN_RATIO_MIN_ANGLE: float = 3.0
 TURN_RATIO_MIN_DELTA: float = 0.5
 """实际转角小于它视为画面还没跟上，样本留到下一轮再算。"""
 
+TURN_HINT_MIN_SAMPLES: int = 10
+"""一局至少攒到这么多个有效样本，才把本局比例留作下一局的起步值。"""
+
+TURN_DX_WARN_RATIO: float = 1.3
+"""本局比例超出 [1/它, 它] 算明显偏离：turn_dx 与游戏灵敏度可能不符。
+
+单局比例的正常波动约 ±0.1，取 1.3 避免噪声触发提示。"""
+
+TURN_DX_WARN_ROUNDS: int = 3
+"""连续这么多局明显偏离，才提示运行鼠标灵敏度检测。"""
+
 
 class _Command:
     """一条待执行的按键指令。"""
@@ -228,11 +239,14 @@ class _TurnWorker:
     def __init__(
         self, handler: Callable[[float], None],
         sampler: Callable[[], float | None],
+        initial_ratio: float = 1.0,
     ) -> None:
         """
         Args:
             handler: 执行一次转向的函数，参数是换算后的实际下发角。
             sampler: 采一帧当前镜头朝向；读不到返回 None。
+            initial_ratio: 起步校准值，取上一局学到的比例；1.0 表示没有可用的起步值。
+                只决定第一个有效样本之前怎么换算，之后照常按本局样本学习。
         """
         self._handler: Callable[[float], None] = handler
         self._sampler: Callable[[], float | None] = sampler
@@ -254,8 +268,8 @@ class _TurnWorker:
         """上次下发的时刻；宽限内画面没变化不计数。"""
         self._still_since: float | None = None
         """宽限过后首次看到画面没动的时刻；超时只放行下一笔，不碰校准。"""
-        self.turn_ratio: float = 1.0
-        """转向校准值：名义转角乘它就是实际转角，1.0 表示还没校准过。任何时候都不重置。"""
+        self.turn_ratio: float = initial_ratio
+        """转向校准值：名义转角乘它就是实际转角。从起步值开始，第一个有效样本起按本局峰值箱更新，局内不重置。"""
         self.turn_samples: int = 0
         """已累积的校准样本数，用于日志观察。"""
         self._peak_bins: dict[int, int] = {}
@@ -266,8 +280,6 @@ class _TurnWorker:
         """最高槽的样本数。"""
         self._clamp_streak: int = 0
         """校准值连续几次贴到夹取边界的计数，用于提示重做灵敏度检测。"""
-        self._scale_samples: list[float] = []
-        """本局按有效样本算出的补偿比例（1/校准值），局末取中位数写回现有灵敏度字段。"""
         self._lock: threading.Lock = threading.Lock()
         self._wake: threading.Event = threading.Event()
         self._stopping: bool = False
@@ -479,7 +491,6 @@ class _TurnWorker:
                 self._peak_count = slot_count
                 self.turn_ratio = 1.0 + key * TURN_RATIO_PEAK_BIN_WIDTH
             self.turn_samples += 1
-            self._scale_samples.append(abs(pending) / abs(delta) if delta else 1.0)
             ratio, total = self.turn_ratio, self.turn_samples
         log.info(
             '贝果转向校准 %.3f（样本 %.2f，峰值槽 %s 个，名义 %.1f 实际 %.1f，共 %s 次）',
@@ -501,13 +512,50 @@ class _TurnWorker:
         return True
 
 
+class TurnRatioMemory:
+    """同一次应用运行内跨局保存转向校准值，只作下一局的起步值。
+
+    不写 turn_dx，也不落盘：turn_dx 只由游戏灵敏度决定，是主程序各应用共用的
+    配置，以主程序的鼠标灵敏度检测为准。连续多局校准值明显偏离 1.0 时只提示。
+    """
+
+    def __init__(self) -> None:
+        self.hint: float = 1.0
+        """下一局的起步校准值；1.0 表示还没有可用的值。"""
+        self._off_rounds: int = 0
+        """连续明显偏离 1.0 的局数。"""
+
+    def absorb(self, ratio: float, samples: int, turn_dx: float) -> None:
+        """记下本局学到的校准值；样本不够时保持原值。
+
+        Args:
+            ratio: 本局结束时的转向校准值（实际转角 / 名义转角）。
+            samples: 本局有效样本数。
+            turn_dx: 本局转向实际使用的 turn_dx，只用于提示里的建议值。
+        """
+        if samples < TURN_HINT_MIN_SAMPLES or ratio <= 0:
+            return
+        self.hint = ratio
+        if 1.0 / TURN_DX_WARN_RATIO <= ratio <= TURN_DX_WARN_RATIO:
+            self._off_rounds = 0
+            return
+        self._off_rounds += 1
+        if self._off_rounds == TURN_DX_WARN_ROUNDS:
+            log.warning(
+                '贝果转向连续 %s 局校准值约 %.2f，turn_dx=%.4f 可能与游戏灵敏度不符'
+                '（按本局估算约 %.4f）；局内会自动补偿，建议运行一次鼠标灵敏度检测',
+                self._off_rounds, ratio, turn_dx, turn_dx / ratio,
+            )
+
+
 class BagelInputWorker:
     """路线执行的全部按键都经由这里下发，主线只投递不等待。"""
 
-    def __init__(self, ctx: ZContext) -> None:
+    def __init__(self, ctx: ZContext, initial_turn_ratio: float = 1.0) -> None:
         """
         Args:
             ctx: 运行上下文，提供控制器。
+            initial_turn_ratio: 转向线程的起步校准值，取上一局学到的比例。
         """
         self.ctx: ZContext = ctx
         self._forward_want: bool = False
@@ -532,7 +580,9 @@ class BagelInputWorker:
         self._action_epoch: int = 0
         """即时动作的版本号：暂停时加一，入队早于暂停的指令随之作废。"""
 
-        self._turn_worker: _TurnWorker = _TurnWorker(self._run_turn, self._sample_angle)
+        self._turn_worker: _TurnWorker = _TurnWorker(
+            self._run_turn, self._sample_angle, initial_ratio=initial_turn_ratio,
+        )
         self._instant_channel: _InstantChannel = _InstantChannel(
             'bagel-instant', self._run_instant,
         )
@@ -636,13 +686,8 @@ class BagelInputWorker:
 
     @property
     def turn_samples(self) -> int:
-        """已累积的校准样本数，供局末持久化判断。"""
+        """已累积的校准样本数，供局末判断本局校准值能否留作下一局的起步值。"""
         return self._turn_worker.turn_samples
-
-    @property
-    def turn_scale_samples(self) -> list[float]:
-        """本局补偿比例原始样本，供局末峰值平均写回现有灵敏度字段。"""
-        return list(self._turn_worker._scale_samples)
 
     def _enqueue(self, command: _Command) -> None:
         """入队时记下当前版本号，暂停后这条指令就不再执行。"""

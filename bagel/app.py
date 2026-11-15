@@ -27,6 +27,7 @@ from .operation.organize_backpack import BagelOrganizeBackpack
 from .operation.pick_keycard import BagelPickKeycard
 from .operation.settle import BagelSettleWarehouse
 from .route import route_stats
+from .route.input_worker import TurnRatioMemory
 from .route.route_model import now_iso
 from .route.route_stats import (
     BagelRouteRecord,
@@ -98,6 +99,8 @@ class BagelApp(ZApplication):
         """每局收益、红色物品与用时统计；写日志，任务结束推送摘要。"""
         self._round_ledger: BagelSafeLedger | None = None
         """本局路线执行器的安全箱账本；本局没跑路线时为 None。"""
+        self._turn_memory: TurnRatioMemory = TurnRatioMemory()
+        """跨局转向校准记忆：上一局学到的校准值作下一局起步值，只放内存，不写 turn_dx。"""
         self._round_survey: int = 0
         """本局调查收益的最后一次读数；零携带入场后为 0，路线执行器读到后更新。"""
         self._route_recorder: BagelRouteRecorder = BagelRouteRecorder(self.ctx)
@@ -589,11 +592,12 @@ class BagelApp(ZApplication):
             walker = BagelRouteWalker(
                 self.ctx, blueprint_priority=self.config.blueprint_priority,
                 keycard_room=self.config.keycard_room if self.config.is_keycard else None,
+                turn_memory=self._turn_memory,
             )
         except ValueError as error:
             return self.round_fail(f'路线执行器初始化失败：{error}')
         outcome = walker.execute()
-        walker.persist_turn_scale()
+        walker.remember_turn_ratio()
         self._round_ledger = walker.ledger
         self._round_survey = walker.survey_value
         self._round_spawn = walker.spawn
