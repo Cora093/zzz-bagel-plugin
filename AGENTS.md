@@ -38,7 +38,7 @@
 
 - 只改本仓库内的文件。改到仓库外（主仓 `src/`、`docs/`、`config/`、`pyproject.toml`、
   `plugins/README.md`、根 `.gitignore`）都算越界，先问用户。
-- 插件必须自包含：模板、地图底图、出生点、screen 定义、测试全在 `bagel/` 内。
+- 插件必须自包含：模板、地图底图、出生点、screen 定义全在 `bagel/` 内。测试在仓库根 `tests/`，不进 zip。
   资源路径一律从 `bagel_defs.PLUGIN_DIR` 取，不读工作目录里的同名副本。
 - 不要为了迁就框架去改框架。框架缺的能力，先在插件内解决，解决不了再问用户。
 
