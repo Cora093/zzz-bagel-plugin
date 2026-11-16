@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING
 
 from one_dragon.base.controller.pc_button import pc_button_utils
 from one_dragon.base.operation.operation import Operation
-from one_dragon.utils import str_utils
-from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 from pynput import mouse
 from zzz_od.operation.zzz_operation import ZOperation
@@ -211,33 +209,20 @@ class BagelOperation(ZOperation):
             )
         return self.round_by_find_area(self.last_screenshot, screen_name, area).is_success
 
-    def _at_bagel_activity(self) -> bool:
-        """核对是否停在贝果活动页。
+    def _at_main_page(self) -> bool:
+        """核对是否停在贝果计划-主页面。
 
-        活动页标题为「迷宫诡域：活动名」（如「迷宫诡域：古怪试炼」）。
-        投资页标题「迷宫诡域：贝果计划」前缀相同，靠右上角的风险提示排除。
-        活动页点「前往空洞」进入选图页，再进入主界面。
-        活动期间主界面标题也是「迷宫诡域：古怪试炼」，此时主界面同样返回 True。
+        左上标题是「迷宫诡域：<赛季名>」，赛季名随换季变化，所以标题只认「迷宫诡域」；
+        再要求右下有「前往空洞」。投资页标题「迷宫诡域：贝果计划」前缀相同，
+        它的「前往空洞」不在主页面的区域内，另外再用右上角风险提示排除。
         """
         if self._has('投资风险提示', '贝果-入场确认'):
             return False
-        area = self.ctx.screen_loader.get_area('贝果-研究站', '标题')
-        if area is None:
-            return False
-        texts = self.ctx.ocr_service.get_ocr_result_list(
-            image=self.last_screenshot, rect=area.rect,
-        )
-        title = ''.join(str_utils.remove_whitespace(item.data) for item in texts)
-        return title.startswith(gt('迷宫诡域', 'game'))
+        return all(self._has(name, '贝果计划-主页面') for name in ('标题', '前往空洞'))
 
     def _at_bagel_hub(self) -> bool:
-        """核对是否已到达可继续的贝果页面。
-
-        活动页不算；主界面（标题加前往空洞）和活动页点「前往空洞」后的选图页都算。
-        """
-        if all(self._has(name, '贝果-研究站') for name in ('标题', '前往空洞')):
-            return True
-        return self._has('前往备战', '贝果-选图')
+        """核对是否已到达可继续的贝果页面：主页面或选图页。"""
+        return self._at_main_page() or self._has('前往备战', '贝果-选图')
 
     def execute(self) -> OperationResult:
         """操作返回前完成事件清理。"""

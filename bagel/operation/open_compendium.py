@@ -71,7 +71,7 @@ def is_combat_category_list(results: Sequence[OcrMatchResult]) -> bool:
 
 
 class BagelOpenCompendium(BagelOperation):
-    """从普通大世界打开快捷手册并进入贝果主界面。调用者负责准备入场前位置。
+    """从普通大世界打开快捷手册并进入主页面。调用者负责准备入场前位置。
 
     手册页签的主仓画面定义按选中页签的颜色识别；部分环境选中页签更亮，过滤后读不出字
     （issue #30）。本操作只用无颜色过滤的 OCR 和页面内容判断位置，不调用画面路由。
@@ -156,14 +156,8 @@ class BagelOpenCompendium(BagelOperation):
         if self._at_bagel_hub():
             return self.round_success('已到贝果入口')
         if self.node_clicked:
-            # 点卡片「前往」后可能先停在活动页（标题为「迷宫诡域：古怪试炼」并带赛季内容）。
-            # 该页同样有「前往空洞」，点它进入贝果选图页；选图页没有主界面标题，
-            # 所以这里只等「前往备战」出现，不能等主界面标题。
-            return self.round_by_find_and_click_area(
-                self.last_screenshot, '贝果-研究站', '前往空洞',
-                until_find_all=[('贝果-选图', '前往备战')],
-                success_wait=1, retry_wait=1,
-            )
+            # 已点卡片「前往」，主页面加载期间只等，不再点击。
+            return self.round_wait('已点击迷宫诡域前往，等待主页面', wait=0.5)
         # 未确认停在作战页时只等待，避免页面切换中途读不到卡片就消耗滚动次数。
         if not self._at_combat_tab():
             return self.round_wait('等待快捷手册作战页', wait=0.5)
@@ -199,4 +193,4 @@ class BagelOpenCompendium(BagelOperation):
         if not self.ctx.controller.click(candidates[0].center):
             return self.round_retry('点击迷宫诡域前往失败', wait=0.5)
         self.node_clicked = True
-        return self.round_wait('已点击迷宫诡域前往，等待贝果主界面', wait=0.5)
+        return self.round_wait('已点击迷宫诡域前往，等待主页面', wait=0.5)

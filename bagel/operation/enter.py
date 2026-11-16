@@ -251,11 +251,10 @@ class BagelEnter(BagelOperation):
             return self.round_fail(f'检测到仓库出售状态（{sale_state}），停止并保留现场')
         if self.round_by_find_area(self.last_screenshot, '贝果-备战', '预设组合').is_success:
             return self.round_success()
-        if all(self.round_by_find_area(self.last_screenshot, '贝果-研究站', name).is_success
-               for name in ('标题', '前往空洞')):
+        if self._at_main_page():
             return self.round_success()
         if self.node_clicked:
-            return self.round_retry('等待仓库返回备战或研究站入口', wait=0.5)
+            return self.round_retry('等待仓库返回备战或主页面', wait=0.5)
         if not self.round_by_find_area(self.last_screenshot, '贝果-仓库', '放入仓库').is_success:
             return self.round_retry('未识别可返回的启动仓库', wait=0.5)
         result = self.round_by_click_area('菜单', '返回')
@@ -266,29 +265,24 @@ class BagelEnter(BagelOperation):
 
     @node_from(from_name='处理启动仓库')
     @node_from(from_name='返回启动仓库上一页')
-    @operation_node(name='打开贝果主界面', timeout_seconds=120)
+    @operation_node(name='打开贝果主页面', timeout_seconds=120)
     def open_hub(self) -> OperationRoundResult:
         """首次重建快捷手册入口；后续各局复用已打开的贝果页面。"""
         at_prepare = self._has('预设组合', '贝果-备战')
         at_map = self._has('前往备战', '贝果-选图')
-        at_hub = all(self._has(name, '贝果-研究站') for name in ('标题', '前往空洞'))
-        at_activity = self._at_bagel_activity()
+        at_main = self._at_main_page()
         if not self.prepare_shortcut_entry:
             if at_prepare:
                 return self.round_success('已在备战')
-            if at_map or at_hub:
+            if at_map or at_main:
                 return self.round_success()
-            if at_activity:
-                # 活动页也有「前往空洞」，点它进入选图页，不能停在这里。
-                return self.round_by_find_and_click_area(
-                    self.last_screenshot, '贝果-研究站', '前往空洞',
-                    until_find_all=[('贝果-选图', '前往备战')],
-                    success_wait=1, retry_wait=1,
-                )
-        at_dialog = all(self._has(name, '贝果-研究站') for name in ('对话人', '出发对话'))
+        at_dialog = all(self._has(name, '贝果计划-主页面') for name in ('对话人', '出发对话'))
         # 首次启动要重新传送，停在贝果页面时不再点「前往空洞」，由传送前的通用返回退出。
-        if at_prepare or at_map or at_hub or at_activity:
+        if at_prepare or at_map or at_main:
             return self.round_success('需要快捷手册入口')
+        if self._has('标题', '贝果计划-主页面') and not self._has('投资风险提示', '贝果-入场确认'):
+            # 主页面标题已出、「前往空洞」还没出来，是加载中，不能当成不支持的画面。
+            return self.round_wait('等待主页面加载完整', wait=0.5)
         current = self.check_and_update_current_screen(self.last_screenshot)
         if current is None:
             current = self._ordinary_warehouse()
@@ -316,7 +310,7 @@ class BagelEnter(BagelOperation):
             self.ctx.screen_loader.update_current_screen_name(current)
         return self.round_success('需要快捷手册入口')
 
-    @node_from(from_name='打开贝果主界面', status='需要快捷手册入口')
+    @node_from(from_name='打开贝果主页面', status='需要快捷手册入口')
     @operation_node(name='传送录像店', screenshot_before_round=False)
     def transport_for_shortcut(self) -> OperationRoundResult:
         """传送到「录像店－房间」，下一节点再打开快捷手册。"""
@@ -327,26 +321,26 @@ class BagelEnter(BagelOperation):
     @node_from(from_name='传送录像店')
     @operation_node(name='从快捷手册进入贝果', screenshot_before_round=False)
     def enter_by_compendium(self) -> OperationRoundResult:
-        """传送成功后才打开快捷手册，完整识别贝果主界面后继续。"""
+        """传送成功后才打开快捷手册，完整识别主页面后继续。"""
         operation = BagelOpenCompendium(self.ctx)
         operation.timeout_seconds = min(90, max(0, self.timeout_seconds - self.operation_usage_time))
         return self.round_by_op_result(operation.execute())
 
     @node_from(from_name='从快捷手册进入贝果')
-    @node_from(from_name='打开贝果主界面')
+    @node_from(from_name='打开贝果主页面')
     @operation_node(name='打开贝果选图', timeout_seconds=20)
     def open_map(self) -> OperationRoundResult:
-        """只接受研究站主界面或选图页，不从未知备战直接进局。"""
+        """只接受主页面或选图页，不从未知备战直接进局。"""
         if self.round_by_find_area(self.last_screenshot, '贝果-选图', '前往备战').is_success:
             return self.round_success()
-        if not self.round_by_find_area(self.last_screenshot, '贝果-研究站', '标题').is_success:
-            return self.round_retry('请从贝果研究站主界面开始', wait=1)
+        if not self._at_main_page():
+            return self.round_retry('请从贝果计划-主页面开始', wait=1)
         return self.round_by_find_and_click_area(
-            self.last_screenshot, '贝果-研究站', '前往空洞',
+            self.last_screenshot, '贝果计划-主页面', '前往空洞',
             until_find_all=[('贝果-选图', '前往备战')], success_wait=1, retry_wait=1,
         )
 
-    @node_from(from_name='打开贝果主界面', status='已在备战')
+    @node_from(from_name='打开贝果主页面', status='已在备战')
     @node_from(from_name='核对零携带', status='重新核对选图')
     @node_from(from_name='打开备战', status='重新核对选图')
     @operation_node(name='备战返回选图', timeout_seconds=15)

@@ -85,7 +85,7 @@ class _UsageDialog(MessageBoxBase):
         intro.setWordWrap(True)
         self.viewLayout.addWidget(intro)
         terms = CaptionLabel(
-            '入箱：将物品装入局内安全箱。\n入仓：将携带物存入研究站仓库。\n空箱：结算开始时安全箱为空。', self
+            '入箱：将物品装入局内安全箱。\n入仓：将携带物存入贝果仓库。\n空箱：结算开始时安全箱为空。', self
         )
         terms.setWordWrap(True)
         self.viewLayout.addWidget(terms)
