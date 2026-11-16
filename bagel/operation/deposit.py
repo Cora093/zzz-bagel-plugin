@@ -22,6 +22,10 @@ class BagelDeposit(BagelOperation):
     STATUS_EMPTY: str = '安全箱已空'
     STATUS_DONE: str = '已入仓并清空安全箱'
     STATUS_FULL: str = '仓库已满'
+    REMAINING_CONFIRM_FRAMES: int = 8
+    """整理残留模式下，仓库已满时安全箱连续多少帧仍有物资才算真有残留。入仓动画没播完时还看得到旧物品。"""
+    REMAINING_CONFIRM_FRAMES_NOT_FULL: int = 12
+    """整理残留模式下，仓库读数未满时的确认帧数。没满却有残留多半是动画没播完，多等几帧。"""
 
     def __init__(
         self, ctx: ZContext, *, return_on_remaining: bool = False, click_when_empty: bool = False,
@@ -121,8 +125,14 @@ class BagelDeposit(BagelOperation):
                 if pair is None:
                     return self.round_fail('入仓后无法核对仓库容量，停止并保留现场')
                 self._full_waits += 1
-                if self._full_waits < 2:
+                frames = (
+                    self.REMAINING_CONFIRM_FRAMES if pair[0] >= pair[1]
+                    else self.REMAINING_CONFIRM_FRAMES_NOT_FULL
+                )
+                if self._full_waits < frames:
                     return self.round_wait('入仓后有残留，再看一帧', wait=0.5)
+                log.info('贝果入仓：连续 %s 帧安全箱仍占 %s 格，仓库 %s/%s，记为有残留',
+                         self._full_waits, safe_after, pair[0], pair[1])
                 return self.round_success(self.STATUS_FULL, data={'safe_count': safe_after})
             if safe_after < self.safe_before:
                 return self.round_fail(
