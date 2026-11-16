@@ -16,11 +16,22 @@ if TYPE_CHECKING:
 class BagelExit(BagelOperation):
     """从贝果局内退出到结算仓库；物资核对和入仓交给调用者。"""
 
+    MENU_ESC_LIMIT: int = 3
+    """打开暂停菜单最多按几次 ESC。"""
+
     def __init__(self, ctx: ZContext) -> None:
         """创建有界退出流程，不自动出售或返回研究站。"""
         super().__init__(ctx, op_name='贝果-退出到仓库', timeout_seconds=120)
         self.panel_close_tries: int = 0
         """局内面板连关失败了几次，用来轮换「点搜查返回」和「按 ESC」。"""
+        self.menu_esc_presses: int = 0
+        """为打开暂停菜单已经按了几次 ESC。"""
+
+    def handle_init(self) -> None:
+        """同一操作再次运行时清零面板和菜单的按键计数。"""
+        super().handle_init()
+        self.panel_close_tries = 0
+        self.menu_esc_presses = 0
 
     def _at_settle_warehouse(self) -> bool:
         """结算仓库的两个按钮都在才算到仓库，避免过渡画面误判。"""
@@ -66,8 +77,13 @@ class BagelExit(BagelOperation):
             self.ctx.controller.btn_press('esc', press_time=0.1)
             return self.round_wait('ESC 关闭局内面板', wait=0.6)
         if self.round_by_find_area(self.last_screenshot, '战斗画面', '按键-普通攻击').is_success:
+            # 按完不直接进下一节点：ESC 没生效时「点击贝果退出」找不到按钮，只能等到超时。
+            # 留在本节点看到「退出战斗」才算打开；间隔要长于菜单弹出动画，否则重按会把菜单关掉。
+            if self.menu_esc_presses >= self.MENU_ESC_LIMIT:
+                return self.round_fail(f'按了 {self.MENU_ESC_LIMIT} 次 ESC 仍未打开暂停菜单')
+            self.menu_esc_presses += 1
             self.ctx.controller.btn_press('esc', press_time=0.1)
-            return self.round_success(wait=1)
+            return self.round_wait(f'ESC 打开暂停菜单（第 {self.menu_esc_presses} 次）', wait=1.2)
         return self.round_retry('未识别贝果局内画面', wait=1)
 
     @node_from(from_name='打开贝果暂停菜单')
