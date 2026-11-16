@@ -47,7 +47,8 @@ DIFFICULTY_HAZARD: str = '高危'
 DIFFICULTIES: tuple[str, ...] = (DIFFICULTY_NORMAL, DIFFICULTY_HARD, DIFFICULTY_HAZARD)
 DEFAULT_DIFFICULTY: str = DIFFICULTY_HAZARD
 
-# 各难度推荐装备价值：常规 12000，困难 72100，高危 258000
+# 各难度推荐装备价值：常规 12000，困难 72100，高危 258000。雅努斯幻境与城郊幻境共用；
+# 城郊高危取自录屏的备战页，城郊困难、常规按与雅努斯相同处理，尚未实机核对。
 DIFFICULTY_RECOMMENDED_VALUES: dict[str, str] = {
     DIFFICULTY_NORMAL: '12000',
     DIFFICULTY_HARD: '72100',
@@ -90,8 +91,5 @@ KEYCARD_DIFFICULTY: str = DIFFICULTY_HAZARD
 MODE_DEFAULT_MAPS: dict[str, str] = {MODE_RUN: MAP_JANUS, MODE_KEYCARD: MAP_OUTSKIRTS}
 #: 每种模式当前可选的难度。
 MODE_DIFFICULTIES: dict[str, tuple[str, ...]] = {MODE_RUN: DIFFICULTIES, MODE_KEYCARD: (KEYCARD_DIFFICULTY,)}
-#: 城郊幻境各难度的推荐装备价值。高危取自用户录屏的城郊高危备战页（推荐价值：258000），选图页读数尚未实机核对；
-#: 困难、常规尚未标定。表里没有的难度，入场按「点一次难度页签后接受读数」处理。
-OUTSKIRTS_RECOMMENDED_VALUES: dict[str, str] = {DIFFICULTY_HAZARD: '258000'}
 #: 开房卡模式出售时一律跳过的类型，防止卖掉要用的卡。
 KEYCARD_KEEP_TYPES: tuple[str, ...] = ('门禁卡',)
