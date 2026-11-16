@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 from functools import cache
-from math import atan2, cos, degrees, floor, hypot, radians, sin
+from math import atan2, cos, degrees, hypot, radians, sin
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -55,6 +55,7 @@ from .input_worker import (
     TURN_DEADBAND,
     TURN_DEADBAND_FAST,
     BagelInputWorker,
+    TurnRatioMemory,
 )
 from .route_model import (
     BEACON,
@@ -192,21 +193,6 @@ SLOW_STEP_PRESS: float = 0.5
 
 SLOW_STEP_WAIT: float = 0.1
 """慢步投递后重新观察的间隔（秒）；短按未结束时不叠发下一步。"""
-
-TURN_SCALE_LESSON_SAMPLES: int = 10
-"""至少攒到这么多个有效样本，才认为整局中位数可信。
-
-一局十几个大转角实际只有 13~15 条有效样本，门槛取 20 等于永远不保存。
-"""
-
-TURN_SCALE_MIN_CHANGE: float = 0.03
-"""与本次初值差不到这么多就不写盘：实测每局的改进只有 0.03~0.06，门槛取大就永远写不进去。"""
-
-TURN_SCALE_PEAK_BIN_WIDTH: float = 0.05
-"""峰值箱的分箱宽度：箱以 1.0 为中心（如 0.975~1.025），取个数最多的箱的区间中点。"""
-
-TURN_SCALE_BOUNDS: tuple[float, float] = (0.55, 1.95)
-"""可信的补偿比例范围；超出说明样本被别的动作污染，存了也是错的。"""
 
 ANGLE_FAIL_SECONDS: float = 10.0
 """连续读不到镜头朝向超过这个时长才判失败（用户给定 10 秒）。
@@ -485,23 +471,6 @@ def _closest_on_segment(
     return (start.x + t * dx, start.y + t * dy)
 
 
-def peak_bin_midpoint(samples: list[float], bin_width: float) -> tuple[float, int]:
-    """全程补偿比例的峰值箱中点：箱以 1.0 为中心，取个数最多的箱的区间中点。
-
-    Args:
-        samples: 全程原始补偿比例样本。
-        bin_width: 分箱宽度，必须大于零。
-
-    Returns:
-        峰值箱区间中点与该箱内样本数。
-    """
-    bins: dict[int, list[float]] = {}
-    for value in samples:
-        bins.setdefault(floor((value - 1.0) / bin_width + 0.5 + 1e-9), []).append(value)
-    peak_key = max(bins, key=lambda key: len(bins[key]))
-    return (1.0 + peak_key * bin_width, len(bins[peak_key]))
-
-
 class BagelRouteWalker(BagelOperation):
     """按打点顺序执行路线，箱类按类型交互。"""
 
@@ -516,6 +485,7 @@ class BagelRouteWalker(BagelOperation):
     def __init__(
         self, ctx: ZContext, blueprint_priority: bool = True,
         route_ref: BagelRouteRef | None = None, keycard_room: str | None = None,
+        turn_memory: TurnRatioMemory | None = None,
     ) -> None:
         """加载出生点清单并准备定位。
 
@@ -527,6 +497,8 @@ class BagelRouteWalker(BagelOperation):
                 该房间开启的房间段；试跑房间段时以房间入口代替出生点锚定起点。
             keycard_room: 正式运行开房卡模式时的目标房间；识别出生点后执行该出生点
                 去这个房间的「入口段 + 房间段」。None 表示跑刀。试跑时忽略。
+            turn_memory: 同一次应用运行内的跨局转向校准记忆；本局从它的值起步，
+                局末由 remember_turn_ratio 记回。None 表示从 1.0 起步、局末不记。
 
         Raises:
             ValueError: 出生点清单无法读取，或指定路线不存在、损坏、绑定的出生点未登记。
@@ -653,9 +625,12 @@ class BagelRouteWalker(BagelOperation):
         """当前是否在冲刺。"""
         self.last_dodge_at: float | None = None
         """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
+        self.turn_memory: TurnRatioMemory | None = turn_memory
+        """跨局转向校准记忆；试跑时为 None，每次从 1.0 起步。"""
+        initial_ratio = turn_memory.hint if turn_memory is not None else 1.0
         log.info(
-            '贝果转向本局按 turn_dx=%.4f 起步，校准由转向线程自己学，局末写回同一字段',
-            self.ctx.game_config.turn_dx,
+            '贝果转向本局 turn_dx=%.4f，起步校准值 %.3f，局内由转向线程学习；不写回 turn_dx',
+            self._turn_dx(), initial_ratio,
         )
         self.elevator_phase: str | None = None
         """电梯当前阶段：进门 / 选楼层 / 出电梯；不在电梯里时为 None。"""
@@ -663,7 +638,7 @@ class BagelRouteWalker(BagelOperation):
         """当前电梯阶段的起始时刻，用于计时。"""
         self.elevator_last_tap: float = 0.0
         """上次为推进对话而点按的时刻，控制每秒一次。"""
-        self.input_worker: BagelInputWorker = BagelInputWorker(ctx)
+        self.input_worker: BagelInputWorker = BagelInputWorker(ctx, initial_turn_ratio=initial_ratio)
         """按键单独线程：主线投递即返回；同种操作不打断自己，不同操作打断旧的。"""
         self.ledger: BagelSafeLedger = BagelSafeLedger()
         """本局安全箱物品，只用于统计日志。"""
@@ -2115,34 +2090,22 @@ class BagelRouteWalker(BagelOperation):
         """
         self.input_worker.submit_turn(target, cruise_only=cruise_only, deadband=deadband)
 
-    def persist_turn_scale(self) -> None:
-        """把本局学到的补偿比例写回现有灵敏度字段 turn_dx，供下一局直接用。
+    def remember_turn_ratio(self) -> None:
+        """把本局学到的转向校准值记进跨局记忆，作下一局的起步值；不写 turn_dx。"""
+        if self.turn_memory is None:
+            return
+        ratio = self.input_worker.turn_ratio
+        samples = self.input_worker.turn_samples
+        log.info('贝果转向本局校准值 %.3f（%s 个有效样本）', ratio, samples)
+        self.turn_memory.absorb(ratio, samples, self._turn_dx())
 
-        全程原始样本按箱宽分箱，取个数最多的箱的区间中点；远离峰值的脏样本
-        够不着峰值直接丢掉。超出可信范围、或与 1.0 几乎一样时不写盘。
-        不再写 config/bagel/turn_scale.yml，直接改现有 turn_dx 字段。
+    def _turn_dx(self) -> float:
+        """转向实际使用的 turn_dx：读控制器持有的游戏配置。
+
+        后端运行前会重建 ctx.game_config，控制器仍持有启动时的对象，两者的值可能不同；
+        转向按控制器那份换算，日志和提示也以它为准。
         """
-        samples = self.input_worker.turn_scale_samples
-        if len(samples) < TURN_SCALE_LESSON_SAMPLES:
-            return
-        scale, peak_count = peak_bin_midpoint(samples, TURN_SCALE_PEAK_BIN_WIDTH)
-        min_scale, max_scale = TURN_SCALE_BOUNDS
-        if not min_scale <= scale <= max_scale:
-            log.info('贝果转向校准值 %.3f 超出可信范围，不写回 turn_dx', scale)
-            return
-        if abs(scale - 1.0) < TURN_SCALE_MIN_CHANGE:
-            return
-        old_dx = self.ctx.game_config.turn_dx
-        new_dx = round(float(old_dx) * float(scale), 6)
-        try:
-            self.ctx.game_config.turn_dx = new_dx
-        except Exception:
-            log.error('转向补偿写回 turn_dx 失败', exc_info=True)
-            return
-        log.info(
-            '贝果转向补偿比例 %.3f 已写回 turn_dx（%.4f → %.4f，峰值 %s/%s 样本），下一局直接用',
-            scale, old_dx, new_dx, peak_count, len(samples),
-        )
+        return float(self.ctx.controller.game_config.turn_dx)
 
     def _set_sprint(self, distance: float) -> None:
         """按距离决定是否冲刺。
