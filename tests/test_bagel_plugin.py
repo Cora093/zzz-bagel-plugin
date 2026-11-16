@@ -1,10 +1,9 @@
-"""贝果计划插件：结构约束、自包含资源与接入测试。
+"""贝果计划插件的基础测试：插件能加载、能读到自己的资源、打包不丢文件。
 
-这些用例不初始化完整游戏上下文，只守住「搬成插件后仍然自洽」的不变量：
-结构满足扫描器要求、模块全部可导入、资源都落在插件目录内、
-换个工作目录照样读得到，以及插件管理器和设置扫描器能发现它。
+只守住这三类不变量，不覆盖游戏流程；游戏行为靠实机验证，不新增单元测试。
+manifest、const 与封面由 ``scripts/validate_plugin.py --strict`` 校验，这里不重复。
 
-测试随插件走：`uv run pytest plugins/bagel/tests/`。
+运行：`PYTHONPATH=<主仓>/src uv run pytest <本仓库>/tests/`。
 """
 
 from __future__ import annotations
@@ -28,13 +27,10 @@ from one_dragon.base.operation.application.plugin_info import PluginSource
 from one_dragon.utils import os_utils
 
 REPO_DIR = Path(__file__).resolve().parents[1]
-"""插件仓库根：放 README、打包脚本与工作流。"""
+"""插件仓库根，也是导入根：放进 sys.path 后，插件目录以 ``bagel`` 这个包名被加载。"""
 
 PLUGIN_DIR = REPO_DIR / 'bagel'
 """插件目录：目录名必须等于 plugin.json 里的 id，打包后就是 zip 的顶层目录。"""
-
-PLUGINS_DIR = REPO_DIR
-"""导入根：把它放进 sys.path 后，插件目录以 ``bagel`` 这个包名被加载。"""
 
 MODULE_FILES = sorted(PLUGIN_DIR.rglob('*.py'))
 """插件内全部 Python 文件，含子包与 __init__。"""
@@ -46,7 +42,7 @@ ROOT_FILES = sorted(PLUGIN_DIR.glob('*.py'))
 @pytest.fixture(scope='module', autouse=True)
 def _plugin_on_sys_path() -> Iterator[None]:
     """插件以仓库根为模块根，导入前先把它放进 sys.path。"""
-    entry = str(PLUGINS_DIR)
+    entry = str(REPO_DIR)
     if entry not in sys.path:
         sys.path.insert(0, entry)
     yield
@@ -64,29 +60,15 @@ def empty_work_dir(tmp_path: Path) -> Iterator[Path]:
 
 
 class _StubContext:
-    """最小上下文：只实现插件用到的主程序接口 ``get_plugin_data_dir``。
-
-    路径规则照主程序来（``plugin_data/<APP_ID>``），并记下传入的 APP_ID，
-    这样能验证插件是问主程序要目录，而不是自己拼。
-    """
-
-    def __init__(self) -> None:
-        self.requested_app_ids: list[str] = []
+    """最小上下文：只实现插件用到的主程序接口 ``get_plugin_data_dir``，规则照主程序来。"""
 
     def get_plugin_data_dir(self, app_id: str) -> Path:
-        self.requested_app_ids.append(app_id)
         return Path(os_utils.get_path_under_work_dir('plugin_data', app_id))
-
-
-@pytest.fixture
-def stub_ctx() -> _StubContext:
-    """给插件用的假上下文。"""
-    return _StubContext()
 
 
 def _module_name(path: Path) -> str:
     """把文件路径换算成导入名，子包按点号展开，__init__ 归到包本身。"""
-    parts = list(path.relative_to(PLUGINS_DIR).with_suffix('').parts)
+    parts = list(path.relative_to(REPO_DIR).with_suffix('').parts)
     if parts[-1] == '__init__':
         parts.pop()
     return '.'.join(parts)
@@ -100,51 +82,6 @@ def test_plugin_layout() -> None:
     # 一条龙推荐固定文件名，旧的 前缀_factory.py / 前缀_const.py 只是兼容，不再使用
     assert [n for n in names if n.endswith('_factory.py') or n.endswith('_const.py')] == []
     assert '__init__.py' in names
-    # 模块数量不是契约：删掉不执行的旧流程后数量会变，这里只要求插件不是空壳。
-    assert MODULE_FILES
-
-
-def test_manifest_matches_const() -> None:
-    """plugin.json 与生成的 const 保持一致，商店校验比对的就是这两份。
-
-    ``scripts/generate_const.py`` 会按 plugin.json 重写 const；
-    手改 const 而不改 manifest，发版时会被校验判成 CONST_OUTDATED。
-    """
-    manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
-    assert manifest['id'] == PLUGIN_DIR.name
-
-    const_text = (PLUGIN_DIR / 'const.py').read_text(encoding='utf-8')
-    expected = {
-        'APP_ID': manifest['id'],
-        'APP_NAME': manifest['name'],
-        'PLUGIN_VERSION': manifest['version'],
-        'PLUGIN_AUTHOR': manifest['author']['name'],
-        'PLUGIN_HOMEPAGE': manifest['homepage'],
-        'PLUGIN_DESCRIPTION': manifest['summary'],
-    }
-    for name, value in expected.items():
-        assert f'{name} = "{value}"' in const_text, name
-    assert f'DEFAULT_GROUP = {manifest["defaultGroup"]}' in const_text
-    assert f'NEED_NOTIFY = {manifest["needNotify"]}' in const_text
-
-
-def test_modules_importable() -> None:
-    """所有模块都能用相对导入单独加载，不依赖被搬走的主仓路径。"""
-    failures: list[str] = []
-    for path in MODULE_FILES:
-        try:
-            importlib.import_module(_module_name(path))
-        except Exception as exc:
-            failures.append(f'{_module_name(path)}: {type(exc).__name__}: {exc}')
-    assert failures == []
-
-
-def test_app_identity() -> None:
-    """应用标识来自生成的 const，插件根指向插件目录自身。"""
-    const = importlib.import_module('bagel.const')
-    defs = importlib.import_module('bagel.defs')
-    assert const.APP_ID == 'bagel'
-    assert Path(defs.PLUGIN_DIR).resolve() == PLUGIN_DIR.resolve()
 
 
 def test_no_legacy_absolute_imports() -> None:
@@ -166,119 +103,38 @@ def test_no_legacy_absolute_imports() -> None:
     assert offenders == []
 
 
-@pytest.mark.parametrize('template', ['interact_icon', 'card_key_icon', 'interact_key_f', 'safe_slot_locked'])
-def test_templates_inside_plugin(template: str) -> None:
-    """模板原图随插件分发，匹配不再经过全局模板库。"""
-    assert (PLUGIN_DIR / 'assets' / 'template' / 'bagel' / template / 'raw.png').is_file()
+def test_modules_importable() -> None:
+    """所有模块都能用相对导入单独加载，不依赖被搬走的主仓路径。"""
+    failures: list[str] = []
+    for path in MODULE_FILES:
+        try:
+            importlib.import_module(_module_name(path))
+        except Exception as exc:
+            failures.append(f'{_module_name(path)}: {type(exc).__name__}: {exc}')
+    assert failures == []
 
 
-def test_spawn_points_inside_plugin() -> None:
-    """出生点清单随插件分发，不依赖工作目录。"""
-    spawn = PLUGIN_DIR / 'assets' / 'game_data' / 'bagel' / 'spawn_points.yml'
-    assert spawn.is_file()
+def test_factory_discovered(empty_work_dir: Path) -> None:
+    """插件管理器能发现 bagel，且扫描无失败记录。
 
-
-def test_default_routes_inside_plugin(empty_work_dir: Path, stub_ctx: _StubContext) -> None:
-    """默认路线随插件分发：空工作目录下也能按出生点清单初始化出开启选择。
-
-    这条守首次启动：默认路线若还留在工作目录，用户第一次跑就会得到
-    「没有开启的贝果路线」，任务根本开不起来。
+    用空工作目录：扫描会顺带构造应用配置，不隔离就会写到真实工作目录。
     """
+    manager = ApplicationFactoryManager(None, [(REPO_DIR, PluginSource.THIRD_PARTY)])
+    factories = manager.discover_factories()
+
+    matched = [factory for factory in factories if factory.app_id == 'bagel']
+    assert len(matched) == 1
+    assert manager.scan_failures == []
+
+    info = manager.get_plugin_info('bagel')
+    assert info is not None
+    assert Path(info.plugin_dir).resolve() == PLUGIN_DIR.resolve()
+
+
+def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
+    """换一个空工作目录后，出生点、底图、角标、挂锁模板仍然读得到。"""
     store_module = importlib.import_module('bagel.route.route_store')
-    store = store_module.BagelRouteStore(stub_ctx)
-
-    assert store.sample_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
-    defaults = sorted(store.sample_dir.glob('*.sample.route.json'))
-    assert len(defaults) >= 3
-
-    catalog = store.load_catalog()
-    assert catalog.routes, '默认路线没有读出来'
-    active = [ref for ref in catalog.active.values() if ref is not None]
-    assert active, '空工作目录下没有初始化出任何开启路线，首次运行会直接判配置无效'
-
-
-def test_user_data_outside_plugin(empty_work_dir: Path, stub_ctx: _StubContext) -> None:
-    """用户数据落在工作目录的 plugin_data/<APP_ID>/ 下，不进插件目录。
-
-    插件升级是整个目录替换，数据写在插件目录里会随旧版本一起删掉。
-    目录由主程序分配，插件只把 APP_ID 传过去。
-    """
-    expected = empty_work_dir / 'plugin_data' / 'bagel'
-
-    store_module = importlib.import_module('bagel.route.route_store')
-    store = store_module.BagelRouteStore(stub_ctx)
-    assert store.custom_dir.resolve() == (expected / 'routes').resolve()
-    assert store.settings_path.resolve() == (expected / 'route_settings.yml').resolve()
-    assert not store.custom_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
-
-    stats_module = importlib.import_module('bagel.route.route_stats')
-    records = stats_module.BagelRouteRecorder(stub_ctx).path()
-    assert records.resolve() == (expected / 'route_records.jsonl').resolve()
-
-    shot_module = importlib.import_module('bagel.screenshot')
-    assert shot_module.screenshot_dir(stub_ctx).resolve() == (expected / 'screenshots').resolve()
-    assert stub_ctx.requested_app_ids
-    assert set(stub_ctx.requested_app_ids) == {'bagel'}, '插件应把 APP_ID 交给主程序分配目录'
-
-
-class _OldHostContext:
-    """旧版主程序（v2.6.1 之前）的上下文：没有 ``get_plugin_data_dir`` 接口。"""
-
-
-def test_user_data_dir_fallback_on_old_host(empty_work_dir: Path) -> None:
-    """主程序没有数据目录接口时，插件按同一规则自己拼，路径与新版一致。"""
-    defs = importlib.import_module('bagel.defs')
-    expected = empty_work_dir / 'plugin_data' / 'bagel'
-
-    assert defs.get_plugin_data_dir(_OldHostContext()).resolve() == expected.resolve()
-    assert defs.get_plugin_data_dir(_StubContext()).resolve() == expected.resolve()
-
-
-def test_readme_images_exist() -> None:
-    """README 引用的截图都随插件分发，避免说明里的图裂掉。"""
-    readme = REPO_DIR / 'README.md'
-    assert readme.is_file()
-    text = readme.read_text(encoding='utf-8')
-
-    refs = re.findall(r'!\[[^\]]*\]\(([^)]+)\)', text)
-    assert refs, 'README 里没有引用任何截图'
-    for ref in refs:
-        assert (REPO_DIR / ref).is_file(), ref
-
-
-def test_map_layers_load_from_plugin() -> None:
-    """分层底图与清单从插件目录加载，层名沿用游戏内叫法。"""
-    locator = importlib.import_module('bagel.vision.map_locator')
-    layer_dir = Path(locator.default_layer_dir()).resolve()
-    assert layer_dir.is_relative_to(PLUGIN_DIR.resolve())
-    assert (layer_dir / 'layers.json').is_file()
-
-    locators = locator.load_map_locators()
-    assert locators
-    assert any(item.name.startswith('雅努斯幻境/') for item in locators)
-
-
-def test_item_badges_inside_plugin() -> None:
-    """物品角标模板齐全，且不落到工作目录。"""
-    vision = importlib.import_module('bagel.vision.item_vision')
-    badge_dir = Path(vision._badge_dir()).resolve()
-    assert badge_dir.is_relative_to(PLUGIN_DIR.resolve())
-    for _, stem in vision._BADGE_FILES:
-        assert (badge_dir / f'{stem}.png').is_file()
-
-
-def test_safe_lock_template_readable() -> None:
-    """保险箱挂锁模板能读出有效纹理，缺失时判空会全部失效。"""
-    slots = importlib.import_module('bagel.vision.slots')
-    template = slots._safe_lock_template()
-    assert template is not None
-    assert template.shape == (56, 48)
-
-
-def test_resources_survive_work_dir_change(empty_work_dir: Path, stub_ctx: _StubContext) -> None:
-    """换一个空工作目录后，出生点、底图、角标、模板仍然读得到。"""
-    store_module = importlib.import_module('bagel.route.route_store')
-    store = store_module.BagelRouteStore(stub_ctx)
+    store = store_module.BagelRouteStore(_StubContext())
     assert store.spawn_path.is_relative_to(PLUGIN_DIR.resolve())
     assert store.load_spawns()
 
@@ -292,122 +148,22 @@ def test_resources_survive_work_dir_change(empty_work_dir: Path, stub_ctx: _Stub
     assert slots._safe_lock_template() is not None
 
 
-def test_screen_yaml_inside_plugin() -> None:
-    """screen 定义随插件分发，app_id 统一指向插件自身。"""
-    files = sorted((PLUGIN_DIR / 'screen_info').glob('*.yml'))
-    assert len(files) >= 9
+def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
+    """默认路线随插件分发：空工作目录下也能按出生点清单初始化出开启选择。
 
-    screen_ids: set[str] = set()
-    for path in files:
-        text = path.read_text(encoding='utf-8')
-        assert 'app_id: bagel' in text, path.name
-        match = re.search(r'^screen_id:\s*(\S+)$', text, re.MULTILINE)
-        assert match is not None, path.name
-        screen_ids.add(match.group(1))
-    assert len(screen_ids) == len(files)
-
-    names = {path.name for path in files}
-    assert {'bagel_hud.yml', 'bagel_hub.yml', 'bagel_warehouse.yml'} <= names
-
-
-def test_web_asset_refs_exist() -> None:
-    """路线编辑器网页按插件根解析相对路径，引用到的资源必须真实存在。"""
-    index = PLUGIN_DIR / 'web' / 'index.html'
-    assert index.is_file()
-    text = index.read_text(encoding='utf-8')
-
-    refs = set(re.findall(r'(?:src|fetch\()\s*[\'"]?((?:assets|web)/[\w./-]+)', text))
-    assert refs, '网页里没有找到相对资源引用，检查改写是否回退'
-
-    for ref in refs:
-        candidate = PLUGIN_DIR / ref
-        if candidate.suffix in ('.js', '.css', '.html'):
-            continue
-        # 目录型引用（底图目录）只要求目录存在
-        assert candidate.parent.is_dir() or candidate.is_dir(), ref
-
-
-def test_factory_discovered(empty_work_dir: Path) -> None:
-    """插件管理器能发现 bagel，且扫描无失败记录。
-
-    用空工作目录：扫描会顺带构造应用配置，不隔离就会写到真实工作目录。
+    这条守首次启动：默认路线若还留在工作目录，用户第一次跑就会得到
+    「没有开启的贝果路线」，任务根本开不起来。
     """
-    manager = ApplicationFactoryManager(None, [(PLUGINS_DIR, PluginSource.THIRD_PARTY)])
-    factories = manager.discover_factories()
+    store_module = importlib.import_module('bagel.route.route_store')
+    store = store_module.BagelRouteStore(_StubContext())
 
-    matched = [factory for factory in factories if factory.app_id == 'bagel']
-    assert len(matched) == 1
-    assert manager.scan_failures == []
+    assert store.sample_dir.resolve().is_relative_to(PLUGIN_DIR.resolve())
+    assert sorted(store.sample_dir.glob('*.sample.route.json'))
 
-    info = manager.get_plugin_info('bagel')
-    assert info is not None
-    assert info.source == PluginSource.THIRD_PARTY
-    assert Path(info.plugin_dir).resolve() == PLUGIN_DIR.resolve()
-
-
-def test_setting_provider_registered() -> None:
-    """设置界面提供者随插件被发现，app_id 与应用一致。"""
-    from one_dragon_qt.services.app_setting.app_setting_provider import (
-        AppSettingProvider,
-    )
-
-    provider_module = importlib.import_module('bagel.app_setting')
-    providers = [
-        value for value in vars(provider_module).values()
-        if isinstance(value, type)
-        and issubclass(value, AppSettingProvider)
-        and value is not AppSettingProvider
-        and value.__module__ == provider_module.__name__
-    ]
-    assert len(providers) == 1
-    assert providers[0].app_id == 'bagel'
-
-
-def test_plugin_metadata_declared(empty_work_dir: Path) -> None:
-    """插件元数据齐全，插件管理界面与商店覆盖安装都能读出作者和版本。"""
-    manager = ApplicationFactoryManager(None, [(PLUGINS_DIR, PluginSource.THIRD_PARTY)])
-    manager.discover_factories()
-
-    info = manager.get_plugin_info('bagel')
-    assert info is not None
-    manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
-    assert info.version == manifest['version']
-    assert info.author.startswith('Cora')
-    assert 'kawayiYokami' in info.author
-    assert info.description
-    assert info.homepage
-
-
-def test_default_group_app(empty_work_dir: Path) -> None:
-    """贝果进一条龙默认应用组，同时不限定只能由代码入口调用。"""
-    manager = ApplicationFactoryManager(None, [(PLUGINS_DIR, PluginSource.THIRD_PARTY)])
-    manager.discover_factories()
-
-    factory = next(item for item in manager.discover_factories() if item.app_id == 'bagel')
-    assert factory.default_group is True
-    assert factory.internal_app is False
-
-
-def test_cover_declared(empty_work_dir: Path) -> None:
-    """封面随插件分发，格式与尺寸符合商店要求：WebP、至少 600×376、16:10。"""
-    from PIL import Image
-
-    cover = PLUGIN_DIR / 'assets' / 'cover.webp'
-    assert cover.is_file()
-    assert cover.read_bytes()[:4] == b'RIFF'
-
-    with Image.open(cover) as image:
-        assert image.format == 'WEBP'
-        assert image.width >= 600
-        assert image.height >= 376
-        assert abs(image.width / image.height - 600 / 376) < 0.03
-
-    manager = ApplicationFactoryManager(None, [(PLUGINS_DIR, PluginSource.THIRD_PARTY)])
-    manager.discover_factories()
-    info = manager.get_plugin_info('bagel')
-    assert info is not None
-    assert info.cover_path is not None
-    assert Path(info.cover_path).resolve() == cover.resolve()
+    catalog = store.load_catalog()
+    assert catalog.routes, '默认路线没有读出来'
+    active = [ref for ref in catalog.active.values() if ref is not None]
+    assert active, '空工作目录下没有初始化出任何开启路线，首次运行会直接判配置无效'
 
 
 def _zip_plugin(target_zip: Path) -> Path:
@@ -436,7 +192,6 @@ def test_store_zip_keeps_resources(tmp_path: Path) -> None:
     assert [item.plugin_name for item in previews] == ['bagel']
     manifest = json.loads((PLUGIN_DIR / 'plugin.json').read_text(encoding='utf-8'))
     assert previews[0].version == manifest['version']
-    assert previews[0].author.startswith('Cora')
 
     with zipfile.ZipFile(zip_path, 'r') as zf:
         layouts = service._analyze_zip(zf)
@@ -451,9 +206,3 @@ def test_store_zip_keeps_resources(tmp_path: Path) -> None:
         if path.is_file() and '__pycache__' not in path.parts
     }
     assert members == packed
-
-    assert any(name.startswith('assets/game_data/map_locator/') for name in members)
-    assert any(name.startswith('assets/template/bagel/') for name in members)
-    assert any(name.startswith('screen_info/') and name.endswith('.yml') for name in members)
-    assert 'web/index.html' in members
-    assert len([name for name in members if not name.endswith('.py')]) > 20

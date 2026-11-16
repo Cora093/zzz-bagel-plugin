@@ -1,0 +1,34 @@
+name: Lint
+
+# PR 和推 main 时跑 ruff。pytest 依赖主仓与 Windows 专属依赖，不在 CI 跑，发版前本机跑。
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruff:
+    # 草稿 PR 不跑，省 Actions 时间
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+
+      # 版本与主仓 uv.lock 一致；规则读仓库根 ruff.toml
+      - name: Ruff
+        run: uvx ruff@0.16.2 check .

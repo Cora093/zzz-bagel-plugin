@@ -10,6 +10,7 @@ from one_dragon.utils.log_utils import log
 from zzz_od.application.zzz_application import ZApplication
 
 from . import const, screenshot, stats, usage
+from .operation.buy_keycard import BagelBuyKeycard
 from .operation.deposit import BagelDeposit
 from .operation.enter import BagelEnter
 from .operation.exit import BagelExit
@@ -22,7 +23,6 @@ from .operation.operation import (
     is_bagel_result,
     release_flow_inputs,
 )
-from .operation.buy_keycard import BagelBuyKeycard
 from .operation.organize_backpack import BagelOrganizeBackpack
 from .operation.pick_keycard import BagelPickKeycard
 from .operation.settle import BagelSettleWarehouse
