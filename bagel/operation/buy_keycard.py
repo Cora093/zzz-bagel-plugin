@@ -31,6 +31,16 @@ CLOSE_DIALOG_POS: Point = Point(1310, 314)
 """兑换确认弹窗右上角关闭「X」按钮坐标。"""
 HUB_SHOP_BUTTON_POS: Point = Point(1760, 480)
 """研究站主界面中间偏右「商店」按钮坐标。"""
+CARD_LIST_RECT: Rect = Rect(400, 240, 1850, 950)
+"""常驻战备商品列表区域；只在这里 OCR 找房卡标题。"""
+DIALOG_HEADER_RECT: Rect = Rect(500, 270, 1420, 370)
+"""兑换确认弹窗标题行；「兑换确认」区域没认出时在这一行里再找一次。"""
+GAIN_TITLE_RECT: Rect = Rect(860, 390, 1060, 455)
+"""购买后「获得」弹窗的标题区域，标题文字约在 (930,405)-(990,440)。
+
+不能全屏找「获得」：兑换确认弹窗的说明文字「……的门禁获得大量物资」也含这两个字，
+弹窗没关掉（如金币不足）时会被误判成已买到。
+"""
 
 
 class BagelBuyKeycard(BagelOperation):
@@ -78,11 +88,25 @@ class BagelBuyKeycard(BagelOperation):
         )
 
     def _in_shop(self) -> bool:
-        """核对是否已在大富豪商店。"""
-        if self.round_by_find_area(self.last_screenshot, '贝果-商店', '标题').is_success:
+        """核对是否已在大富豪商店：标题或左栏「常驻商店」任一区域认出即可。"""
+        return any(
+            self.round_by_find_area(self.last_screenshot, '贝果-商店', name).is_success
+            for name in ('标题', '常驻商店')
+        )
+
+    def _ocr_texts(self, rect: Rect) -> list[str]:
+        """当前截图在指定区域内的 OCR 文本，先裁剪再识别。"""
+        return [
+            str(item.data) for item in self.ctx.ocr_service.get_ocr_result_list(
+                image=self.last_screenshot, rect=rect, crop_first=True,
+            )
+        ]
+
+    def _dialog_open(self) -> bool:
+        """兑换确认弹窗是否开着：先认区域，没认出再在弹窗标题行里找「兑换确认」。"""
+        if self.round_by_find_area(self.last_screenshot, '贝果-商店', '兑换确认').is_success:
             return True
-        ocr_res = self.ctx.ocr.run_ocr(self.last_screenshot)
-        return any('大富豪商店' in k or '常驻商店' in k for k in ocr_res)
+        return any('兑换确认' in text for text in self._ocr_texts(DIALOG_HEADER_RECT))
 
     @operation_node(name='准备前往商店', is_start_node=True, timeout_seconds=30)
     def prepare_navigation(self) -> OperationRoundResult:
@@ -146,38 +170,30 @@ class BagelBuyKeycard(BagelOperation):
         time.sleep(0.4)
         return self.round_success('已切换常驻战备')
 
-    def _match_card_rect(self, screen) -> Rect | None:
-        """在当前画面中匹配对应房间的房卡，返回点击区域。"""
+    def _match_card_rect(self) -> Rect | None:
+        """在商品列表区域里匹配对应房间的房卡标题，返回标题文字区域。"""
         target = self.room_name.replace(' ', '').replace('·', '')
-        results = self.ctx.ocr.run_ocr(screen)
+        results = self.ctx.ocr_service.get_ocr_result_list(
+            image=self.last_screenshot, rect=CARD_LIST_RECT, crop_first=True,
+        )
         best_rect: Rect | None = None
         best_score: float = 0.0
-
-        for text, mrls in results.items():
-            clean_text = text.replace(' ', '').replace('·', '')
+        for item in results:
+            clean_text = str(item.data).replace(' ', '').replace('·', '')
             if not clean_text:
                 continue
             common_len = str_utils.longest_common_subsequence_length(clean_text, target)
             score = common_len / max(len(target), len(clean_text))
-
             if score >= 0.7 and score > best_score:
-                for item in mrls:
-                    rect: Rect | None = None
-                    if hasattr(item, 'rect') and item.rect is not None:
-                        rect = item.rect
-                    elif isinstance(item, tuple) and len(item) >= 5:
-                        rect = Rect(item[1], item[2], item[1] + item[3], item[2] + item[4])
-                    if rect is not None and 400 <= rect.center.x <= 1850 and 240 <= rect.center.y <= 950:
-                        best_score = score
-                        best_rect = rect
-
+                best_score = score
+                best_rect = item.rect
         return best_rect
 
     @node_from(from_name='切换常驻战备')
     @operation_node(name='查找并选择房卡', timeout_seconds=30)
     def find_and_select_card(self) -> OperationRoundResult:
         """在商品列表中查找对应房卡；未显示则下滑列表。"""
-        rect = self._match_card_rect(self.last_screenshot)
+        rect = self._match_card_rect()
         if rect is not None:
             click_point = Point(rect.center.x, rect.center.y + 40)
             log.info('在商店中找到房卡「%s」，文字区域 %s，点击位置 %s', self.room_name, rect, click_point)
@@ -201,12 +217,7 @@ class BagelBuyKeycard(BagelOperation):
     @operation_node(name='兑换确认弹窗', timeout_seconds=20)
     def confirm_exchange(self) -> OperationRoundResult:
         """在兑换确认弹窗中设置数量并点击确认。"""
-        ocr_res = self.ctx.ocr.run_ocr(self.last_screenshot)
-        dialog_open = (
-            any('兑换确认' in k for k in ocr_res)
-            or self.round_by_find_area(self.last_screenshot, '贝果-商店', '兑换确认').is_success
-        )
-        if not dialog_open:
+        if not self._dialog_open():
             self._dialog_checks += 1
             if self._dialog_checks > 5:
                 return self.round_fail('未能呼出房卡兑换确认弹窗')
@@ -230,17 +241,18 @@ class BagelBuyKeycard(BagelOperation):
     @node_from(from_name='兑换确认弹窗', status='已确认兑换')
     @operation_node(name='处理购买结果并返回', timeout_seconds=25)
     def finish_and_return(self) -> OperationRoundResult:
-        """处理购买后的提示弹窗并返回研究站大厅。"""
-        ocr_res = self.ctx.ocr.run_ocr(self.last_screenshot)
+        """处理购买后的提示弹窗并返回研究站大厅。
 
+        「获得」弹窗横在屏幕中间，点弹窗下方空白处 (960,950) 即可关闭。
+        """
         # 处理可能出现的「获得」提示弹窗
-        if any('获得' in k or '点击空白处关闭' in k for k in ocr_res):
+        if any('获得' in text for text in self._ocr_texts(GAIN_TITLE_RECT)):
             log.info('关闭房卡获得提示弹窗')
             self.ctx.controller.click(Point(960, 950))
             return self.round_wait('等待获得弹窗关闭', wait=0.6)
 
         # 检查兑换确认弹窗是否仍然残留（未成功兑换，如硬币不足）
-        if any('兑换确认' in k for k in ocr_res):
+        if self._dialog_open():
             self._finish_checks += 1
             if self._finish_checks > 3:
                 log.error('兑换确认弹窗未能关闭，可能齿轮硬币不足或达到上限')
