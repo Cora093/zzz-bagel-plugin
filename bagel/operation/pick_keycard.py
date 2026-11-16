@@ -479,8 +479,16 @@ class BagelPickKeycard(BagelOperation):
         """▼ 提示还在就向下滚一行；已经消失说明本页到底，换下一页。▼ 已在本页开头向上滚动时唤出。"""
         screen = self.last_screenshot
         if not more_below(screen):
+            known = self._known_page_rows()
+            offset = self.tracker.offset if self.tracker is not None else 0
+            if known > offset + VISIBLE_ROWS and offset < PAGE_ROWS_MAX - VISIBLE_ROWS:
+                # ▼ 唤不出来：清点时已经滚到过更靠下的行，说明本页还能滚，不能按「到底」换页。
+                log.warning('贝果挑卡：第 %s 页 ▼ 不在（像素 %s），但清点时见过 %s 行、当前只滚到第 %s 行，'
+                            '按还能向下滚处理', self.page + 1, arrow_pixels(screen), known, offset)
+                self._scroll_down()
+                return self.round_wait(f'第 {self.page + 1} 页 ▼ 不在但清点见过更多行，向下滚动一行', wait=0.6)
             log.info('贝果挑卡：第 %s 页 ▼ 已消失，本页到底（已向下滚 %s 行，▼ 像素 %s）',
-                     self.page + 1, self.tracker.offset if self.tracker is not None else 0, arrow_pixels(screen))
+                     self.page + 1, offset, arrow_pixels(screen))
             return self._next_page()
         if self.tracker is not None and self.tracker.offset >= PAGE_ROWS_MAX - VISIBLE_ROWS:
             return self._fail(
@@ -488,6 +496,10 @@ class BagelPickKeycard(BagelOperation):
                 '记账或画面不对，停止并保留现场')
         self._scroll_down()
         return self.round_wait(f'第 {self.page + 1} 页向下滚动一行', wait=0.6)
+
+    def _known_page_rows(self) -> int:
+        """清点已记到的本页总行数（最大行号 + 1）；本页没记过返回 0。"""
+        return max((index + 1 for page, index in self.row_counts if page == self.page), default=0)
 
     def _scroll_down(self) -> None:
         """向下滚一行；下一轮由 ``_wait_scroll_settled`` 等结果。"""
