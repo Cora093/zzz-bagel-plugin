@@ -46,9 +46,10 @@ if TYPE_CHECKING:
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
     from zzz_od.context.zzz_context import ZContext
 
-KEYCARD_SCORE_MIN: float = 0.95
+KEYCARD_SCORE_MIN: float = 0.94
 """有图标模板时，图标相似度不低于它才算本房间的卡：挑卡只点开这些格子核对浮窗，清点按它计数、不点开浮窗。
-取在实机同款卡（0.98 以上）与最接近的别款卡（同图案不同字母的 D 卡约 0.90）之间。"""
+取在同款卡最低读数（无损截图与有损录屏均约 0.953）与最接近的别款卡（光映中心二层会客室与一层休息室互相约 0.92）之间，
+偏向放宽：同款卡漏认会让挑卡跳过、清点少数，别款卡误认在挑卡时还有浮窗标题拦下。"""
 CANDIDATE_LIMIT: int = 8
 """每一屏最多点开核对的格子数；卡按种类扎堆，排在前面的足够覆盖。"""
 SCROLL_NOTCHES: int = 1
