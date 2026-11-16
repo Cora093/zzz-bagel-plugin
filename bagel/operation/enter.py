@@ -64,7 +64,7 @@ class BagelEnter(BagelOperation):
     def __init__(
         self, ctx: ZContext, *, allow_clear_loadout: bool = False,
         allow_world_recovery: bool = False, prepare_shortcut_entry: bool = False,
-        recovery_auto_clean: bool = False, recovery_filter_areas: tuple[str, ...] | None = None,
+        recovery_auto_clean: bool = False,
         recovery_filter_groups: tuple[tuple[str, ...], ...] | None = None,
         difficulty: str = DEFAULT_DIFFICULTY, map_name: str = MAP_JANUS, carry_card: bool = False,
         card_room_name: str | None = None, card_template: str | None = None, card_reserve: int = 0,
@@ -101,9 +101,7 @@ class BagelEnter(BagelOperation):
         self.need_investment: bool = (self.difficulty == DIFFICULTY_HAZARD)
         self.recovery_auto_clean: bool = recovery_auto_clean
         self.recovery_filter_groups: tuple[tuple[str, ...], ...] = (
-            recovery_filter_groups if recovery_filter_groups is not None
-            else (recovery_filter_areas,) if recovery_filter_areas is not None
-            else DEFAULT_CLEAN_FILTER_GROUPS
+            recovery_filter_groups if recovery_filter_groups is not None else DEFAULT_CLEAN_FILTER_GROUPS
         )
         self.allow_clear_loadout: bool = allow_clear_loadout
         self.allow_world_recovery: bool = allow_world_recovery

@@ -70,7 +70,6 @@ class BagelBuyKeycard(BagelOperation):
         self._scroll_count: int = 0
         self._dialog_checks: int = 0
         self._finish_checks: int = 0
-        self._open_shop_clicks: int = 0
 
     def handle_init(self) -> None:
         """每次运行重置计数与状态。"""
@@ -78,7 +77,6 @@ class BagelBuyKeycard(BagelOperation):
         self._scroll_count = 0
         self._dialog_checks = 0
         self._finish_checks = 0
-        self._open_shop_clicks = 0
 
     def _at_research_station(self) -> bool:
         """核对是否停在研究站大厅（非选图页，具备标题和前往空洞）。"""
@@ -154,7 +152,6 @@ class BagelBuyKeycard(BagelOperation):
             self.ctx.controller.click(HUB_SHOP_BUTTON_POS)
             log.info('点击研究站商店按钮坐标 %s', HUB_SHOP_BUTTON_POS)
 
-        self._open_shop_clicks += 1
         return self.round_wait('等待打开商店', wait=1.0)
 
     @node_from(from_name='打开商店', status='已打开商店')

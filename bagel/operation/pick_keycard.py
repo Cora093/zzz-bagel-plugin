@@ -163,9 +163,9 @@ class BagelPickKeycard(BagelOperation):
         self.settle_checks: int = 0
         """这次滚动后已截了几次图等结果。"""
         self.stuck_scrolls: int = 0
+        """▼ 提示还在、滚动命令却没生效的连续次数。"""
         self.top_arrow: bool | None = None
         """向上滚动后上一次截图里 ▼ 提示在不在。"""
-        """▼ 提示还在、滚动命令却没生效的连续次数。"""
         self.tried: set[tuple[int, int]] = set()
         self.pending: GridCell | None = None
         self.placing_checks: int | None = None

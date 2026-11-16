@@ -23,14 +23,12 @@ class ContainerRecovery:
 
     STATUS_REAPPROACH: str = '容器提示消失，需要重新靠近'
     TIME_LIMIT: float = 30
-    APPROACH_LIMIT: int = 2
     INTERACT_LIMIT: int = 3
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         """使用执行器的有效耗时计时，独立操作默认使用单调时钟。"""
         self.clock: Callable[[], float] = clock
         self.started_at: float | None = None
-        self.approaches: int = 0
         self.interactions: int = 0
         self.last_interact_at: float | None = None
         self.last_input_frame: float | None = None
@@ -44,19 +42,6 @@ class ContainerRecovery:
         """时间耗尽后禁止继续输入，仍允许识别已经打开的面板。"""
         if self.started_at is not None and self.clock() - self.started_at >= self.TIME_LIMIT:
             return '容器靠近与开箱恢复超过30秒'
-        return None
-
-    def request_approach(self) -> str | None:
-        """申请额外重新靠近，首次靠近不占此次数。"""
-        self.start()
-        reason = self.error()
-        if reason:
-            return reason
-        if self.approaches >= self.APPROACH_LIMIT:
-            return '容器重新靠近已达2次上限'
-        if self.interactions >= self.INTERACT_LIMIT:
-            return '容器开箱交互已达3次上限'
-        self.approaches += 1
         return None
 
 

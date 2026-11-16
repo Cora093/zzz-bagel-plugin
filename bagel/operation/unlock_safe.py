@@ -12,8 +12,6 @@ from ..defs import SAFE_UNLOCK_HITS
 from .container import BagelContainerOperation
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
     from zzz_od.context.zzz_context import ZContext
 
@@ -23,58 +21,34 @@ if TYPE_CHECKING:
 class BagelUnlockSafe(BagelContainerOperation):
     """限次打开电子保险箱，光圈解锁后等待搜查面板。"""
 
-    STATUS_READY: str = '已打开光圈解锁界面'
     STATUS_UNLOCKED: str = '电子保险箱搜索完成'
     INTERRUPT_CONFIRM_SECONDS: float = 0.5
     """解锁与搜查特征均消失后，持续确认局内画面的最短时间。"""
 
-    def __init__(
-        self, ctx: ZContext, phase: str = 'full', recovery: ContainerRecovery | None = None,
-        on_unlock_ready: Callable[[], None] | None = None,
-    ) -> None:
-        """按阶段执行交互或解锁；旧调用默认保留完整流程。"""
-        if phase not in ('full', 'interact', 'unlock'):
-            raise ValueError('未知保险箱操作阶段')
+    def __init__(self, ctx: ZContext, recovery: ContainerRecovery | None = None) -> None:
+        """一次完成开箱、光圈解锁和等待搜查面板。"""
         super().__init__(ctx, target='safe', op_name='贝果-解锁电子保险箱', recovery=recovery)
-        self.phase: str = phase
-        self.timeout_seconds = 45 if phase in ('full', 'unlock') else -1
+        self.timeout_seconds = 45
         self.hits_done: int = 0
         self.ring_armed: bool = False
-        self.unlock_started: bool = False
         self.search_hud_since: float | None = None
         """等待搜查时首次确认回到局内的截图时间；用于排除面板过渡。"""
-        self.on_unlock_ready: Callable[[], None] | None = on_unlock_ready
 
     def handle_init(self) -> None:
         """每次运行重置解锁进度。"""
         super().handle_init()
         self.hits_done = 0
         self.ring_armed = False
-        self.unlock_started = False
         self.search_hud_since = None
-
-    def _notify_unlock_ready(self) -> None:
-        """首次进入解锁或搜查时通知执行器交互已完成。"""
-        if self.phase != 'interact' and not self.unlock_started:
-            self.unlock_started = True
-            if self.on_unlock_ready is not None:
-                self.on_unlock_ready()
 
     def _unlock_ready(self) -> OperationRoundResult:
         """确认解锁界面的截图立即参与光圈判断，不丢掉首张小圈。"""
-        if self.phase == 'interact':
-            return self.round_success(self.STATUS_READY)
-        self._notify_unlock_ready()
         self._observe_ring()
         return self.round_success('已在解锁界面')
 
     def _open_container(self) -> OperationRoundResult:
-        """完整执行立即观察开箱结果；独立交互沿用共用等待。"""
-        return self.interact_container(
-            '已按F进入解锁',
-            observation_wait=0.02 if self.phase == 'full' else 0.25,
-            wait_after_interact=0 if self.phase == 'full' else 0.25,
-        )
+        """按 F 后立即观察开箱结果，不丢掉首张小圈。"""
+        return self.interact_container('已按F进入解锁', observation_wait=0.02, wait_after_interact=0)
 
     def _press_timing(self) -> None:
         """精确点按；F 与 Space 等价，沿用交互键。"""
@@ -100,10 +74,7 @@ class BagelUnlockSafe(BagelContainerOperation):
         if self.is_bagel_result():
             return self.round_fail(self.STATUS_DEFEATED)
         if self._search_ready():
-            self._notify_unlock_ready()
             return self.round_success(self.STATUS_UNLOCKED)
-        if self.phase == 'unlock':
-            return self.round_fail('请先打开电子保险箱光圈解锁界面')
         result = self._open_container()
         if result.is_success and result.status == '容器已打开':
             return self._unlock_ready()
@@ -118,7 +89,6 @@ class BagelUnlockSafe(BagelContainerOperation):
         if self.is_bagel_result():
             return self.round_fail(self.STATUS_DEFEATED)
         if self._search_ready():
-            self._notify_unlock_ready()
             return self.round_success(self.STATUS_UNLOCKED)
         result = self._open_container()
         if result.is_success:

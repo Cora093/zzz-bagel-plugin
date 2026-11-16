@@ -26,7 +26,7 @@ class BagelSettleWarehouse(BagelOperation):
     STATUS_DONE: str = BagelDeposit.STATUS_DONE
 
     def __init__(
-        self, ctx: ZContext, auto_clean: bool, filter_areas: tuple[str, ...] | None = None,
+        self, ctx: ZContext, auto_clean: bool,
         *, sell_due: bool = True, starting: bool = False,
         filter_groups: tuple[tuple[str, ...], ...] | None = None,
     ) -> None:
@@ -35,9 +35,7 @@ class BagelSettleWarehouse(BagelOperation):
         self.starting: bool = starting
         self.auto_clean: bool = auto_clean
         self.filter_groups: tuple[tuple[str, ...], ...] = (
-            filter_groups if filter_groups is not None
-            else (filter_areas,) if filter_areas is not None
-            else DEFAULT_CLEAN_FILTER_GROUPS
+            filter_groups if filter_groups is not None else DEFAULT_CLEAN_FILTER_GROUPS
         )
         self.sell_due: bool = sell_due
         self.deposit_status: str = BagelDeposit.STATUS_EMPTY
