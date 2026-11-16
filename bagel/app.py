@@ -573,7 +573,7 @@ class BagelApp(ZApplication):
     @node_from(from_name='判断连续失败次数', status='继续入场')
     @operation_node(name='返回入口', screenshot_before_round=False)
     def return_entry(self) -> OperationRoundResult:
-        """返回贝果主界面后开下一局；大世界落点由入场操作重建入口。"""
+        """返回主页面后开下一局；大世界落点由入场操作重建入口。"""
         result = BagelReturn(self.ctx).execute()
         self._record_route(self._stats.finish_round())
         return (
@@ -867,7 +867,7 @@ class BagelApp(ZApplication):
                     self._buy_card_attempted = True
                     # 买完仍按失败重开入场，沿用失败局的重试记录。
                     self.failure_retry_pending = True
-                    # 与成功局一致：先从结算仓库返回入口，买卡从研究站或大世界出发。
+                    # 与成功局一致：先从结算仓库返回入口，买卡从主页面或大世界出发。
                     # 返回入口会处理撤离奖励提示和落点等待，买卡操作不处理这些。
                     returned = BagelReturn(self.ctx).execute()
                     self._record_route(self._stats.finish_round())

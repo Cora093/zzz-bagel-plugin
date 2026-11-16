@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 SCREEN_DIR: Path = PLUGIN_DIR / 'screen_info'
 """插件画面定义目录，框架启动时从这里注入。"""
 
-SENTINEL_SCREEN: tuple[str, str] = ('贝果-研究站', '前往空洞')
+SENTINEL_SCREEN: tuple[str, str] = ('贝果计划-主页面', '前往空洞')
 """用来判断插件画面还在不在；这个区域每次入场都要用。"""
 
 

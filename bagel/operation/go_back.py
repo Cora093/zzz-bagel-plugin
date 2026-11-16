@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class BagelReturn(BagelOperation):
-    """从已处理完物资的结算仓库返回，区分贝果主界面与大世界。"""
+    """从已处理完物资的结算仓库返回，区分主页面与大世界。"""
 
     def __init__(self, ctx: ZContext) -> None:
         """由调用者先完成物资处理；返回大世界时不再与达塔交互。"""
@@ -44,7 +44,7 @@ class BagelReturn(BagelOperation):
 
     @operation_node(name='返回研究站', is_start_node=True, timeout_seconds=15)
     def return_station(self) -> OperationRoundResult:
-        """按钮仍名为返回研究站，但实际落点由游戏的入场来源决定。"""
+        """游戏按钮名为「返回研究站」，但实际落点由游戏的入场来源决定。"""
         if not self.round_by_find_area(self.last_screenshot, '贝果-仓库', '放入仓库').is_success:
             return self.round_retry('未到结算仓库', wait=1)
         return self.round_by_find_and_click_area(
@@ -68,15 +68,8 @@ class BagelReturn(BagelOperation):
                 self.reward_confirmed = True
                 return self.round_wait('等待撤离奖励提示关闭', wait=0.5)
             return result
-        if self._at_bagel_activity():
-            # 结算返回也可能落在活动页；该页也有「前往空洞」，点它回到选图页。
-            return self.round_by_find_and_click_area(
-                self.last_screenshot, '贝果-研究站', '前往空洞',
-                until_find_all=[('贝果-选图', '前往备战')],
-                success_wait=1, retry_wait=1,
-            )
         if self._at_bagel_hub():
             return self.round_success('已返回贝果入口')
         if self._has('快捷手册', '大世界-普通'):
             return self.round_success('已返回大世界')
-        return self.round_wait('等待返回贝果主界面或大世界', wait=0.5)
+        return self.round_wait('等待返回主页面或大世界', wait=0.5)
