@@ -59,7 +59,6 @@ if TYPE_CHECKING:
 class BagelApp(ZApplication):
     """支持出生点收集并按成功入仓局数循环。"""
 
-    STATUS_SKIP: str = '非支持出生点，退出重开'
     STATUS_ANCHOR_SKIP: str = '出生点没有可执行路线，退出重开'
     STATUS_A: str = '已进入局内，开始识别出生点'
     STATUS_KEYCARD_MISSING: str = '刷卡处显示没有该房间的门禁卡'
@@ -79,7 +78,6 @@ class BagelApp(ZApplication):
             run_record=record,
         )
         self.config: BagelConfig = config
-        self.matched_map_id: str | None = None
         self.attempts: int = 0
         self.success_rounds: int = 0
         self.rounds_since_sell: int = 0
@@ -285,7 +283,6 @@ class BagelApp(ZApplication):
         self.failure_retry_pending = False
         self.failure_reason = None
         self.failure_history = []
-        self.matched_map_id = None
         self._spawn_hud_misses = 0
         self.initial_clear_pending = True
         self.last_return_status = None
@@ -298,6 +295,7 @@ class BagelApp(ZApplication):
         self._card_in_safe = False
         self._round_card_swiped = False
         self._cards_out = False
+        self._buy_card_attempted = False
         self._keycard_room_name = ''
         self._route_recorder.prune()
         screenshot.prune_screenshots(self.ctx)
@@ -556,11 +554,9 @@ class BagelApp(ZApplication):
             return self.round_fail('缺少贝果定位小地图区域')
         self.attempts += 1
         # 出生点识别由路线执行器完成：这里只确认画面是贝果局内并可以开始。
-        self.matched_map_id = 'route_walker'
         log.info('第 %s 次入场成功，交给路线执行器识别出生点', self.attempts)
         return self.round_success(self.STATUS_A)
 
-    @node_from(from_name='识别出生点', status=STATUS_SKIP)
     @node_from(from_name='执行局内流程', status=STATUS_ANCHOR_SKIP)
     @operation_node(name='退出非支持局', screenshot_before_round=False)
     def exit_unsupported(self) -> OperationRoundResult:
@@ -710,8 +706,8 @@ class BagelApp(ZApplication):
             # 本局之后要结束（达到成功上限或连续空箱上限）就不挑卡，免得把新卡留在安全箱。
             if not finishing and self.empty_rounds < 3:
                 self._pick_card_in_warehouse()
-            log.info('贝果单局结算：第 %s 次入场，出生点=%s，结果=%s；成功=%s，连续空箱=%s，出售累计=%s/%s',
-                     self.attempts, self.matched_map_id, result.status,
+            log.info('贝果单局结算：第 %s 次入场，结果=%s；成功=%s，连续空箱=%s，出售累计=%s/%s',
+                     self.attempts, result.status,
                      self.success_rounds, self.empty_rounds, self.rounds_since_sell, self.config.sell_interval)
         return self.round_by_op_result(result)
 

@@ -178,7 +178,6 @@ class BagelOperation(ZOperation):
 
     STATUS_DEFEATED: str = '贝果撤离失败'
     STATUS_INTERRUPTED: str = '贝果搜查或解锁被打断'
-    STATUS_CLEANUP_FAILED: str = '贝果收尾失败'
     STATUS_ROUND_FAILED: str = '贝果局内流程失败'
     STATUS_CONTAINER_FAILED: str = '贝果容器靠近或开箱恢复失败'
 

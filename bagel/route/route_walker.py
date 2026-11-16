@@ -563,9 +563,9 @@ class BagelRouteWalker(BagelOperation):
         self.card_wait_since: float | None = None
         """F 键没出现或没对准刷卡条目的起始时刻。"""
         self.card_lost_since: float | None = None
+        """还没长按时刷卡条目消失的起始时刻。"""
         self.card_stable_since: float | None = None
         """刷卡条目与 F 键开始连续对准的时刻；未对准时为 None。"""
-        """还没长按时刷卡条目消失的起始时刻。"""
         self.card_hold_lost_since: float | None = None
         """长按中刷卡条目整条消失的起始时刻；条目在时为 None。"""
         self.card_hold_lost_count: int = 0
@@ -1212,7 +1212,7 @@ class BagelRouteWalker(BagelOperation):
     def _run_unlock_safe(self) -> OperationRoundResult:
         """电子保险箱：光圈解锁子操作。"""
         self._release_forward()
-        op = BagelUnlockSafe(self.ctx, phase='full')
+        op = BagelUnlockSafe(self.ctx)
         result = op.execute()
         self._adopt_screenshot(op)
         if result.success:
