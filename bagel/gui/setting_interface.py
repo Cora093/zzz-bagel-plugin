@@ -257,6 +257,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             [(item.value.value, item.value.ui_text) for item in BagelDifficulty], '挑战难度', card,
         )
         self.map_hint: CaptionLabel = CaptionLabel(card)
+        self.map_hint.setWordWrap(True)
         self.difficulty_hint: CaptionLabel = CaptionLabel(card)
         for row, (label, segment, hint) in enumerate((
             ('模式', self.mode_segment, None),
@@ -347,7 +348,11 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         disabled = [item.value.value for item in BagelMap if item.value.value not in maps]
         map_reason = f'{"、".join(disabled)}还没有登记开房卡房间' if disabled else ''
         self.map_segment.set_allowed(maps, map_reason)
-        self.map_hint.setText(map_reason)
+        if self.config.is_keycard:
+            self.map_hint.setText(map_reason)
+            self.map_hint.setTextColor('#606060', '#a0a0a0')
+        else:
+            self._refresh_run_map_hint()
         difficulty_reason = f'{mode_name}固定{"、".join(difficulties)}'
         self.difficulty_segment.set_allowed(difficulties, difficulty_reason)
         self.difficulty_hint.setText(difficulty_reason if len(difficulties) < len(BagelDifficulty) else '')
@@ -355,6 +360,24 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         if self.config.is_keycard:
             self._refresh_keycard_status()
             self._refresh_buy_keycard_options()
+
+    def _refresh_run_map_hint(self) -> None:
+        """跑刀：所选地图没有开启路线时标红提示无法启动，与启动检查同一判据；有路线时不显示。"""
+        if self.config is None:
+            return
+        map_name = self.config.map_name
+        try:
+            count = BagelRouteStore(self.ctx).load_catalog().active_count(map_name)
+        except (OSError, ValueError, BagelRouteConfigError) as error:
+            log.error('贝果设置页读取路线开启情况失败', exc_info=True)
+            self.map_hint.setText(f'读取路线失败：{error}')
+            self.map_hint.setTextColor('#a4262c', '#f0b6bb')
+            return
+        if count == 0:
+            self.map_hint.setText(f'{map_name}没有开启的跑刀路线，无法启动。')
+            self.map_hint.setTextColor('#a4262c', '#f0b6bb')
+        else:
+            self.map_hint.setText('')
 
     def _read_rooms(self) -> None:
         """读开房卡房间清单；读不到时按没有房间处理。"""
@@ -757,8 +780,12 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             return
         editor.exec()
         editor.deleteLater()
-        if self.config is not None and self.config.is_keycard:
+        if self.config is None:
+            return
+        if self.config.is_keycard:
             self._refresh_keycard_status()
+        else:
+            self._refresh_run_map_hint()
 
     def on_interface_shown(self) -> None:
         """进入页面后绑定当前账号和应用组。"""
