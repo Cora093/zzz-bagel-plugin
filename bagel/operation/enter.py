@@ -16,7 +16,6 @@ from ..defs import (
     DIFFICULTY_RECOMMENDED_VALUES,
     MAP_JANUS,
     MAP_OUTSKIRTS,
-    OUTSKIRTS_RECOMMENDED_VALUES,
     RECOMMENDED_VALUE,
 )
 from ..vision.screen import (
@@ -49,8 +48,6 @@ if TYPE_CHECKING:
 _ENTRY_RECLICK_SECONDS: float = 3
 #: 同一入场提示点击后仍未消失、零投资点击后投资页仍未消失的等待上限。
 _ENTRY_DIALOG_TIMEOUT_SECONDS: float = 15
-#: 推荐价值未标定的地图：点难度页签后至少等这么久再接受读数，避免读到切换前的旧值。
-_UNCALIBRATED_SETTLE_SECONDS: float = 1.0
 
 
 class BagelEnter(BagelOperation):
@@ -90,14 +87,8 @@ class BagelEnter(BagelOperation):
         self.map_name: str = map_name
         self.other_map: str = MAP_OUTSKIRTS if map_name == MAP_JANUS else MAP_JANUS
         self.carry_card: bool = carry_card
-        self.target_recommended_value: str | None = (
-            OUTSKIRTS_RECOMMENDED_VALUES.get(difficulty) if map_name == MAP_OUTSKIRTS
-            else DIFFICULTY_RECOMMENDED_VALUES.get(difficulty, RECOMMENDED_VALUE)
-        )
-        """目标地图和难度的推荐价值；None 表示尚未标定。"""
-        self.accepted_value: str | None = None
-        """未标定时，点过难度页签后接受的推荐价值读数；之后的复核与入场提示都按它判断。"""
-        self._difficulty_clicked_at: float | None = None
+        self.target_recommended_value: str = DIFFICULTY_RECOMMENDED_VALUES.get(difficulty, RECOMMENDED_VALUE)
+        """目标难度的推荐价值；两张地图共用同一张表。"""
         self.need_investment: bool = (self.difficulty == DIFFICULTY_HAZARD)
         self.recovery_auto_clean: bool = recovery_auto_clean
         self.recovery_filter_groups: tuple[tuple[str, ...], ...] = (
@@ -138,23 +129,18 @@ class BagelEnter(BagelOperation):
         self._warning_started_at = 0
         self._warning_reclicked = False
         self._resume_check = False
-        self._difficulty_clicked_at = None
         self.card_picked = False
 
-    def _expected_value(self) -> str | None:
-        """复核用的推荐价值：已标定用常量，未标定用本次接受的读数。"""
-        return self.target_recommended_value if self.target_recommended_value is not None else self.accepted_value
-
     def _map_state(self) -> str:
-        """读选图页：``ok`` 地图与难度都对，``wrong`` 明确选错，``unknown`` 读数不明或未标定。"""
+        """读选图页：``ok`` 地图与难度都对，``wrong`` 明确选错，``unknown`` 读数不明。"""
         selected = read_area(self.ctx, self.last_screenshot, '贝果-选图', '选中地图')
         value = read_coin_value(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
-        expected = self._expected_value()
-        if selected == self.map_name and expected is not None and value == expected:
+        expected = self.target_recommended_value
+        if selected == self.map_name and value == expected:
             return 'ok'
         if selected == self.other_map:
             return 'wrong'
-        if selected == self.map_name and expected is not None and value.isdecimal() and value != expected:
+        if selected == self.map_name and value.isdecimal() and value != expected:
             return 'wrong'
         return 'unknown'
 
@@ -376,31 +362,18 @@ class BagelEnter(BagelOperation):
     @node_from(from_name='选择地图')
     @operation_node(name='选择难度', timeout_seconds=15)
     def choose_difficulty(self) -> OperationRoundResult:
-        """选中后用对应推荐价值与地图名复核，不能只检测页签文字存在。
-
-        推荐价值未标定的地图和难度（城郊幻境的困难、常规）：本次入场先点一次难度页签，
-        等 ``_UNCALIBRATED_SETTLE_SECONDS`` 后接受读到的数，写警告日志供标定。
-        """
+        """选中后用对应推荐价值与地图名复核，不能只检测页签文字存在。"""
         if self._map_state() == 'ok':
             self._resume_check = False
             return self.round_success()
         selected = read_area(self.ctx, self.last_screenshot, '贝果-选图', '选中地图')
         value = read_coin_value(self.ctx, self.last_screenshot, '贝果-选图', '推荐价值')
         if self.node_clicked or selected != self.map_name or not value.isdecimal():
-            if (self.target_recommended_value is None and self._difficulty_clicked_at is not None
-                    and selected == self.map_name and value.isdecimal()
-                    and self.operation_usage_time - self._difficulty_clicked_at >= _UNCALIBRATED_SETTLE_SECONDS):
-                self.accepted_value = value
-                self._resume_check = False
-                log.warning('贝果%s%s推荐价值尚未标定，按本次读数 %s 核对；请回传选图截图以便标定',
-                            self.map_name, self.difficulty, value)
-                return self.round_success()
             return self.round_wait(f'等待核对{self.map_name}难度', wait=0.25)
         result = self.round_by_find_and_click_area(
             self.last_screenshot, '贝果-选图', self.difficulty, pre_delay=0.15, retry_wait=0.25,
         )
         if result.is_success:
-            self._difficulty_clicked_at = self.operation_usage_time
             return self.round_wait(f'等待{self.difficulty}选择生效', wait=0.25)
         return result
 
@@ -556,7 +529,7 @@ class BagelEnter(BagelOperation):
                 return self.round_wait('等待零投资入场', wait=1)
             return result
         text = read_entry_warning_text(self.ctx, self.last_screenshot)
-        warning = entry_warning(text, self._expected_value())
+        warning = entry_warning(text, self.target_recommended_value)
         if warning is not None:
             if warning == self._pending_warning:
                 elapsed = self.operation_usage_time - self._warning_started_at
