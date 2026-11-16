@@ -515,6 +515,7 @@ class BagelApp(ZApplication):
 
     @node_from(from_name='门禁卡用完结束', status='需要自动购买房卡', ignore_status=False)
     @node_from(from_name='判断成功局数', status='需要自动购买房卡', ignore_status=False)
+    @node_from(from_name='判断连续失败次数', status='需要自动购买房卡', ignore_status=False)
     @operation_node(name='自动购买房卡', screenshot_before_round=False)
     def auto_buy_cards(self) -> OperationRoundResult:
         """自动前往商店购买目标房间门禁卡。"""
@@ -866,6 +867,19 @@ class BagelApp(ZApplication):
         subject = self._defeat_limit_subject()
         if subject is None:
             if self.config.is_keycard and self._cards_out:
+                if self.config.auto_buy_keycard and not self._buy_card_attempted:
+                    self._buy_card_attempted = True
+                    # 买完仍按失败重开入场，沿用失败局的重试记录。
+                    self.failure_retry_pending = True
+                    # 与成功局一致：先从结算仓库返回入口，买卡从研究站或大世界出发。
+                    # 返回入口会处理撤离奖励提示和落点等待，买卡操作不处理这些。
+                    returned = BagelReturn(self.ctx).execute()
+                    self._record_route(self._stats.finish_round())
+                    if not returned.success:
+                        return self._finish_failed_round(returned, '返回入口')
+                    log.info('贝果开房卡：失败局结算挑卡时门禁卡不足，准备自动前往商店购买 %s 张', self.config.buy_keycard_count)
+                    return self.round_success('需要自动购买房卡')
+                self._buy_card_attempted = False
                 log.info('贝果开房卡：%s，任务结束。最后一局失败：%s', self.STATUS_CARDS_OUT, self.failure_reason)
                 return self.round_success(self.STATUS_CARDS_OUT)
             self.failure_retry_pending = True
