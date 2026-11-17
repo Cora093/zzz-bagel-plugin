@@ -286,11 +286,19 @@ class BagelStoreSafe(BagelOperation):
         return None
 
     def _check_collection_deadline(self) -> OperationRoundResult | None:
-        """等待、拖前和拖后都检查期限，确认进展不延长总用时。"""
+        """等待、拖前和拖后都检查期限，确认进展不延长总用时。
+
+        有拖拽待核对时只查总用时，不查无进展：搬运成功要等核对节点回读画面才算
+        进展，先查无进展会在读到成功证据前就判失败，把已经入箱的这一件和面板里
+        刚揭示的物品一起丢下（#71）。核对本身有重拖、等面板和安全箱不明的次数
+        上限，再加总用时兜底，不会因此卡住。
+        """
         elapsed = self.operation_usage_time
         if elapsed >= self.TOTAL_TIMEOUT_SECONDS:
             self._clear_pending()
             return self.round_fail(self.STATUS_TIMEOUT)
+        if self._pending_source_index is not None:
+            return None
         progress_time = self._search_progress.last_progress_time
         if progress_time is not None and elapsed - progress_time >= self.NO_PROGRESS_SECONDS:
             log.warning(
