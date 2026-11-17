@@ -453,8 +453,9 @@ HANZI_PATTERN: re.Pattern[str] = re.compile(r'[一-鿿]')
 PICKUP_CLICK_X: int = (PICKUP_TEXT_LEFT + PICKUP_TEXT_RIGHT) // 2
 """Alt 点击拾取物条目的横坐标：取条目文字列的中点。"""
 
-PICKUP_CLICK_STABLE_SECONDS: float = 0.5
-"""Alt 点击前，同一条拾取物要在同一行连续出现两帧，两帧相隔不超过这么久（秒）。"""
+PICKUP_CLICK_STABLE_SECONDS: float = 1.5
+"""Alt 点击前，同一条拾取物要在同一行连续出现两帧，两帧相隔不超过这么久（秒）。
+读整张列表要逐行 OCR，实机每轮约 0.55 秒；取 0.5 时永远等不到第二帧。"""
 
 ROW_ICON_KINDS: dict[str, str] = {
     'interact_icon': '容器',
@@ -952,13 +953,20 @@ class BagelRouteWalker(BagelOperation):
     @node_from(from_name='碎步移动', status='路线走完')
     @operation_node(name='现场交互判断')
     def check_surroundings(self) -> OperationRoundResult:
-        """原地扫 2 秒：识别到已知提示就按提示交互，否则换路线。脚下有拾取物先捡。"""
+        """原地扫 2 秒：识别到已知提示就按提示交互，否则换路线。脚下有拾取物先捡。
+
+        F 键行的拾取物先点按 F。现场没有要交互的容器、门时，其他行的拾取物再用 Alt 点击：
+        Alt 点击后 F 键会停在被点的那一行，之后再按 F 可能落到别的条目上。
+        """
         pickup = self._try_pickup()
         if pickup is not None:
             return pickup
         if self._nearby_kind() is not None:
             self.target_wait_since = None
             return self.round_success('现场有交互物')
+        click = self._click_pickup()
+        if click is not None:
+            return click
         if self.target_wait_since is None:
             self.target_wait_since = time.monotonic()
         elif time.monotonic() - self.target_wait_since >= SURROUND_CHECK_SECONDS:
@@ -1856,10 +1864,9 @@ class BagelRouteWalker(BagelOperation):
         log.info('贝果拾取：移动中点按F拾取「%s」，不停车（第 %s 次）', row.text, self.pickup_taps)
 
     def _try_pickup(self) -> OperationRoundResult | None:
-        """停下时捡提示列表里的拾取物；没有可捡的返回 None。
+        """停下时，F 键落在拾取物上就松开前进键点按 F；没有可捡的返回 None。
 
-        F 键落在拾取物上就松开前进键点按 F。F 键行不是拾取物、列表其他行有拾取物时，
-        用 Alt 点击那一行，见 ``_click_pickup``。
+        其他行的拾取物由 ``_click_pickup`` 处理，只在现场观察里调用。
 
         捡起后条目消失，F 键移到下一条。同一条按满 ``PICKUP_TAP_LIMIT`` 次还在，
         记为捡不起来，本局不再捡它；累计 ``PICKUP_FAIL_LIMIT`` 条捡不起来就不再拾取。
@@ -1875,16 +1882,23 @@ class BagelRouteWalker(BagelOperation):
             self._release_forward()
             self._tap_pickup(row.text)
             return self.round_wait(f'点按F拾取「{row.text}」', wait=PICKUP_TAP_WAIT)
-        return self._click_pickup()
+        return None
 
     def _click_pickup(self) -> OperationRoundResult | None:
         """F 键行以外的拾取物用 Alt 点击捡走；没有可捡的返回 None。
 
         提示列表按距离排序，拾取物排在容器下面时 F 键一直落不到它。
         Alt 唤出光标点条目，拾取物直接进背包，不用先把 F 键挪过去。
+        点完后 F 键停在被点的那一行：被点的条目消失后，那一行换成下一条；下一条是电子保险箱时，
+        再长按 F 会打开解锁界面。所以只在现场观察、没有要交互的容器或门时调用。
         角色还在滑动时列表会重新排序，所以同一条拾取物要在同一行连续出现两帧才点。
         点之前先松开前进键、暂停转向：Alt 按住时鼠标位移移动的是光标。
         """
+        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+            return None
+        waited = time.monotonic() - self.pickup_tap_at
+        if waited < PICKUP_TAP_WAIT:
+            return self.round_wait('等上一下拾取生效', wait=PICKUP_TAP_WAIT - waited)
         rows = self._prompt_rows()
         present = {row.text for row in rows if row.kind == ROW_PICKUP}
         if self.click_pickup_text is not None and self.click_pickup_text not in present:
