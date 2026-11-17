@@ -23,9 +23,12 @@ ITEM_TYPE_OTHER: str = '其他'
 ITEM_TYPE_CURRENCY: str = '金币'
 ITEM_TYPE_BLUEPRINT: str = '蓝图'
 ITEM_TYPE_MATERIAL: str = '材料'
+ITEM_TYPE_TACTIC: str = '战术道具'
 # 特殊奖励专指使用切面钻石角标的菲林、零号业绩，不代表全部撤离奖励。
 ITEM_TYPE_SPECIAL_REWARD: str = '特殊奖励'
 QUALITY_UNKNOWN: str = '?'
+STACKABLE_TYPES: frozenset[str] = frozenset({ITEM_TYPE_MATERIAL, ITEM_TYPE_TACTIC})
+"""允许叠放的类型；其他类型游戏是否允许叠放尚未确认，一律不叠。"""
 
 # 同组、同品质时的类型顺序；两种蓝图开关状态共用。
 TYPE_RANK: dict[str, int] = {
@@ -35,7 +38,7 @@ TYPE_RANK: dict[str, int] = {
     '门禁卡': 4,
     '战术棱镜': 3,
     '装备': 2,
-    '战术道具': 1,
+    ITEM_TYPE_TACTIC: 1,
     ITEM_TYPE_OTHER: 0,
     ITEM_TYPE_MATERIAL: -1,
     ITEM_TYPE_CURRENCY: -2,
@@ -67,7 +70,7 @@ _QUALITY_REGIONS: tuple[tuple[int, int, int, int], ...] = (
 _BADGE_FILES: tuple[tuple[str, str], ...] = (
     (ITEM_TYPE_BLUEPRINT, 'blueprint'),
     (ITEM_TYPE_CURRENCY, 'currency'),
-    ('战术道具', 'tactic'),
+    (ITEM_TYPE_TACTIC, 'tactic'),
     ('战术棱镜', 'prism_bell'),
     ('战术棱镜', 'prism_char'),
     ('装备', 'equip'),
@@ -119,6 +122,16 @@ class StoreChoice:
     source_index: int
     dest_index: int
     mark: BagelSlotMark
+    source_quantity: int | None = None
+    """按件数对换时源格的件数；其余情况为 None。"""
+    dest_quantity: int | None = None
+    """按件数对换时安全箱目标格的件数；其余情况为 None。"""
+
+    def quantity_note(self) -> str:
+        """按件数对换时给日志补一句件数比较；其余情况为空串。"""
+        if self.source_quantity is None:
+            return ''
+        return f'；同优先级比件数 {self.source_quantity} > {self.dest_quantity}'
 
 
 def is_strictly_better(
@@ -221,11 +234,15 @@ def choose_store_action(
     safe_empty: Sequence[int],
     blueprint_priority: bool = True,
     stack_target: Callable[[BagelSlotMark], int | None] | None = None,
+    quantity: Callable[[BagelSlotMark], int | None] | None = None,
 ) -> StoreChoice | None:
     """用同一优先级选择非金币候选和箱内目标；满箱时仅严格更优才对换。
 
     传了 ``stack_target`` 时，先按同一优先级逐个找能叠放的格子；叠放不占新
     格子，优先于填空和对换。找不到才走原来的填空或对换。
+
+    传了 ``quantity`` 时，满箱且最好的候选与箱内最差的一格优先级相同，再比件数：
+    见 `_swap_by_quantity`。只有走到这一步才读数量，平时不多做 OCR。
     """
     candidates = [mark for mark in results if mark.item_type != ITEM_TYPE_CURRENCY]
     if not candidates:
@@ -250,7 +267,53 @@ def choose_store_action(
         )
         if is_strictly_better(candidate, worst, blueprint_priority):
             return StoreChoice(ACTION_SWAP, candidate.index, worst.index, candidate)
+        if quantity is not None:
+            return _swap_by_quantity(ordered, safes, worst.priority(blueprint_priority), blueprint_priority, quantity)
     return None
+
+
+def _swap_by_quantity(
+    ordered: Sequence[BagelSlotMark],
+    safes: Sequence[BagelSlotMark],
+    level: tuple[int, int, int],
+    blueprint_priority: bool,
+    quantity: Callable[[BagelSlotMark], int | None],
+) -> StoreChoice | None:
+    """同优先级比件数：候选里件数最多的一格，换掉箱内同优先级件数最少的一格。
+
+    只在两边都是箱内最低的那一档优先级时比较；件数严格更多才换。只比 STACKABLE_TYPES：
+    其他类型不叠放，件数总是 1，不读也就不会把「1」误读成「11」去白换一次。
+    读不出件数的格子不参与：换掉一格已知件数更少的，总是让安全箱变好，不需要知道
+    未知格的件数。每次对换让这一档的总件数严格增加，所以不会来回换。
+
+    Args:
+        ordered: 候选，已按优先级从高到低排好。
+        safes: 安全箱已占用格。
+        level: 箱内最差一格的优先级。
+        blueprint_priority: 蓝图优先开关。
+        quantity: 读一格件数，读不出为 None。
+    """
+    tied_results = [
+        mark for mark in ordered
+        if mark.item_type in STACKABLE_TYPES and mark.priority(blueprint_priority) == level
+    ]
+    if not tied_results:
+        return None
+    tied_safes = [
+        mark for mark in safes
+        if mark.item_type in STACKABLE_TYPES and mark.priority(blueprint_priority) == level
+    ]
+    known_safes = [(count, mark) for mark in tied_safes if (count := quantity(mark)) is not None]
+    if not known_safes:
+        return None
+    least_count, least = min(known_safes, key=lambda pair: (pair[0], pair[1].index))
+    known_results = [(count, mark) for mark in tied_results if (count := quantity(mark)) is not None]
+    if not known_results:
+        return None
+    best_count, best = max(known_results, key=lambda pair: (pair[0], -pair[1].index))
+    if best_count <= least_count:
+        return None
+    return StoreChoice(ACTION_SWAP, best.index, least.index, best, best_count, least_count)
 
 
 def _badge_search_crop(screen: MatLike, center: Point) -> MatLike | None:
@@ -366,7 +429,7 @@ def find_stack_target(
 ) -> int | None:
     """在安全箱里找能叠放 ``mark`` 的格子；找不到返回 None。
 
-    只在材料里找，类型和品质都要相同，再用图标相关度确认，必须过 STACK_MATCH_MIN：
+    只在 STACKABLE_TYPES 里找，类型和品质都要相同，再用图标相关度确认，必须过 STACK_MATCH_MIN：
     不同物品拖到一起会变成对换，宁可占一个空格也不赌。搜查结果格和局内背包格
     都用这一个函数：两处的图标和安全箱里的比例都落在 _STACK_SCALES 覆盖的范围内。
 
@@ -376,7 +439,7 @@ def find_stack_target(
         safes: 安全箱里已占用的格子。
         blocked: 试过不能叠放的（源格, 安全箱格）组合，跳过不再试。
     """
-    if mark.item_type != ITEM_TYPE_MATERIAL:
+    if mark.item_type not in STACKABLE_TYPES:
         return None
     icon = icon_patch(screen, mark.center)
     if icon is None:
