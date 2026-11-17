@@ -1742,6 +1742,26 @@ class BagelRouteWalker(BagelOperation):
         return self._fail_after_survey(f'入箱失败：{result.status}')
 
     @node_from(from_name='收集入箱', status='已入箱')
+    @operation_node(name='拾取剩余')
+    def pick_all_rest(self) -> OperationRoundResult:
+        """入箱成功后按一次 F「全部拾取」，把结果格剩余物品收进背包。
+
+        金币拖不进安全箱，也不会自己进背包，只能靠全部拾取收走；已经拖进安全箱的
+        物品不受影响。只在入箱成功后按：失败局退出不整理背包，按了也带不出去，而且
+        失败时面板常已关闭，按 F 会落到局内交互点上误触。
+
+        本节点每轮先截图，用新画面判断面板还在不在：收集操作留下的最后一帧可能早于
+        面板被关掉。按完计一次拾取按键，退出前据此决定要不要整理背包。
+        """
+        has_title = self._has('搜查容器标题') or self._has('电子保险箱标题')
+        has_button = self._has('全部拾取_单行') or self._has('全部拾取_双行')
+        if not (has_title and has_button):
+            return self.round_success('面板不可拾取，跳过', wait=0.2)
+        self.pickup_presses += 1
+        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
+        return self.round_success('已拾取剩余', wait=0.2)
+
+    @node_from(from_name='拾取剩余')
     @operation_node(name='关闭面板')
     def close_panel(self) -> OperationRoundResult:
         """关闭搜查面板并确认回到局内。"""
