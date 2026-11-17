@@ -8,7 +8,10 @@
 - 转向（独立判稳）：主线只提交目标方向，这里自己采样朝向、数连续 3 帧稳定、
   1 度防抖、偏离 5 度才转一次，转稳后自己算校准样本。转向是相对位移，
   不排队不叠加，上一笔没校准完不开下一笔。
-- 即时动作（队列）：点按 F、长按 F、松开 F、闪避，按顺序执行。
+- 即时动作（队列）：点按 F、长按 F、松开 F、闪避、Alt 点击，按顺序执行。
+
+Alt 点击与转向都动鼠标：Alt 按住时鼠标位移移动的是光标，不是镜头。
+两者共用一把鼠标锁，不会交叠。
 
 三条通道互不占用，所以转向永远不会把前进顶掉（曾因此原地不动）。
 """
@@ -50,6 +53,9 @@ DODGE: str = 'dodge'
 
 SIDE_STEP: str = 'side_step'
 """点一下侧移（A 或 D）；方向记在 angle 上，-1 向左、1 向右。"""
+
+ALT_CLICK: str = 'alt_click'
+"""按住 Alt 唤出光标，点一下 point 处再松开 Alt。复用框架的 ``click(pc_alt=True)``。"""
 
 SLEEP_SLICE: float = 0.01
 """等待轮询的切片时长（秒）。"""
@@ -143,7 +149,7 @@ class _Command:
 
     def __init__(
         self, kind: str, duration: float | None = None, angle: float = 0.0,
-        epoch: int = 0,
+        epoch: int = 0, point: Point | None = None,
     ) -> None:
         """
         Args:
@@ -151,11 +157,13 @@ class _Command:
             duration: 短按时长（秒），其它类型忽略。
             angle: 转向角度（度），仅转向使用。
             epoch: 入队时的动作版本号；暂停后版本号前进，排队中的旧指令不再执行。
+            point: 点击位置（1080p 游戏坐标），仅 Alt 点击使用。
         """
         self.kind: str = kind
         self.duration: float | None = duration
         self.angle: float = angle
         self.epoch: int = epoch
+        self.point: Point | None = point
 
 
 class _InstantChannel:
@@ -579,6 +587,8 @@ class BagelInputWorker:
         self._stopping: bool = False
         self._action_epoch: int = 0
         """即时动作的版本号：暂停时加一，入队早于暂停的指令随之作废。"""
+        self._mouse_lock: threading.Lock = threading.Lock()
+        """转向与 Alt 点击共用：Alt 按住期间不转向，转向中不点击。"""
 
         self._turn_worker: _TurnWorker = _TurnWorker(
             self._run_turn, self._sample_angle, initial_ratio=initial_turn_ratio,
@@ -735,6 +745,16 @@ class BagelInputWorker:
             _Command(SIDE_STEP, duration=duration, angle=1.0 if direction > 0 else -1.0),
         )
 
+    def alt_click(self, point: Point) -> None:
+        """按住 Alt 唤出光标，点击提示列表的一行。
+
+        调用方要先停下并暂停转向；转向线程的位移由鼠标锁挡在 Alt 之外。
+
+        Args:
+            point: 点击位置（1080p 游戏坐标）。
+        """
+        self._enqueue(_Command(ALT_CLICK, point=point))
+
     def release_all(self) -> None:
         """暂停时调用：作废排队中的即时动作，并立刻松开全部按键。"""
         self._action_epoch += 1
@@ -876,7 +896,8 @@ class BagelInputWorker:
         Args:
             angle: 转向角度（度）。
         """
-        self.ctx.controller.turn_by_angle_diff(angle)
+        with self._mouse_lock:
+            self.ctx.controller.turn_by_angle_diff(angle)
 
     # ---------- 即时通道 ----------
 
@@ -941,3 +962,7 @@ class BagelInputWorker:
             key(press=True)
             time.sleep(command.duration or 0.0)
             key(release=True)
+            return
+        if command.kind == ALT_CLICK and command.point is not None:
+            with self._mouse_lock:
+                controller.click(command.point, pc_alt=True)
