@@ -23,9 +23,10 @@ import re
 import time
 from functools import cache
 from math import atan2, cos, degrees, hypot, radians, sin
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
+from one_dragon.base.geometry.point import Point
 from one_dragon.base.geometry.rectangle import Rect
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
@@ -40,6 +41,7 @@ from ..operation.container import INTERACT_KEY_THRESHOLD
 from ..operation.operation import BagelOperation
 from ..operation.store import BagelStoreSafe
 from ..operation.unlock_safe import BagelUnlockSafe
+from ..screenshot import save_screenshot
 from ..stats import (
     BagelSafeLedger,
     format_value,
@@ -436,7 +438,36 @@ PICKUP_FAIL_LIMIT: int = 3
 """本局累计这么多条拾取物捡不起来，按背包已满处理，不再拾取。"""
 
 PICKUP_TAP_WAIT: float = 0.4
-"""点按 F 拾取后等这么久再看下一帧（秒）。"""
+"""点按 F 或 Alt 点击拾取后，这么久内不再按下一下（秒）。停下时等满再看下一帧；
+移动中照常走，只是不按。"""
+
+PROMPT_ROW_PITCH: float = 78.5
+"""提示列表相邻两行行心的纵向距离（像素）。归档的提示列表素材量得 78–79。"""
+
+PROMPT_ROW_MIN_HANZI: int = 2
+"""没有图标的行至少读出这么多个汉字才算条目。列表下方的准星圆环会被读成「O」。"""
+
+HANZI_PATTERN: re.Pattern[str] = re.compile(r'[一-鿿]')
+"""常用汉字区段，用来数条目文字里的汉字。"""
+
+PICKUP_CLICK_X: int = (PICKUP_TEXT_LEFT + PICKUP_TEXT_RIGHT) // 2
+"""Alt 点击拾取物条目的横坐标：取条目文字列的中点。"""
+
+PICKUP_CLICK_STABLE_SECONDS: float = 0.5
+"""Alt 点击前，同一条拾取物要在同一行连续出现两帧，两帧相隔不超过这么久（秒）。"""
+
+ROW_ICON_KINDS: dict[str, str] = {
+    'interact_icon': '容器',
+    'searched_icon': '搜过的容器',
+    'card_key_icon': '刷卡处',
+}
+"""提示列表条目图标模板与行类别的对应。"""
+
+ROW_PICKUP: str = '拾取物'
+"""行类别：没有上述图标、文字不像容器的行。"""
+
+ROW_CONTAINER_TEXT: str = '疑似容器'
+"""行类别：没有上述图标，但文字含容器用字，多半是图标还在动画中的容器。"""
 
 PICKUP_BLOCK_ICONS: tuple[str, ...] = ('interact_icon', 'searched_icon', 'card_key_icon')
 """移动中提示列表里有这些条目时不顺路拾取。
@@ -444,6 +475,20 @@ PICKUP_BLOCK_ICONS: tuple[str, ...] = ('interact_icon', 'searched_icon', 'card_k
 提示列表按距离排序，角色还在滑动时 F 键会在条目间换位：截图里 F 键对准拾取物，
 按下时可能已经对准旁边的保险箱，误开解锁小游戏。停下后与容器交互前仍会先捡。
 """
+
+
+class PromptRow(NamedTuple):
+    """提示列表的一行。"""
+
+    y: int
+    """行心整屏纵坐标。"""
+    kind: str
+    """行类别，取 ``ROW_ICON_KINDS`` 的值、``ROW_PICKUP`` 或 ``ROW_CONTAINER_TEXT``。"""
+    text: str
+    """条目文字；有图标的行不读，为空。"""
+    selected: bool
+    """是否是 F 键所在行。"""
+
 
 STRAY_UNLOCK_ESC_LIMIT: int = 2
 """移动中误开了非目标电子保险箱的解锁界面时，同一个点最多按几次 esc 退出。"""
@@ -584,8 +629,20 @@ class BagelRouteWalker(BagelOperation):
         """本局捡不起来的拾取物条数。"""
         self.pickups: int = 0
         """本局按提示消失计的已拾取条数，只用于日志。"""
+        self.pickup_tap_at: float = float('-inf')
+        """最近一次点按 F 或 Alt 点击拾取的单调时钟时刻。"""
+        self.pickup_skip_note: str | None = None
+        """上一条「看到拾取物但不捡」诊断日志的去重键。"""
+        self.click_pickup_text: str | None = None
+        """正在 Alt 点击拾取的条目文字；没在点时为 None。整局有效，换点不清。"""
+        self.click_pickup_clicks: int = 0
+        """对 ``click_pickup_text`` 已 Alt 点击的次数。"""
+        self.click_candidate: tuple[int, str] | None = None
+        """上一帧看到的 Alt 点击候选（行心纵坐标, 条目文字），用来判列表稳定。"""
+        self.click_candidate_at: float = 0.0
+        """``click_candidate`` 记下的单调时钟时刻。"""
         self.pickup_presses: int = 0
-        """本局为地面拾取物点按 F 的总次数，含刷卡前捡走挡路的拾取物。
+        """本局为地面拾取物点按 F 与 Alt 点击的总次数，含刷卡前捡走挡路的拾取物。
         不为 0 时背包里可能有东西，正常局退出前据此决定要不要整理背包。"""
         self.card_probe_step: int | None = None
         """房卡门左右试探已执行到第几步；没在试探时为 None。"""
@@ -906,6 +963,7 @@ class BagelRouteWalker(BagelOperation):
             self.target_wait_since = time.monotonic()
         elif time.monotonic() - self.target_wait_since >= SURROUND_CHECK_SECONDS:
             self.target_wait_since = None
+            self._log_leftover_prompts()
             return self.round_success('现场无交互物')
         return self.round_wait('原地观察交互提示', wait=0.25)
 
@@ -1633,72 +1691,260 @@ class BagelRouteWalker(BagelOperation):
         """
         return any(abs(y - row_y) <= CARD_KEY_ROW_TOLERANCE for y in self._icon_rows(icon))
 
-    def _try_pickup(self, moving: bool = False) -> OperationRoundResult | None:
-        """F 键落在地面拾取物上就停下点按 F 捡走；没有可捡的返回 None。
+    def _prompt_icon_rows(self) -> dict[str, list[int]]:
+        """提示列表里容器、搜过的容器、刷卡处三种图标各自所在的整屏纵坐标。"""
+        return {icon: self._icon_rows(icon) for icon in ROW_ICON_KINDS}
 
-        捡起后条目消失，F 键移到下一条。同一条按满 ``PICKUP_TAP_LIMIT`` 次还在，
-        记为捡不起来，本局不再按它；累计 ``PICKUP_FAIL_LIMIT`` 条捡不起来就不再拾取。
-        同名的两件拾取物挨在一起时，前一件捡起后条目文字不变，也会多耗几次按键。
-
-        Args:
-            moving: 是否在移动节点里顺路拾取。为 True 时，提示列表里有容器、
-                搜过的容器或刷卡条目就不按，见 ``PICKUP_BLOCK_ICONS``。
-        """
-        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
-            return None
-        row = self._pickup_row()
-        if row is None or row[1] != self.pickup_text:
-            if self.pickup_text is not None:
-                self.pickups += 1
-                log.info('贝果拾取：「%s」的提示已消失，按已拾取计（本局第 %s 条）', self.pickup_text, self.pickups)
-            self.pickup_text = None
-            self.pickup_taps = 0
-        if row is None:
-            return None
-        text = row[1]
-        if text in self.pickup_ignored:
-            return None
-        if moving and any(self._icon_rows(icon) for icon in PICKUP_BLOCK_ICONS):
-            return None
-        if self.pickup_taps >= PICKUP_TAP_LIMIT:
-            self.pickup_ignored.add(text)
-            self.pickup_failures += 1
-            self.pickup_text = None
-            self.pickup_taps = 0
-            log.warning('贝果拾取：「%s」点按 %s 次仍在，跳过（本局第 %s 条捡不起来）',
-                        text, PICKUP_TAP_LIMIT, self.pickup_failures)
-            if self.pickup_failures >= PICKUP_FAIL_LIMIT:
-                log.warning('贝果拾取：累计 %s 条捡不起来，按背包已满处理，本局不再拾取', self.pickup_failures)
-            return None
-        self._release_forward()
-        self.pickup_text = text
-        self.pickup_taps += 1
-        self.pickup_presses += 1
-        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
-        self._record_input()
-        return self.round_wait(f'点按F拾取「{text}」', wait=PICKUP_TAP_WAIT)
-
-    def _pickup_row(self) -> tuple[int, str] | None:
-        """F 键所在条目是地面拾取物时，返回（行心纵坐标, 条目文字）。
+    def _read_prompt_row(self, row_y: int, icon_rows: dict[str, list[int]], selected: bool) -> PromptRow | None:
+        """读提示列表的一行；这一行既没有图标也读不出条目文字时返回 None。
 
         容器、门的条目图标是交互图标，搜过的容器是绿色对勾，刷卡处是钥匙图标；
         拾取物的条目图标是物品图，这三种都匹配不到。图标都不是、读得到文字、
-        文字又不像容器的 F 键行，才按拾取物处理。
+        文字又不像容器的行，才按拾取物处理。
+
+        Args:
+            row_y: 行心整屏纵坐标。
+            icon_rows: ``_prompt_icon_rows`` 的结果，同一帧只算一次。
+            selected: 这一行是否是 F 键所在行。
         """
-        keys = self._interact_key_rows()
-        if not keys:
-            return None
-        row_y = min(keys)
-        if any(self._row_has_icon(row_y, icon) for icon in ('interact_icon', 'searched_icon', 'card_key_icon')):
-            return None
+        for icon, kind in ROW_ICON_KINDS.items():
+            if any(abs(y - row_y) <= CARD_KEY_ROW_TOLERANCE for y in icon_rows[icon]):
+                return PromptRow(row_y, kind, '', selected)
         texts = self.ctx.ocr_service.get_ocr_result_list(
             image=self.last_screenshot,
             rect=Rect(PICKUP_TEXT_LEFT, row_y - PICKUP_ROW_HALF, PICKUP_TEXT_RIGHT, row_y + PICKUP_ROW_HALF),
         )
         text = ''.join(str_utils.remove_whitespace(item.data) for item in texts)
-        if not text or any(word in text for word in CONTAINER_WORDS):
+        if len(HANZI_PATTERN.findall(text)) < PROMPT_ROW_MIN_HANZI:
             return None
-        return row_y, text
+        if any(word in text for word in CONTAINER_WORDS):
+            return PromptRow(row_y, ROW_CONTAINER_TEXT, text, selected)
+        if CARD_COUNT_PATTERN.search(text):
+            # 长按刷卡时进度圈盖住钥匙图标，模板匹配不到；靠第二行的持卡计数认出来。
+            return PromptRow(row_y, ROW_ICON_KINDS['card_key_icon'], text, selected)
+        return PromptRow(row_y, ROW_PICKUP, text, selected)
+
+    def _prompt_rows(self) -> list[PromptRow]:
+        """以 F 键行为锚点，按行距上下逐行读提示列表，自上而下返回；没有 F 键时返回空表。
+
+        某一行既没有图标也读不出文字，就认为列表在这一侧到头，不再往外读。
+        """
+        keys = self._interact_key_rows()
+        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
+        if not keys or area is None:
+            return []
+        anchor = min(keys)
+        icon_rows = self._prompt_icon_rows()
+        rows: list[PromptRow] = []
+        for direction in (1, -1):
+            step = 0 if direction > 0 else -1
+            while True:
+                row_y = round(anchor + step * PROMPT_ROW_PITCH)
+                if row_y - PICKUP_ROW_HALF < area.pc_rect.y1 or row_y + PICKUP_ROW_HALF > area.pc_rect.y2:
+                    break
+                row = self._read_prompt_row(row_y, icon_rows, selected=step == 0)
+                if row is None:
+                    break
+                rows.append(row)
+                step += direction
+        return sorted(rows, key=lambda item: item.y)
+
+    def _selected_pickup(self) -> tuple[PromptRow | None, dict[str, list[int]]]:
+        """读 F 键所在行，并更新点按 F 拾取的计数。
+
+        F 键行的文字换了或消失，上一条点按过的拾取物按已拾取计。
+
+        Returns:
+            （F 键行是拾取物时的那一行，否则 None；本帧三种图标的行位置）。
+        """
+        keys = self._interact_key_rows()
+        icon_rows: dict[str, list[int]] = {}
+        row: PromptRow | None = None
+        if keys:
+            icon_rows = self._prompt_icon_rows()
+            read = self._read_prompt_row(min(keys), icon_rows, selected=True)
+            if read is not None and read.kind == ROW_PICKUP:
+                row = read
+        text = None if row is None else row.text
+        if text != self.pickup_text:
+            if self.pickup_text is not None:
+                self.pickups += 1
+                log.info('贝果拾取：「%s」的提示已消失，按已拾取计（本局第 %s 条）', self.pickup_text, self.pickups)
+            self.pickup_text = None
+            self.pickup_taps = 0
+        if text is None:
+            self.pickup_skip_note = None
+        return row, icon_rows
+
+    def _should_tap(self, text: str) -> bool:
+        """F 键行的拾取物这次能不能点按 F；捡不起来的记下并返回 False。
+
+        Args:
+            text: F 键行的条目文字。
+        """
+        if text in self.pickup_ignored:
+            self._note_pickup_skip(text, '已记为捡不起来')
+            return False
+        if self.pickup_taps >= PICKUP_TAP_LIMIT:
+            self._give_up_pickup(text, f'点按 F {PICKUP_TAP_LIMIT} 次仍在')
+            self.pickup_text = None
+            self.pickup_taps = 0
+            return False
+        return True
+
+    def _tap_pickup(self, text: str) -> None:
+        """点按 F 拾取 F 键行的拾取物，并记账。
+
+        Args:
+            text: F 键行的条目文字。
+        """
+        self.pickup_text = text
+        self.pickup_taps += 1
+        self.pickup_presses += 1
+        self.pickup_tap_at = time.monotonic()
+        self.pickup_skip_note = None
+        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
+        self._record_input()
+
+    def _give_up_pickup(self, text: str, reason: str) -> None:
+        """把一条拾取物记为捡不起来，本局之后不再捡它；累计够数就按背包已满处理。
+
+        Args:
+            text: 条目文字。
+            reason: 写进日志的原因。
+        """
+        self.pickup_ignored.add(text)
+        self.pickup_failures += 1
+        log.warning('贝果拾取：「%s」%s，跳过（本局第 %s 条捡不起来）', text, reason, self.pickup_failures)
+        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+            log.warning('贝果拾取：累计 %s 条捡不起来，按背包已满处理，本局不再拾取', self.pickup_failures)
+
+    def _note_pickup_skip(self, text: str, reason: str) -> None:
+        """记一条「看到拾取物但这次不捡」的诊断日志；同一条同一原因只记一次。
+
+        Args:
+            text: F 键行的条目文字。
+            reason: 不捡的原因。
+        """
+        note = f'{text}|{reason}'
+        if note == self.pickup_skip_note:
+            return
+        self.pickup_skip_note = note
+        log.info('贝果拾取：F 键行是「%s」，%s，这次不捡', text, reason)
+
+    def _pickup_while_moving(self) -> None:
+        """导航和碎步中，F 键落在拾取物上就边走边点按 F，不停车、不结束本轮。
+
+        游戏允许边跑边捡。提示列表任一行有容器、搜过的容器或刷卡条目时不按，
+        见 ``PICKUP_BLOCK_ICONS``。上一下点按后 ``PICKUP_TAP_WAIT`` 秒内不再看，
+        避免列表刚更新时 F 键已移到下一条又被按到。
+        """
+        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+            return
+        if time.monotonic() - self.pickup_tap_at < PICKUP_TAP_WAIT:
+            return
+        row, icon_rows = self._selected_pickup()
+        if row is None:
+            return
+        blockers = [ROW_ICON_KINDS[icon] for icon in PICKUP_BLOCK_ICONS if icon_rows.get(icon)]
+        if blockers:
+            self._note_pickup_skip(row.text, f'移动中提示列表有{"、".join(blockers)}')
+            return
+        if not self._should_tap(row.text):
+            return
+        self._tap_pickup(row.text)
+        log.info('贝果拾取：移动中点按F拾取「%s」，不停车（第 %s 次）', row.text, self.pickup_taps)
+
+    def _try_pickup(self) -> OperationRoundResult | None:
+        """停下时捡提示列表里的拾取物；没有可捡的返回 None。
+
+        F 键落在拾取物上就松开前进键点按 F。F 键行不是拾取物、列表其他行有拾取物时，
+        用 Alt 点击那一行，见 ``_click_pickup``。
+
+        捡起后条目消失，F 键移到下一条。同一条按满 ``PICKUP_TAP_LIMIT`` 次还在，
+        记为捡不起来，本局不再捡它；累计 ``PICKUP_FAIL_LIMIT`` 条捡不起来就不再拾取。
+        同名的两件拾取物挨在一起时，前一件捡起后条目文字不变，也会多耗几次按键。
+        """
+        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+            return None
+        waited = time.monotonic() - self.pickup_tap_at
+        if waited < PICKUP_TAP_WAIT:
+            return self.round_wait('等上一下拾取生效', wait=PICKUP_TAP_WAIT - waited)
+        row, _ = self._selected_pickup()
+        if row is not None and self._should_tap(row.text):
+            self._release_forward()
+            self._tap_pickup(row.text)
+            return self.round_wait(f'点按F拾取「{row.text}」', wait=PICKUP_TAP_WAIT)
+        return self._click_pickup()
+
+    def _click_pickup(self) -> OperationRoundResult | None:
+        """F 键行以外的拾取物用 Alt 点击捡走；没有可捡的返回 None。
+
+        提示列表按距离排序，拾取物排在容器下面时 F 键一直落不到它。
+        Alt 唤出光标点条目，拾取物直接进背包，不用先把 F 键挪过去。
+        角色还在滑动时列表会重新排序，所以同一条拾取物要在同一行连续出现两帧才点。
+        点之前先松开前进键、暂停转向：Alt 按住时鼠标位移移动的是光标。
+        """
+        rows = self._prompt_rows()
+        present = {row.text for row in rows if row.kind == ROW_PICKUP}
+        if self.click_pickup_text is not None and self.click_pickup_text not in present:
+            self.pickups += 1
+            log.info('贝果拾取：Alt 点击的「%s」已从提示列表消失，按已拾取计（本局第 %s 条）',
+                     self.click_pickup_text, self.pickups)
+            self.click_pickup_text = None
+            self.click_pickup_clicks = 0
+        targets = [
+            row for row in rows
+            if row.kind == ROW_PICKUP and not row.selected and row.text not in self.pickup_ignored
+        ]
+        if not targets:
+            self.click_candidate = None
+            return None
+        target = targets[0]
+        now = time.monotonic()
+        candidate = (target.y, target.text)
+        if self.click_candidate != candidate or now - self.click_candidate_at > PICKUP_CLICK_STABLE_SECONDS:
+            self.click_candidate = candidate
+            self.click_candidate_at = now
+            self._release_forward()
+            return self.round_wait('提示列表其他行有拾取物，等列表稳定', wait=0.1)
+        self.click_candidate = None
+        if target.text != self.click_pickup_text:
+            self.click_pickup_text = target.text
+            self.click_pickup_clicks = 0
+        if self.click_pickup_clicks >= PICKUP_TAP_LIMIT:
+            self._give_up_pickup(target.text, f'Alt 点击 {PICKUP_TAP_LIMIT} 次仍在')
+            self.click_pickup_text = None
+            self.click_pickup_clicks = 0
+            return None
+        self._release_forward()
+        self.input_worker.submit_turn(None)
+        self.click_pickup_clicks += 1
+        self.pickup_presses += 1
+        self.pickup_tap_at = now
+        self.input_worker.alt_click(Point(PICKUP_CLICK_X, target.y))
+        self._record_input()
+        selected = next((index for index, row in enumerate(rows) if row.selected), None)
+        log.info(
+            '贝果拾取：Alt 点击提示列表第 %s 行「%s」（F 键在第 %s 行，第 %s 次）',
+            rows.index(target) + 1, target.text,
+            '-' if selected is None else selected + 1, self.click_pickup_clicks,
+        )
+        return self.round_wait(f'Alt点击拾取「{target.text}」', wait=PICKUP_TAP_WAIT)
+
+    def _log_leftover_prompts(self) -> None:
+        """现场观察结束时记下提示列表；还剩拾取物就存一张截图，供排查漏捡。"""
+        rows = self._prompt_rows()
+        if not rows:
+            return
+        log.info(
+            '贝果拾取：现场观察结束时的提示列表：%s',
+            '；'.join(f'{row.kind}「{row.text}」' if row.text else row.kind for row in rows),
+        )
+        left = [row.text for row in rows if row.kind == ROW_PICKUP]
+        if left:
+            path = save_screenshot(self.ctx, self.last_screenshot, 'BagelPickupLeft')
+            log.info('贝果拾取：现场还剩 %s 条拾取物没捡，截图 %s', len(left), path)
 
     def _press_f(self, kind: str) -> OperationRoundResult:
         """点按 F：普通容器、门、电梯。
@@ -1872,12 +2118,8 @@ class BagelRouteWalker(BagelOperation):
             )
         if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
             return self.round_wait('等待动作后的新截图', wait=0.05)
-        # 已在途径点到达半径内就先算到点：拾取那几轮不做到点判定，角色带着上一步
-        # 慢步的余势会穿过到达半径而不被认到点。拾取留到下一个点的第一轮再做。
-        if not (point.kind == BEACON and distance <= ARRIVE_RADIUS and self.retreat_point is None):
-            pickup = self._try_pickup(moving=True)
-            if pickup is not None:
-                return pickup
+        # 边走边捡：只投递点按，不停车也不结束本轮，到点判定照常做。
+        self._pickup_while_moving()
         if self.retreat_point is not None:
             return self._retreat(position)
         if distance <= SPRINT_DISTANCE and self.sprinting:
