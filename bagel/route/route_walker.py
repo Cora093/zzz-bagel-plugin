@@ -2002,6 +2002,19 @@ class BagelRouteWalker(BagelOperation):
         return self._fail_after_survey(f'入箱失败：{result.status}')
 
     @node_from(from_name='收集入箱', status='已入箱')
+    @operation_node(name='拾取剩余')
+    def pick_all_rest(self) -> OperationRoundResult:
+        """用新截图确认搜查面板仍可拾取，再点按 F 并登记拾取次数。"""
+        has_title = self._has('搜查容器标题') or self._has('电子保险箱标题')
+        has_button = self._has('全部拾取_单行') or self._has('全部拾取_双行')
+        if not (has_title and has_button):
+            return self.round_success('面板不可拾取，跳过', wait=0.2)
+        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
+        self.pickup_presses += 1
+        log.info('贝果拾取：入箱后点按 F「全部拾取」')
+        return self.round_success('已点按全部拾取', wait=PICKUP_TAP_WAIT)
+
+    @node_from(from_name='拾取剩余')
     @operation_node(name='关闭面板')
     def close_panel(self) -> OperationRoundResult:
         """关闭搜查面板并确认回到局内。"""
