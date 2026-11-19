@@ -21,20 +21,17 @@ from __future__ import annotations
 
 import re
 import time
-from functools import cache
 from math import atan2, cos, degrees, hypot, radians, sin
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 import numpy as np
-from one_dragon.base.geometry.point import Point
-from one_dragon.base.geometry.rectangle import Rect
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 from one_dragon.utils import cal_utils, cv2_utils, str_utils
 from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 
-from ..defs import MAP_JANUS, PLUGIN_DIR
+from ..defs import MAP_JANUS
 from ..diag import diag
 from ..operation.close_search import BagelCloseSearch
 from ..operation.container import INTERACT_KEY_THRESHOLD
@@ -52,6 +49,7 @@ from ..vision.map_locator import (
     load_map_locators,
 )
 from ..vision.minimap_angle import analyze
+from ..vision.prompt_list import PromptFrame, PromptSelection
 from ..vision.template import load_template
 from .input_worker import (
     TURN_DEADBAND,
@@ -61,6 +59,7 @@ from .input_worker import (
 )
 from .route_model import (
     BEACON,
+    BOX_CATEGORIES,
     ELEVATOR,
     ELEVATOR_EXIT_BACKWARD,
     KEYCARD_DOOR,
@@ -240,7 +239,7 @@ BLOCKED_DOOR_TAP_LIMIT: int = 2
 """同一个点受阻时为开门点按 F 的最多次数。
 
 路上的普通门有时开着、有时关着，录路线时开着的门不会打成门点。关着时角色顶在门板上，
-最上面一条提示是门（如「木质单开门」）。只在受阻时才按，门开着时不会去碰它。
+提示列表中有门（如「木质单开门」）。只在受阻时才按，门开着时不会去碰它。
 """
 
 BLOCKED_DOOR_WAIT_SECONDS: float = 0.8
@@ -295,12 +294,6 @@ MECHANICAL_PROMPT_LOST_LIMIT: int = 2
 INTERACT_TAP_SECONDS: float = 0.2
 """点按交互键 F 的按住时长（秒）。"""
 
-ENTRY_NAME_MATCH_PERCENT: float = 0.7
-"""保险箱条目文字与名称的最长公共子序列占名称长度的比例下限。
-提示条刚滑入画面时 OCR 会读错或读不全（实机出现过「机械保险」少了「箱」），按全名匹配会落到
-「普通箱子」兜底，类型锁定后点按 F 对机械保险箱无效。5 个字取 0.7 即至少对上 4 个字，
-容忍错一个字；电子、机械保险箱只共有「保险箱」3 个字，不会互相认错。"""
-
 PRESS_F_MAX_TAPS: int = 20
 """同一个点最多点按 F 的次数（每次约 0.4 秒）。点这么多次提示还在、面板也没出，
 多半是类型判错（点按对机械保险箱、刷卡处无效），按本局失败处理，不空转到看门狗介入。"""
@@ -350,9 +343,6 @@ CARD_SPENT_WAIT_SECONDS: float = 4.0
 4 秒是推断值：实机观察到松手约 0.56 秒后提示就消失，尚未标定。
 """
 
-CARD_PROMPT_WAIT_SECONDS: float = 2.0
-"""F 键没出现或没对准刷卡条目时，最多等多久（秒）。"""
-
 CARD_PROMPT_LOST_SECONDS: float = 0.5
 """还没长按时刷卡条目连续消失多久（秒），就回碎步移动左右试探。
 
@@ -360,9 +350,6 @@ CARD_PROMPT_LOST_SECONDS: float = 0.5
 原地等不会把角色带回去，所以提示稳定消失后改回移动节点试探。留 0.5 秒是为了
 不把单帧闪烁当成消失。
 """
-
-CARD_CLEAR_TAP_LIMIT: int = 2
-"""F 键落在地面拾取物上时，最多点按几次 F 把它捡走。"""
 
 CARD_KEY_ROW_TOLERANCE: int = 12
 """F 键与刷卡条目算同一行的纵向容差（像素）。实测对齐时相差 2 像素。"""
@@ -396,41 +383,6 @@ SURVEY_LINE_TOLERANCE: int = 6
 物品入箱后，HUD 数字上方可能浮出该件涨幅（如「+10K」），会落进读数区域。
 """
 
-ICON_THRESHOLD: float = 0.8
-"""交互图标与刷卡图标的模板匹配阈值；实测同类 1.0、异类 0.33。"""
-
-
-@cache
-def _load_icon_template(icon: str) -> tuple[MatLike, MatLike | None] | None:
-    """读插件自带的交互图标模板与原图掩码；缺图时返回 None。
-
-    插件不经过全局 TemplateLoader，模板跟着插件目录走，搬到别的环境也能用。
-    """
-    directory = PLUGIN_DIR / 'assets' / 'template' / 'bagel' / icon
-    raw = cv2_utils.read_image(str(directory / 'raw.png'))
-    if raw is None:
-        log.warning(f'缺少交互图标模板：{directory}')
-        return None
-    return raw, cv2_utils.read_image(str(directory / 'mask.png'))
-
-ENTRY_TEXT_MARGIN: int = 6
-"""读取条目文字时，纵向向上下各留的像素。"""
-
-PICKUP_WORDS: tuple[str, ...] = ('药粉', '拾取')
-"""可拾取物而非容器的提示词；按 F 会捡起地上的东西，不能当箱子处理。"""
-
-PICKUP_TEXT_LEFT: int = 1400
-"""地面拾取物条目文字的左边界（整屏横坐标）。条目图标是物品图，占 1332–1398。"""
-
-PICKUP_TEXT_RIGHT: int = 1575
-"""地面拾取物条目文字的右边界。条目右端有个小圆点（约 1593），读进去会多出「O」「C」。"""
-
-PICKUP_ROW_HALF: int = 30
-"""读拾取物条目文字时，F 键行心上下各取的像素；条目第二行可能是「×3」。"""
-
-CONTAINER_WORDS: tuple[str, ...] = ('箱', '柜', '包', '门')
-"""条目文字含这些字就不当拾取物：容器图标在动画中可能一时匹配不上，按 F 会误开容器。"""
-
 PICKUP_TAP_LIMIT: int = 3
 """同一条拾取物最多点按几次 F。还在说明捡不起来，本局之后不再按它。"""
 
@@ -438,58 +390,11 @@ PICKUP_FAIL_LIMIT: int = 3
 """本局累计这么多条拾取物捡不起来，按背包已满处理，不再拾取。"""
 
 PICKUP_TAP_WAIT: float = 0.4
-"""点按 F 或 Alt 点击拾取后，这么久内不再按下一下（秒）。停下时等满再看下一帧；
+"""点按 F 拾取后，这么久内不再按下一下（秒）。停下时等满再看下一帧；
 移动中照常走，只是不按。"""
 
-PROMPT_ROW_PITCH: float = 78.5
-"""提示列表相邻两行行心的纵向距离（像素）。归档的提示列表素材量得 78–79。"""
-
-PROMPT_ROW_MIN_HANZI: int = 2
-"""没有图标的行至少读出这么多个汉字才算条目。列表下方的准星圆环会被读成「O」。"""
-
-HANZI_PATTERN: re.Pattern[str] = re.compile(r'[一-鿿]')
-"""常用汉字区段，用来数条目文字里的汉字。"""
-
-PICKUP_CLICK_X: int = (PICKUP_TEXT_LEFT + PICKUP_TEXT_RIGHT) // 2
-"""Alt 点击拾取物条目的横坐标：取条目文字列的中点。"""
-
-PICKUP_CLICK_STABLE_SECONDS: float = 1.5
-"""Alt 点击前，同一条拾取物要在同一行连续出现两帧，两帧相隔不超过这么久（秒）。
-读整张列表要逐行 OCR，实机每轮约 0.55 秒；取 0.5 时永远等不到第二帧。"""
-
-ROW_ICON_KINDS: dict[str, str] = {
-    'interact_icon': '容器',
-    'searched_icon': '搜过的容器',
-    'card_key_icon': '刷卡处',
-}
-"""提示列表条目图标模板与行类别的对应。"""
-
-ROW_PICKUP: str = '拾取物'
-"""行类别：没有上述图标、文字不像容器的行。"""
-
-ROW_CONTAINER_TEXT: str = '疑似容器'
-"""行类别：没有上述图标，但文字含容器用字，多半是图标还在动画中的容器。"""
-
-PICKUP_BLOCK_ICONS: tuple[str, ...] = ('interact_icon', 'searched_icon', 'card_key_icon')
-"""移动中提示列表里有这些条目时不顺路拾取。
-
-提示列表按距离排序，角色还在滑动时 F 键会在条目间换位：截图里 F 键对准拾取物，
-按下时可能已经对准旁边的保险箱，误开解锁小游戏。停下后与容器交互前仍会先捡。
-"""
-
-
-class PromptRow(NamedTuple):
-    """提示列表的一行。"""
-
-    y: int
-    """行心整屏纵坐标。"""
-    kind: str
-    """行类别，取 ``ROW_ICON_KINDS`` 的值、``ROW_PICKUP`` 或 ``ROW_CONTAINER_TEXT``。"""
-    text: str
-    """条目文字；有图标的行不读，为空。"""
-    selected: bool
-    """是否是 F 键所在行。"""
-
+SELECT_TIMEOUT: float = 8.0
+"""同一目标连续无法选中时的最长等待，包含滚轮后的重新识别。"""
 
 STRAY_UNLOCK_ESC_LIMIT: int = 2
 """移动中误开了非目标电子保险箱的解锁界面时，同一个点最多按几次 esc 退出。"""
@@ -583,6 +488,7 @@ class BagelRouteWalker(BagelOperation):
         self.cursor: int = 0
         self.current_kind: str | None = None
         self.f_pressed: bool = False
+        self.door_missing_at: float | None = None
         self.press_f_taps: int = 0
         self.mechanical_hold_until: float | None = None
         self.mechanical_retried: bool = False
@@ -604,10 +510,6 @@ class BagelRouteWalker(BagelOperation):
         """当前刷卡处最近一次长按松手的时刻。"""
         self.card_spent_since: float | None = None
         """长按过后读到计数 0、开始等提示消失的时刻；没在等时为 None。"""
-        self.card_clear_taps: int = 0
-        """为捡走挡在刷卡条目上方的地面拾取物，已经点按 F 的次数。"""
-        self.card_wait_since: float | None = None
-        """F 键没出现或没对准刷卡条目的起始时刻。"""
         self.card_lost_since: float | None = None
         """还没长按时刷卡条目消失的起始时刻。"""
         self.card_stable_since: float | None = None
@@ -631,19 +533,16 @@ class BagelRouteWalker(BagelOperation):
         self.pickups: int = 0
         """本局按提示消失计的已拾取条数，只用于日志。"""
         self.pickup_tap_at: float = float('-inf')
-        """最近一次点按 F 或 Alt 点击拾取的单调时钟时刻。"""
-        self.pickup_skip_note: str | None = None
-        """上一条「看到拾取物但不捡」诊断日志的去重键。"""
-        self.click_pickup_text: str | None = None
-        """正在 Alt 点击拾取的条目文字；没在点时为 None。整局有效，换点不清。"""
-        self.click_pickup_clicks: int = 0
-        """对 ``click_pickup_text`` 已 Alt 点击的次数。"""
-        self.click_candidate: tuple[int, str] | None = None
-        """上一帧看到的 Alt 点击候选（行心纵坐标, 条目文字），用来判列表稳定。"""
-        self.click_candidate_at: float = 0.0
-        """``click_candidate`` 记下的单调时钟时刻。"""
+        """最近一次点按 F 拾取的单调时钟时刻。"""
+        self.pickup_pending: bool = False
+        self.prompt_frame: PromptFrame | None = None
+        self.selection: PromptSelection = PromptSelection()
+        self.select_since: float | None = None
+        self.cleanup_since: float | None = None
+        self.scanned_rows: set[tuple[str, str, int]] = set()
+        self.opening_blocking_door: bool = False
         self.pickup_presses: int = 0
-        """本局为地面拾取物点按 F 与 Alt 点击的总次数，含刷卡前捡走挡路的拾取物。
+        """本局为地面拾取物点按 F 的总次数，含刷卡前捡走挡路的拾取物。
         不为 0 时背包里可能有东西，正常局退出前据此决定要不要整理背包。"""
         self.card_probe_step: int | None = None
         """房卡门左右试探已执行到第几步；没在试探时为 None。"""
@@ -953,116 +852,43 @@ class BagelRouteWalker(BagelOperation):
     @node_from(from_name='碎步移动', status='路线走完')
     @operation_node(name='现场交互判断')
     def check_surroundings(self) -> OperationRoundResult:
-        """原地扫 2 秒：识别到已知提示就按提示交互，否则换路线。脚下有拾取物先捡。
-
-        F 键行的拾取物先点按 F。现场没有要交互的容器、门时，其他行的拾取物再用 Alt 点击：
-        Alt 点击后 F 键会停在被点的那一行，之后再按 F 可能落到别的条目上。
-        """
-        pickup = self._try_pickup()
-        if pickup is not None:
-            return pickup
-        if self._nearby_kind() is not None:
-            self.target_wait_since = None
-            return self.round_success('现场有交互物')
-        click = self._click_pickup()
-        if click is not None:
-            return click
+        """在路线末尾原地处理可见条目，忽略绿勾和刷卡处。"""
+        recovered = self._recover_pickup_panel()
+        if recovered is not None:
+            return recovered
+        self._release_forward()
+        self.input_worker.submit_turn(None)
+        now = time.monotonic()
         if self.target_wait_since is None:
-            self.target_wait_since = time.monotonic()
-        elif time.monotonic() - self.target_wait_since >= SURROUND_CHECK_SECONDS:
-            self.target_wait_since = None
-            self._log_leftover_prompts()
-            return self.round_success('现场无交互物')
-        return self.round_wait('原地观察交互提示', wait=0.25)
+            self.target_wait_since = now
+        elapsed = now - self.target_wait_since
+        if elapsed < SELECT_TIMEOUT:
+            pickup = self._try_pickup(all_rows=True)
+            if pickup is not None:
+                return pickup
+            self.current_kind = self._nearby_kind()
+            if self.current_kind is not None:
+                self.target_wait_since = None
+                return self.round_success('现场有交互物')
+            scan = self._scan_more()
+            if scan is not None:
+                return scan
+            if elapsed < SURROUND_CHECK_SECONDS:
+                return self.round_wait('原地观察交互提示', wait=0.25)
+        self.target_wait_since = None
+        self._log_leftover_prompts()
+        return self.round_success('现场无交互物')
 
     def _nearby_kind(self) -> str | None:
-        """右侧最上面一条交互提示的类型，识别不到时返回 None。
-
-        先模板匹配交互图标或刷卡图标定位条目，再对该条右侧文字分类：
-        含「保险箱」按电子/机械分，含「门」按门，其余都是可搜查容器。
-
-        刷卡提示只在当前点是房卡门时才认，且房卡门点只认刷卡提示：
-        跑刀路线零携带经过刷卡处，不能误刷；房卡门旁边的容器也不能抢先交互。
-        路线走完后的现场判断没有当前点，同样忽略刷卡提示。
-        """
+        """路线只接当前点对应的类型；路线末尾可处理可见的新容器或门。"""
         point = self._current_point()
-        keycard = point is not None and point.kind == KEYCARD_DOOR
-        entry = self._top_entry(card=keycard)
-        if entry is None:
-            return None
-        return self._classify(entry[0], entry[1])
-
-    def _top_entry(self, card: bool = False) -> tuple[str, str] | None:
-        """取最上面一条提示，返回（图标类型, 条目文字）。
-
-        多条提示同时出现时，最上面那条才是按 F 生效的目标。
-        只在提示区矩形内匹配，避免全屏误命中。
-
-        Args:
-            card: True 时只找刷卡图标（房卡门点），False 时只找交互图标。
-        """
-        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
-        if area is None:
-            return None
-        crop = cv2_utils.crop_image_only(self.last_screenshot, area.pc_rect)
-        if crop is None or crop.size == 0:
-            return None
-        icon, kind = ('card_key_icon', 'card') if card else ('interact_icon', 'interact')
-        template = _load_icon_template(icon)
-        if template is None:
-            return None
-        template_raw, template_mask = template
-        result = cv2_utils.match_template(
-            crop, template_raw, ICON_THRESHOLD,
-            mask=template_mask, only_best=False, ignore_inf=True,
-        )
-        matches = sorted(result, key=lambda item: item.center.y)
-        if not matches:
-            return None
-        return kind, self._entry_text(matches[0], area.pc_rect.x1)
-
-    def _entry_text(self, match, offset_x: int) -> str:
-        """读取一条提示右侧的文字，去掉空白。
-
-        只裁这一条的高度：整块提示区一起识别会漏读，按条裁剪才能稳定读出。
-
-        Args:
-            match: 提示区裁剪内的图标匹配结果。
-            offset_x: 提示区裁剪相对整屏的左边距，用于换算回整屏坐标。
-        """
-        area = self.ctx.screen_loader.get_area('贝果-局内', '交互条目文字')
-        if area is None:
-            return ''
-        left = max(area.pc_rect.x1, offset_x + match.x + match.w)
-        right = area.pc_rect.x2
-        top = area.pc_rect.y1 + match.y - ENTRY_TEXT_MARGIN
-        bottom = area.pc_rect.y1 + match.y + match.h + ENTRY_TEXT_MARGIN
-        if right <= left or bottom <= top:
-            return ''
-        texts = self.ctx.ocr_service.get_ocr_result_list(
-            image=self.last_screenshot, rect=Rect(left, top, right, bottom),
-        )
-        return ''.join(str_utils.remove_whitespace(item.data) for item in texts)
-
-    def _classify(self, icon_kind: str, text: str) -> str | None:
-        """按图标与条目文字判断交互类型。
-
-        特殊分支：电子保险箱要解锁，机械保险箱和刷卡处要长按。
-        其余「箱 / 包 / 柜」都是按一下 F 开始搜宝；门按一下 F 直接开。
-        """
-        if icon_kind == 'card':
-            return 'card_reader'
-        if str_utils.find_by_lcs(gt('电子保险箱', 'game'), text, ENTRY_NAME_MATCH_PERCENT):
-            return 'electronic_safe'
-        if str_utils.find_by_lcs(gt('机械保险箱', 'game'), text, ENTRY_NAME_MATCH_PERCENT):
-            return 'mechanical_safe'
-        if gt('门', 'game') in text:
-            return 'door'
-        if any(name in text for name in PICKUP_WORDS):
-            return None
-        if text:
-            return 'box'
-        return None
+        if point is None:
+            kinds = ('box', 'door', 'mechanical_safe', 'electronic_safe')
+        elif point.kind in BOX_CATEGORIES:
+            kinds = ('box',)
+        else:
+            kinds = ('card_reader' if point.kind == KEYCARD_DOOR else point.kind,)
+        return next((row.kind for row in self._prompts().rows if row.kind in kinds), None)
 
     @node_from(from_name='现场交互判断', status='现场有交互物')
     @operation_node(name='现场交互')
@@ -1257,16 +1083,10 @@ class BagelRouteWalker(BagelOperation):
         return self._interact_by_kind(self.current_kind)
 
     def _interact_by_kind(self, kind: str) -> OperationRoundResult:
-        """分派交互动作。F 键落在地面拾取物上时先捡走，再和容器交互。
-
-        容器条目上方常挤着拾取物（录像里「诡异药粉」压在公文包、机械保险箱上面），
-        这时按 F 或长按 F 都落在拾取物上。只在交互还没开始时捡：长按中再点 F 会打断长按。
-        刷卡处有自己的捡法，见 ``_hold_card_reader``。
-        """
-        if kind != 'card_reader' and not self.f_pressed and self.mechanical_hold_until is None:
-            pickup = self._try_pickup()
-            if pickup is not None:
-                return pickup
+        """各动作先检查结果，只有即将按键时才重新选目标。"""
+        recovered = self._recover_pickup_panel()
+        if recovered is not None:
+            return recovered
         if kind == 'electronic_safe':
             return self._run_unlock_safe()
         if kind == 'mechanical_safe':
@@ -1278,12 +1098,22 @@ class BagelRouteWalker(BagelOperation):
     def _run_unlock_safe(self) -> OperationRoundResult:
         """电子保险箱：光圈解锁子操作。"""
         self._release_forward()
-        op = BagelUnlockSafe(self.ctx)
+        op = BagelUnlockSafe(self.ctx, prepare_open=self._prepare_safe_open)
         result = op.execute()
         self._adopt_screenshot(op)
         if result.success:
             return self.round_success('电子保险箱已解锁')
         return self.round_recoverable_fail(f'电子保险箱解锁失败：{result.status}')
+
+    def _prepare_safe_open(self, op: BagelOperation) -> OperationRoundResult | None:
+        """首次开箱与每次补按都用子操作本轮的新截图选行。"""
+        self._adopt_screenshot(op)
+        if not self._game_in_foreground():
+            return self.round_fail(self.STATUS_NOT_FOREGROUND)
+        waiting = self._prepare_interaction('electronic_safe')
+        if waiting is None:
+            self.selection.reset(self.last_screenshot_time)
+        return waiting
 
     def _hold_mechanical(self) -> OperationRoundResult:
         """机械保险箱：提示出现时长按 F，直到搜查面板出现。
@@ -1293,9 +1123,15 @@ class BagelRouteWalker(BagelOperation):
         不依赖专有标题。
         """
         if self.mechanical_hold_until is None:
-            self._release_forward()
+            if self._has('搜查安全箱'):
+                self._reset_point_state()
+                return self.round_success('机械保险箱已打开')
+            waiting = self._prepare_interaction('mechanical_safe')
+            if waiting is not None:
+                return waiting
             self.mechanical_hold_until = time.monotonic() + MECHANICAL_HOLD_SECONDS
             self.input_worker.hold_interact()
+            self.selection.reset(self.last_screenshot_time)
             return self.round_wait('长按F中')
         if self._has('搜查安全箱'):
             self.input_worker.release_interact()
@@ -1361,8 +1197,6 @@ class BagelRouteWalker(BagelOperation):
         判定刷完松手后确认：F 键在松手后 ``CARD_SWIPE_SETTLE_SECONDS`` 内仍对准刷卡条目，
         说明没刷上，重按一次。
 
-        F 键落在别的条目上（录像里地面拾取物会挤到刷卡条目上方）时，
-        不是容器就点按 F 捡走，最多 ``CARD_CLEAR_TAP_LIMIT`` 次。
         """
         now = time.monotonic()
         if self.card_hold_started is not None:
@@ -1378,7 +1212,7 @@ class BagelRouteWalker(BagelOperation):
                 return self.round_success('已完成')
             return self._card_prompt_lost(now)
         self.card_lost_since = None
-        card_y, text = card
+        _, text = card
         count = self._card_count(text)
         if count is not None and count > 0:
             self.card_seen_loaded = True
@@ -1388,36 +1222,21 @@ class BagelRouteWalker(BagelOperation):
                 return self._card_spent(now, text)
             log.info('贝果刷卡处还没长按就显示持卡数为 0：%s', text)
             return self.round_fail(self.STATUS_KEYCARD_MISSING, data=text)
-        keys = self._interact_key_rows()
-        if any(abs(key_y - card_y) <= CARD_KEY_ROW_TOLERANCE for key_y in keys):
-            self._release_forward()
-            self.card_wait_since = None
-            if self.card_stable_since is None:
-                self.card_stable_since = now
-            stable = now - self.card_stable_since
-            if stable < CARD_STABLE_SECONDS:
-                return self.round_wait('刷卡提示已对准，等稳定后长按', wait=0.1)
-            log.info('贝果刷卡提示稳定 %.2f 秒，开始长按，位置 %s', stable, self.position)
+        waiting = self._prepare_interaction('card_reader')
+        if waiting is not None:
             self.card_stable_since = None
-            self.card_hold_started = now
-            self.card_held = True
-            self.card_pressed = True
-            self.input_worker.hold_interact()
-            return self.round_wait('长按F刷卡', wait=0.2)
+            return waiting
+        if self.card_stable_since is None:
+            self.card_stable_since = now
+        if now - self.card_stable_since < CARD_STABLE_SECONDS:
+            return self.round_wait('刷卡提示已对准，等角色停稳', wait=0.1)
         self.card_stable_since = None
-        if not keys:
-            return self._wait_card_prompt(now, 'F 键未出现')
-        selected_y = min(keys)
-        if self._row_has_icon(selected_y, 'interact_icon'):
-            return self._wait_card_prompt(now, 'F 键落在其他容器上')
-        if self.card_clear_taps >= CARD_CLEAR_TAP_LIMIT:
-            return self._wait_card_prompt(now, 'F 键仍未对准刷卡条目')
-        self._release_forward()
-        self.card_clear_taps += 1
-        self.pickup_presses += 1
-        log.info('贝果刷卡处上方有其他条目，点按 F 先捡走（第 %s 次）', self.card_clear_taps)
-        self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
-        return self.round_wait('点按F捡走挡住刷卡的拾取物', wait=0.5)
+        self.card_hold_started = time.monotonic()
+        self.card_held = True
+        self.card_pressed = True
+        self.input_worker.hold_interact()
+        self.selection.reset(self.last_screenshot_time)
+        return self.round_wait('长按F刷卡', wait=0.2)
 
     def _check_card_hold(self, now: float) -> OperationRoundResult:
         """长按中：判断刷完、超时重按或继续等。
@@ -1509,8 +1328,6 @@ class BagelRouteWalker(BagelOperation):
         if self.card_hold_lost_count > CARD_HOLD_LOST_LIMIT:
             self._reset_point_state()
             return self.round_recoverable_fail('刷卡长按中刷卡提示反复消失，门没刷开')
-        self.card_wait_since = None
-        self.card_clear_taps = 0
         self.current_kind = None
         if self.card_probe_step is None:
             self.card_probe_step = 0
@@ -1599,8 +1416,7 @@ class BagelRouteWalker(BagelOperation):
         if now - self.card_lost_since < CARD_PROMPT_LOST_SECONDS:
             return self.round_wait('等待刷卡：刷卡提示消失', wait=0.1)
         self.card_lost_since = None
-        self.card_wait_since = None
-        self.card_clear_taps = 0
+        self.select_since = None
         self.current_kind = None
         if self.card_probe_step is None:
             self.card_probe_step = 0
@@ -1610,39 +1426,13 @@ class BagelRouteWalker(BagelOperation):
         )
         return self.round_success('刷卡提示消失')
 
-    def _wait_card_prompt(self, now: float, reason: str) -> OperationRoundResult:
-        """刷卡前条件暂不满足时原地等，超过 ``CARD_PROMPT_WAIT_SECONDS`` 判失败。
-
-        Args:
-            now: 本轮的单调时钟读数。
-            reason: 当前不满足的条件，用于等待文字和失败原因。
-        """
-        self._release_forward()
-        if self.card_wait_since is None:
-            self.card_wait_since = now
-        elif now - self.card_wait_since >= CARD_PROMPT_WAIT_SECONDS:
-            self._reset_point_state()
-            return self.round_recoverable_fail(f'刷卡处无法交互：{reason}')
-        return self.round_wait(f'等待刷卡：{reason}', wait=0.2)
-
     def _card_entry(self) -> tuple[int, str] | None:
-        """最上面一条刷卡条目的整屏纵坐标与文字；没有时返回 None。"""
-        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
-        template = _load_icon_template('card_key_icon')
-        if area is None or template is None:
+        """长按时外框可能被进度动画盖住，仍可单独读取钥匙图标与计数。"""
+        frame = self._prompts()
+        ys = frame.icons('card_key_icon')
+        if not ys:
             return None
-        crop = cv2_utils.crop_image_only(self.last_screenshot, area.pc_rect)
-        if crop is None or crop.size == 0:
-            return None
-        result = cv2_utils.match_template(
-            crop, template[0], ICON_THRESHOLD,
-            mask=template[1], only_best=False, ignore_inf=True,
-        )
-        matches = sorted(result, key=lambda item: item.center.y)
-        if not matches:
-            return None
-        top = matches[0]
-        return area.pc_rect.y1 + top.center.y, self._entry_text(top, area.pc_rect.x1)
+        return ys[0], frame.text_at(ys[0], 1620)
 
     @staticmethod
     def _card_count(text: str) -> int | None:
@@ -1671,118 +1461,62 @@ class BagelRouteWalker(BagelOperation):
         )
         return [area.pc_rect.y1 + item.center.y for item in result]
 
-    def _icon_rows(self, icon: str) -> list[int]:
-        """提示列表里某种条目图标所在的整屏纵坐标。
+    def _prompts(self) -> PromptFrame:
+        """同一轮的拾取、停步和选行共享截图与识别结果。"""
+        if self.prompt_frame is None or self.prompt_frame.stamp != self.last_screenshot_time:
+            self.prompt_frame = PromptFrame(self.ctx, self.last_screenshot, self.last_screenshot_time)
+        return self.prompt_frame
 
-        Args:
-            icon: 图标模板名，如 ``interact_icon``。
-        """
-        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
-        template = _load_icon_template(icon)
-        if area is None or template is None:
-            return []
-        crop = cv2_utils.crop_image_only(self.last_screenshot, area.pc_rect)
-        if crop is None or crop.size == 0:
-            return []
-        result = cv2_utils.match_template(
-            crop, template[0], ICON_THRESHOLD,
-            mask=template[1], only_best=False, ignore_inf=True,
-        )
-        return [area.pc_rect.y1 + item.center.y for item in result]
+    def _scroll(self, down: bool) -> OperationRoundResult:
+        """滚一格后废弃旧观测，只在新截图上决定下一次输入。"""
+        self.input_worker.submit_turn(None)
+        self.input_worker.scroll_prompt(down)
+        self._record_input()
+        self.selection.reset(self.last_input_frame or self.last_screenshot_time)
+        return self.round_wait('已滚动一格，复核高亮条目', wait=0.2)
 
-    def _row_has_icon(self, row_y: int, icon: str) -> bool:
-        """指定行上是否有某种条目图标。
-
-        Args:
-            row_y: 整屏纵坐标。
-            icon: 图标模板名，如 ``interact_icon``。
-        """
-        return any(abs(y - row_y) <= CARD_KEY_ROW_TOLERANCE for y in self._icon_rows(icon))
-
-    def _prompt_icon_rows(self) -> dict[str, list[int]]:
-        """提示列表里容器、搜过的容器、刷卡处三种图标各自所在的整屏纵坐标。"""
-        return {icon: self._icon_rows(icon) for icon in ROW_ICON_KINDS}
-
-    def _read_prompt_row(self, row_y: int, icon_rows: dict[str, list[int]], selected: bool) -> PromptRow | None:
-        """读提示列表的一行；这一行既没有图标也读不出条目文字时返回 None。
-
-        容器、门的条目图标是交互图标，搜过的容器是绿色对勾，刷卡处是钥匙图标；
-        拾取物的条目图标是物品图，这三种都匹配不到。图标都不是、读得到文字、
-        文字又不像容器的行，才按拾取物处理。
-
-        Args:
-            row_y: 行心整屏纵坐标。
-            icon_rows: ``_prompt_icon_rows`` 的结果，同一帧只算一次。
-            selected: 这一行是否是 F 键所在行。
-        """
-        for icon, kind in ROW_ICON_KINDS.items():
-            if any(abs(y - row_y) <= CARD_KEY_ROW_TOLERANCE for y in icon_rows[icon]):
-                return PromptRow(row_y, kind, '', selected)
-        texts = self.ctx.ocr_service.get_ocr_result_list(
-            image=self.last_screenshot,
-            rect=Rect(PICKUP_TEXT_LEFT, row_y - PICKUP_ROW_HALF, PICKUP_TEXT_RIGHT, row_y + PICKUP_ROW_HALF),
-        )
-        text = ''.join(str_utils.remove_whitespace(item.data) for item in texts)
-        if len(HANZI_PATTERN.findall(text)) < PROMPT_ROW_MIN_HANZI:
+    def _prepare_interaction(self, kind: str) -> OperationRoundResult | None:
+        """只有返回 None 才能按 F。超时后禁止继续滚动或补按。"""
+        self._release_forward()
+        self.input_worker.submit_turn(None)
+        now = time.monotonic()
+        if self.select_since is None:
+            self.select_since = now
+        if now - self.select_since >= SELECT_TIMEOUT:
+            return self.round_recoverable_fail(f'无法稳定选中目标 {kind}')
+        pickup = self._try_pickup()
+        if pickup is not None:
+            return pickup
+        frame = self._prompts()
+        if not self._ready(frame):
+            return self.round_wait('等待选中行稳定', wait=0.1)
+        step = frame.step_toward(kind)
+        if step == 0:
+            self.pickup_pending = False
+            self.select_since = None
             return None
-        if any(word in text for word in CONTAINER_WORDS):
-            return PromptRow(row_y, ROW_CONTAINER_TEXT, text, selected)
-        if CARD_COUNT_PATTERN.search(text):
-            # 长按刷卡时进度圈盖住钥匙图标，模板匹配不到；靠第二行的持卡计数认出来。
-            return PromptRow(row_y, ROW_ICON_KINDS['card_key_icon'], text, selected)
-        return PromptRow(row_y, ROW_PICKUP, text, selected)
+        if step is None:
+            return self.round_wait('等待目标条目', wait=0.1)
+        return self._scroll(step > 0)
 
-    def _prompt_rows(self) -> list[PromptRow]:
-        """以 F 键行为锚点，按行距上下逐行读提示列表，自上而下返回；没有 F 键时返回空表。
+    def _ready(self, frame: PromptFrame) -> bool:
+        """在真实的新截图上确认选中行，输入通道空闲才接受本帧。"""
+        return (self.selection.observe(frame) and self.input_worker.instant_idle
+                and self._game_in_foreground())
 
-        某一行既没有图标也读不出文字，就认为列表在这一侧到头，不再往外读。
-        """
-        keys = self._interact_key_rows()
-        area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
-        if not keys or area is None:
-            return []
-        anchor = min(keys)
-        icon_rows = self._prompt_icon_rows()
-        rows: list[PromptRow] = []
-        for direction in (1, -1):
-            step = 0 if direction > 0 else -1
-            while True:
-                row_y = round(anchor + step * PROMPT_ROW_PITCH)
-                if row_y - PICKUP_ROW_HALF < area.pc_rect.y1 or row_y + PICKUP_ROW_HALF > area.pc_rect.y2:
-                    break
-                row = self._read_prompt_row(row_y, icon_rows, selected=step == 0)
-                if row is None:
-                    break
-                rows.append(row)
-                step += direction
-        return sorted(rows, key=lambda item: item.y)
-
-    def _selected_pickup(self) -> tuple[PromptRow | None, dict[str, list[int]]]:
-        """读 F 键所在行，并更新点按 F 拾取的计数。
-
-        F 键行的文字换了或消失，上一条点按过的拾取物按已拾取计。
-
-        Returns:
-            （F 键行是拾取物时的那一行，否则 None；本帧三种图标的行位置）。
-        """
-        keys = self._interact_key_rows()
-        icon_rows: dict[str, list[int]] = {}
-        row: PromptRow | None = None
-        if keys:
-            icon_rows = self._prompt_icon_rows()
-            read = self._read_prompt_row(min(keys), icon_rows, selected=True)
-            if read is not None and read.kind == ROW_PICKUP:
-                row = read
-        text = None if row is None else row.text
-        if text != self.pickup_text:
-            if self.pickup_text is not None:
-                self.pickups += 1
-                log.info('贝果拾取：「%s」的提示已消失，按已拾取计（本局第 %s 条）', self.pickup_text, self.pickups)
-            self.pickup_text = None
-            self.pickup_taps = 0
-        if text is None:
-            self.pickup_skip_note = None
-        return row, icon_rows
+    def _scan_more(self) -> OperationRoundResult | None:
+        """三行视窗可能还有隐藏项。向下遍历，回到已见条目即结束。"""
+        frame = self._prompts()
+        row = frame.selected
+        if len(frame.rows) < 3 or row is None:
+            return None
+        if not self._ready(frame):
+            return self.round_wait('等待滚动后的列表稳定', wait=0.1)
+        key = (row.kind, row.text, row.y // 10)
+        if key in self.scanned_rows or len(self.scanned_rows) >= 16:
+            return None
+        self.scanned_rows.add(key)
+        return self._scroll(True)
 
     def _should_tap(self, text: str) -> bool:
         """F 键行的拾取物这次能不能点按 F；捡不起来的记下并返回 False。
@@ -1790,9 +1524,6 @@ class BagelRouteWalker(BagelOperation):
         Args:
             text: F 键行的条目文字。
         """
-        if text in self.pickup_ignored:
-            self._note_pickup_skip(text, '已记为捡不起来')
-            return False
         if self.pickup_taps >= PICKUP_TAP_LIMIT:
             self._give_up_pickup(text, f'点按 F {PICKUP_TAP_LIMIT} 次仍在')
             self.pickup_text = None
@@ -1807,10 +1538,10 @@ class BagelRouteWalker(BagelOperation):
             text: F 键行的条目文字。
         """
         self.pickup_text = text
+        self.pickup_pending = True
         self.pickup_taps += 1
         self.pickup_presses += 1
         self.pickup_tap_at = time.monotonic()
-        self.pickup_skip_note = None
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
         self._record_input()
 
@@ -1827,143 +1558,89 @@ class BagelRouteWalker(BagelOperation):
         if self.pickup_failures >= PICKUP_FAIL_LIMIT:
             log.warning('贝果拾取：累计 %s 条捡不起来，按背包已满处理，本局不再拾取', self.pickup_failures)
 
-    def _note_pickup_skip(self, text: str, reason: str) -> None:
-        """记一条「看到拾取物但这次不捡」的诊断日志；同一条同一原因只记一次。
-
-        Args:
-            text: F 键行的条目文字。
-            reason: 不捡的原因。
-        """
-        note = f'{text}|{reason}'
-        if note == self.pickup_skip_note:
-            return
-        self.pickup_skip_note = note
-        log.info('贝果拾取：F 键行是「%s」，%s，这次不捡', text, reason)
-
-    def _pickup_while_moving(self) -> None:
-        """导航和碎步中，F 键落在拾取物上就边走边点按 F，不停车、不结束本轮。
-
-        游戏允许边跑边捡。提示列表任一行有容器、搜过的容器或刷卡条目时不按，
-        见 ``PICKUP_BLOCK_ICONS``。上一下点按后 ``PICKUP_TAP_WAIT`` 秒内不再看，
-        避免列表刚更新时 F 键已移到下一条又被按到。
-        """
-        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
-            return
-        if time.monotonic() - self.pickup_tap_at < PICKUP_TAP_WAIT:
-            return
-        row, icon_rows = self._selected_pickup()
-        if row is None:
-            return
-        blockers = [ROW_ICON_KINDS[icon] for icon in PICKUP_BLOCK_ICONS if icon_rows.get(icon)]
-        if blockers:
-            self._note_pickup_skip(row.text, f'移动中提示列表有{"、".join(blockers)}')
-            return
-        if not self._should_tap(row.text):
-            return
-        self._tap_pickup(row.text)
-        log.info('贝果拾取：移动中点按F拾取「%s」，不停车（第 %s 次）', row.text, self.pickup_taps)
-
-    def _try_pickup(self) -> OperationRoundResult | None:
-        """停下时，F 键落在拾取物上就松开前进键点按 F；没有可捡的返回 None。
-
-        其他行的拾取物由 ``_click_pickup`` 处理，只在现场观察里调用。
-
-        捡起后条目消失，F 键移到下一条。同一条按满 ``PICKUP_TAP_LIMIT`` 次还在，
-        记为捡不起来，本局不再捡它；累计 ``PICKUP_FAIL_LIMIT`` 条捡不起来就不再拾取。
-        同名的两件拾取物挨在一起时，前一件捡起后条目文字不变，也会多耗几次按键。
-        """
-        if self.pickup_failures >= PICKUP_FAIL_LIMIT:
+    def _recover_pickup_panel(self) -> OperationRoundResult | None:
+        """拾取后若列表重排导致误开面板，原地关闭并回到当前节点。"""
+        if not self.pickup_pending:
             return None
-        waited = time.monotonic() - self.pickup_tap_at
-        if waited < PICKUP_TAP_WAIT:
-            return self.round_wait('等上一下拾取生效', wait=PICKUP_TAP_WAIT - waited)
-        row, _ = self._selected_pickup()
-        if row is not None and self._should_tap(row.text):
+        if time.monotonic() - self.pickup_tap_at > 3:
+            self.pickup_pending = False
+            return None
+        if self._prompts().center is not None:
+            if time.monotonic() - self.pickup_tap_at >= PICKUP_TAP_WAIT:
+                self.pickup_pending = False
+            return None
+        if self._has('搜查安全箱') and (self._has('搜查容器标题') or self._has('电子保险箱标题')):
             self._release_forward()
-            self._tap_pickup(row.text)
-            return self.round_wait(f'点按F拾取「{row.text}」', wait=PICKUP_TAP_WAIT)
+            self.input_worker.submit_turn(None)
+            op = BagelCloseSearch(self.ctx)
+            result = op.execute()
+            self._adopt_screenshot(op)
+            self.pickup_pending = False
+            if not result.success:
+                return self.round_recoverable_fail(f'关闭拾取时误开的面板失败：{result.status}')
+            return self.round_wait('已关闭拾取时误开的面板', wait=0.1)
+        if self._has('大保险解锁提示'):
+            self._release_forward()
+            self.input_worker.submit_turn(None)
+            self.pickup_pending = False
+            self.ctx.controller.btn_press('esc', press_time=0.1)
+            self._record_input()
+            return self.round_wait('已退出拾取时误开的解锁界面', wait=0.5)
         return None
 
-    def _click_pickup(self) -> OperationRoundResult | None:
-        """F 键行以外的拾取物用 Alt 点击捡走；没有可捡的返回 None。
-
-        提示列表按距离排序，拾取物排在容器下面时 F 键一直落不到它。
-        Alt 唤出光标点条目，拾取物直接进背包，不用先把 F 键挪过去。
-        点完后 F 键停在被点的那一行：被点的条目消失后，那一行换成下一条；下一条是电子保险箱时，
-        再长按 F 会打开解锁界面。所以只在现场观察、没有要交互的容器或门时调用。
-        角色还在滑动时列表会重新排序，所以同一条拾取物要在同一行连续出现两帧才点。
-        点之前先松开前进键、暂停转向：Alt 按住时鼠标位移移动的是光标。
-        """
+    def _try_pickup(self, *, moving: bool = False, all_rows: bool = False) -> OperationRoundResult | None:
+        """行进中只捡选中项；原地收尾可滚到其他拾取物。"""
+        remaining = PICKUP_TAP_WAIT - (time.monotonic() - self.pickup_tap_at)
+        if remaining > 0:
+            return None if moving else self.round_wait('等待拾取结果', wait=remaining)
+        frame = self._prompts()
+        stable = self._ready(frame)
+        row = frame.selected
+        if self.pickup_text and stable and row is not None and (row.kind != 'pickup' or row.text != self.pickup_text):
+            self.pickups += 1
+            log.info('贝果拾取：「%s」已离开选中行，按已拾取计（本局第 %s 条）', self.pickup_text, self.pickups)
+            if not moving and self.cleanup_since is not None:
+                self.cleanup_since = time.monotonic()
+            self.pickup_text = None
+            self.pickup_taps = 0
         if self.pickup_failures >= PICKUP_FAIL_LIMIT:
             return None
-        waited = time.monotonic() - self.pickup_tap_at
-        if waited < PICKUP_TAP_WAIT:
-            return self.round_wait('等上一下拾取生效', wait=PICKUP_TAP_WAIT - waited)
-        rows = self._prompt_rows()
-        present = {row.text for row in rows if row.kind == ROW_PICKUP}
-        if self.click_pickup_text is not None and self.click_pickup_text not in present:
-            self.pickups += 1
-            log.info('贝果拾取：Alt 点击的「%s」已从提示列表消失，按已拾取计（本局第 %s 条）',
-                     self.click_pickup_text, self.pickups)
-            self.click_pickup_text = None
-            self.click_pickup_clicks = 0
-        targets = [
-            row for row in rows
-            if row.kind == ROW_PICKUP and not row.selected and row.text not in self.pickup_ignored
-        ]
-        if not targets:
-            self.click_candidate = None
-            return None
-        target = targets[0]
-        now = time.monotonic()
-        candidate = (target.y, target.text)
-        if self.click_candidate != candidate or now - self.click_candidate_at > PICKUP_CLICK_STABLE_SECONDS:
-            self.click_candidate = candidate
-            self.click_candidate_at = now
-            self._release_forward()
-            return self.round_wait('提示列表其他行有拾取物，等列表稳定', wait=0.1)
-        self.click_candidate = None
-        if target.text != self.click_pickup_text:
-            self.click_pickup_text = target.text
-            self.click_pickup_clicks = 0
-        if self.click_pickup_clicks >= PICKUP_TAP_LIMIT:
-            self._give_up_pickup(target.text, f'Alt 点击 {PICKUP_TAP_LIMIT} 次仍在')
-            self.click_pickup_text = None
-            self.click_pickup_clicks = 0
-            return None
-        self._release_forward()
-        self.input_worker.submit_turn(None)
-        self.click_pickup_clicks += 1
-        self.pickup_presses += 1
-        self.pickup_tap_at = now
-        self.input_worker.alt_click(Point(PICKUP_CLICK_X, target.y))
-        self._record_input()
-        selected = next((index for index, row in enumerate(rows) if row.selected), None)
-        log.info(
-            '贝果拾取：Alt 点击提示列表第 %s 行「%s」（F 键在第 %s 行，第 %s 次）',
-            rows.index(target) + 1, target.text,
-            '-' if selected is None else selected + 1, self.click_pickup_clicks,
-        )
-        return self.round_wait(f'Alt点击拾取「{target.text}」', wait=PICKUP_TAP_WAIT)
+        if row is not None and row.kind == 'pickup' and row.text not in self.pickup_ignored:
+            if not stable:
+                return None if moving else self.round_wait('等待拾取物高亮稳定', wait=0.1)
+            if not self._should_tap(row.text):
+                return None if moving else self.round_wait('跳过无法拾取的条目', wait=0.1)
+            self._tap_pickup(row.text)
+            self.selection.reset(self.last_input_frame or self.last_screenshot_time)
+            self.scanned_rows.clear()
+            log.info('贝果%s点按F拾取「%s」', '移动中' if moving else '原地', row.text)
+            return None if moving else self.round_wait('已点按F拾取', wait=PICKUP_TAP_WAIT)
+        if all_rows and row is not None:
+            target = next((r for r in frame.rows if r.kind == 'pickup' and r.text not in self.pickup_ignored), None)
+            if target is not None:
+                if not stable:
+                    return self.round_wait('等待滚轮选中拾取物', wait=0.1)
+                return self._scroll(target.y > row.y)
+        return None
 
     def _log_leftover_prompts(self) -> None:
         """现场观察结束时记下提示列表；还剩拾取物就存一张截图，供排查漏捡。"""
-        rows = self._prompt_rows()
+        rows = self._prompts().rows
         if not rows:
             return
         log.info(
             '贝果拾取：现场观察结束时的提示列表：%s',
             '；'.join(f'{row.kind}「{row.text}」' if row.text else row.kind for row in rows),
         )
-        left = [row.text for row in rows if row.kind == ROW_PICKUP]
+        left = [row.text for row in rows if row.kind == 'pickup']
         if left:
             path = save_screenshot(self.ctx, self.last_screenshot, 'BagelPickupLeft')
             log.info('贝果拾取：现场还剩 %s 条拾取物没捡，截图 %s', len(left), path)
 
     def _press_f(self, kind: str) -> OperationRoundResult:
-        """点按 F：普通容器、门、电梯。
+        """普通容器和门点按 F。
 
-        容器类以搜查面板出现为完成；门、电梯以提示消失为完成。
+        容器等搜查面板出现，门等提示持续消失。
         按 F 前先松前进键，避免按住前行漂移。
         """
         self._release_forward()
@@ -1973,14 +1650,23 @@ class BagelRouteWalker(BagelOperation):
             # 盖住小地图，后面整段导航都定位失败。
             self._reset_point_state()
             return self.round_success('面板已打开')
-        if self.f_pressed and self._top_entry() is None:
+        if kind == 'door' and self.f_pressed and not any(row.kind == kind for row in self._prompts().rows):
+            if self.door_missing_at is None:
+                self.door_missing_at = self.last_screenshot_time
+            if self.last_screenshot_time - self.door_missing_at < 0.4:
+                return self.round_wait('确认门提示已消失', wait=0.1)
             self._reset_point_state()
             return self.round_success('已完成')
+        self.door_missing_at = None
         if self.press_f_taps >= PRESS_F_MAX_TAPS:
             log.info('贝果第 %s 点（%s）点按 F %s 次后提示仍在，判本局失败', self.cursor + 1, kind, self.press_f_taps)
             self._reset_point_state()
             return self.round_recoverable_fail('点按F后提示一直不消失')
+        waiting = self._prepare_interaction(kind)
+        if waiting is not None:
+            return waiting
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
+        self.selection.reset(self.last_screenshot_time)
         self.f_pressed = True
         self.press_f_taps += 1
         return self.round_wait('已点按F，等待结果', wait=0.4)
@@ -2090,7 +1776,22 @@ class BagelRouteWalker(BagelOperation):
     @node_from(from_name='关闭面板', status='已关闭面板')
     @operation_node(name='游标推进')
     def advance(self) -> OperationRoundResult:
-        """游标加一并回点调度。"""
+        """原地捡完仍在范围内的物品，再进入下一点。"""
+        recovered = self._recover_pickup_panel()
+        if recovered is not None:
+            return recovered
+        self._release_forward()
+        self.input_worker.submit_turn(None)
+        now = time.monotonic()
+        if self.cleanup_since is None:
+            self.cleanup_since = now
+        if now - self.cleanup_since < SELECT_TIMEOUT:
+            pickup = self._try_pickup(all_rows=True) or self._scan_more()
+            if pickup is not None:
+                return pickup
+            just_sent = self.last_input_frame is not None and self.last_screenshot_time - self.last_input_frame < 0.5
+            if now - self.cleanup_since < 0.5 or just_sent:
+                return self.round_wait('等待局内提示恢复', wait=0.1)
         self._enter_point(self.route_index, self.cursor + 1)
         return self.round_success('已推进')
 
@@ -2107,6 +1808,9 @@ class BagelRouteWalker(BagelOperation):
         hud = self._check_hud()
         if hud is not None:
             return hud
+        recovered = self._recover_pickup_panel()
+        if recovered is not None:
+            return recovered
         position = self.locate()
         if position is None:
             # 定位丢失立刻停步：继续按着前进会走到不知道哪里去，
@@ -2146,7 +1850,11 @@ class BagelRouteWalker(BagelOperation):
         if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
             return self.round_wait('等待动作后的新截图', wait=0.05)
         # 边走边捡：只投递点按，不停车也不结束本轮，到点判定照常做。
-        self._pickup_while_moving()
+        if self.opening_blocking_door:
+            door = self._open_blocking_door()
+            if door is not None:
+                return door
+        self._try_pickup(moving=True)
         if self.retreat_point is not None:
             return self._retreat(position)
         if distance <= SPRINT_DISTANCE and self.sprinting:
@@ -2225,10 +1933,16 @@ class BagelRouteWalker(BagelOperation):
             point: 当前游标点。
         """
         self._release_forward()
+        self.input_worker.submit_turn(None)
         if self.target_wait_since is None:
             self.target_wait_since = time.monotonic()
             return self.round_wait('原地等待交互提示', wait=0.2)
-        if time.monotonic() - self.target_wait_since >= BOX_PROMPT_SECONDS:
+        elapsed = time.monotonic() - self.target_wait_since
+        if elapsed < SELECT_TIMEOUT:
+            scan = self._scan_more()
+            if scan is not None:
+                return scan
+        if elapsed >= BOX_PROMPT_SECONDS:
             self.target_wait_since = None
             if point.kind == KEYCARD_DOOR:
                 # 房卡门不开，后面的点都在门里，不能跳过；改为左右试探找刷卡提示。
@@ -2250,11 +1964,16 @@ class BagelRouteWalker(BagelOperation):
         Returns:
             允许交互的结果；未识别到可信提示时返回 None。
         """
+        if distance > INTERACTION_TRUST_DISTANCE:
+            return None
         kind = self._nearby_kind()
-        if kind is None or distance > INTERACTION_TRUST_DISTANCE:
+        if kind is None:
             return None
         self._release_forward()
+        self.input_worker.submit_turn(None)
+        self.selection.reset(self.last_screenshot_time)
         self.current_kind = kind
+        self.select_since = None
         self.target_wait_since = None
         return self.round_success('提示已出现')
 
@@ -2601,27 +2320,26 @@ class BagelRouteWalker(BagelOperation):
         return None
 
     def _open_blocking_door(self) -> OperationRoundResult | None:
-        """受阻时最上面一条提示是门：松开前进键，点按 F 开门。
-
-        同一个点最多 ``BLOCKED_DOOR_TAP_LIMIT`` 次；不是门或次数用完返回 None，
-        交回侧移、退回的原逻辑。
-
-        Returns:
-            开门后等待的结果；不开门时返回 None。
-        """
-        if self.blocked_door_taps >= BLOCKED_DOOR_TAP_LIMIT:
+        """受阻时选中门再点按；门消失或用完次数后恢复导航。"""
+        if self.blocked_door_taps >= BLOCKED_DOOR_TAP_LIMIT or not any(
+            row.kind == 'door' for row in self._prompts().rows
+        ):
+            self.opening_blocking_door = False
+            self.select_since = None
             return None
-        entry = self._top_entry()
-        if entry is None or self._classify(entry[0], entry[1]) != 'door':
-            return None
-        self._release_forward()
+        self.opening_blocking_door = True
+        waiting = self._prepare_interaction('door')
+        if waiting is not None:
+            return waiting
+        self.opening_blocking_door = False
         self.blocked_door_taps += 1
         log.info(
             '贝果第 %s 点前进受阻，前方是「%s」，点按 F 开门（第 %s/%s 次），位置 %s',
-            self.cursor + 1, entry[1], self.blocked_door_taps, BLOCKED_DOOR_TAP_LIMIT, self.position,
+            self.cursor + 1, self._prompts().selected.text, self.blocked_door_taps, BLOCKED_DOOR_TAP_LIMIT, self.position,
         )
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
         self._record_input()
+        self.selection.reset(self.last_input_frame or self.last_screenshot_time)
         return self.round_wait('前进受阻，点按 F 开门', wait=BLOCKED_DOOR_WAIT_SECONDS)
 
     def _blocked(self, reason: str) -> OperationRoundResult:
@@ -2774,8 +2492,14 @@ class BagelRouteWalker(BagelOperation):
         转向比例不重置：它是整局共享的校准结果，换点后继续沿用。
         只清掉待学习样本，避免拿跨点的旧样本反推。
         """
+        self.selection.reset(self.last_screenshot_time)
+        self.select_since = None
+        self.cleanup_since = None
+        self.scanned_rows.clear()
+        self.opening_blocking_door = False
         self.current_kind = None
         self.f_pressed = False
+        self.door_missing_at = None
         self.press_f_taps = 0
         self.mechanical_hold_until = None
         self.mechanical_retried = False
@@ -2788,8 +2512,6 @@ class BagelRouteWalker(BagelOperation):
         self.card_seen_loaded = False
         self.card_released_at = None
         self.card_spent_since = None
-        self.card_clear_taps = 0
-        self.card_wait_since = None
         self.card_stable_since = None
         self.card_lost_since = None
         self.card_hold_lost_since = None
@@ -2879,6 +2601,13 @@ class BagelRouteWalker(BagelOperation):
         排队中的侧移、长按 F 等即时动作随 ``release_all`` 作废，暂停期间不会再按下。
         """
         self._release_forward()
+        self.selection.reset(self.last_screenshot_time)
+        self.select_since = None
+        self.card_stable_since = None
+        if self.card_hold_started is not None:
+            self.card_hold_started = None
+            self.card_held = False
+        self.mechanical_hold_until = None
         self.input_worker.release_all()
         self.input_worker.submit_turn(None)
         super().handle_pause()

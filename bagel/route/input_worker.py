@@ -8,10 +8,9 @@
 - 转向（独立判稳）：主线只提交目标方向，这里自己采样朝向、数连续 3 帧稳定、
   1 度防抖、偏离 5 度才转一次，转稳后自己算校准样本。转向是相对位移，
   不排队不叠加，上一笔没校准完不开下一笔。
-- 即时动作（队列）：点按 F、长按 F、松开 F、闪避、Alt 点击，按顺序执行。
+- 即时动作（队列）：点按 F、长按 F、松开 F、闪避、侧移，按顺序执行。
 
-Alt 点击与转向都动鼠标：Alt 按住时鼠标位移移动的是光标，不是镜头。
-两者共用一把鼠标锁，不会交叠。
+滚轮切换在主线同步发送，与转向共用鼠标锁。
 
 三条通道互不占用，所以转向永远不会把前进顶掉（曾因此原地不动）。
 """
@@ -29,6 +28,7 @@ from one_dragon.base.geometry.point import Point
 from one_dragon.utils import cal_utils, cv2_utils
 from one_dragon.utils.log_utils import log
 
+from ..operation.operation import scroll_interaction_row
 from ..vision.minimap_angle import analyze
 
 if TYPE_CHECKING:
@@ -53,9 +53,6 @@ DODGE: str = 'dodge'
 
 SIDE_STEP: str = 'side_step'
 """点一下侧移（A 或 D）；方向记在 angle 上，-1 向左、1 向右。"""
-
-ALT_CLICK: str = 'alt_click'
-"""按住 Alt 唤出光标，点一下 point 处再松开 Alt。复用框架的 ``click(pc_alt=True)``。"""
 
 SLEEP_SLICE: float = 0.01
 """等待轮询的切片时长（秒）。"""
@@ -149,7 +146,7 @@ class _Command:
 
     def __init__(
         self, kind: str, duration: float | None = None, angle: float = 0.0,
-        epoch: int = 0, point: Point | None = None,
+        epoch: int = 0,
     ) -> None:
         """
         Args:
@@ -157,13 +154,11 @@ class _Command:
             duration: 短按时长（秒），其它类型忽略。
             angle: 转向角度（度），仅转向使用。
             epoch: 入队时的动作版本号；暂停后版本号前进，排队中的旧指令不再执行。
-            point: 点击位置（1080p 游戏坐标），仅 Alt 点击使用。
         """
         self.kind: str = kind
         self.duration: float | None = duration
         self.angle: float = angle
         self.epoch: int = epoch
-        self.point: Point | None = point
 
 
 class _InstantChannel:
@@ -198,6 +193,12 @@ class _InstantChannel:
                 return
             self._queue.append(command)
         self._wake.set()
+
+    @property
+    def idle(self) -> bool:
+        """检查目前没有执行或排队的即时动作。"""
+        with self._lock:
+            return not self._running and not self._queue
 
     def clear(self) -> None:
         """丢掉还没执行的指令；已出队的那条由执行前的版本号检查拦下。"""
@@ -588,7 +589,8 @@ class BagelInputWorker:
         self._action_epoch: int = 0
         """即时动作的版本号：暂停时加一，入队早于暂停的指令随之作废。"""
         self._mouse_lock: threading.Lock = threading.Lock()
-        """转向与 Alt 点击共用：Alt 按住期间不转向，转向中不点击。"""
+        """转向与滚轮共用的鼠标输入锁。"""
+        self._turn_enabled: bool = False
 
         self._turn_worker: _TurnWorker = _TurnWorker(
             self._run_turn, self._sample_angle, initial_ratio=initial_turn_ratio,
@@ -687,6 +689,10 @@ class BagelInputWorker:
             cruise_only: 近距离只做边走边转，单次幅度受 CRUISE_TURN_CAP 限制。
             deadband: 本次目标的对准死区；快速移动传 2 度，其余用默认 5 度。
         """
+        enabled = target is not None
+        if enabled != self._turn_enabled:
+            with self._mouse_lock:
+                self._turn_enabled = enabled
         self._turn_worker.submit(target, cruise_only=cruise_only, deadband=deadband)
 
     @property
@@ -703,6 +709,11 @@ class BagelInputWorker:
         """入队时记下当前版本号，暂停后这条指令就不再执行。"""
         command.epoch = self._action_epoch
         self._instant_channel.put(command)
+
+    @property
+    def instant_idle(self) -> bool:
+        """避免向旧动作后面追加依赖当前截图的交互。"""
+        return self._instant_channel.idle
 
     def tap_interact(self, duration: float = 0.2) -> None:
         """点按交互键。
@@ -745,15 +756,10 @@ class BagelInputWorker:
             _Command(SIDE_STEP, duration=duration, angle=1.0 if direction > 0 else -1.0),
         )
 
-    def alt_click(self, point: Point) -> None:
-        """按住 Alt 唤出光标，点击提示列表的一行。
-
-        调用方要先停下并暂停转向；转向线程的位移由鼠标锁挡在 Alt 之外。
-
-        Args:
-            point: 点击位置（1080p 游戏坐标）。
-        """
-        self._enqueue(_Command(ALT_CLICK, point=point))
+    def scroll_prompt(self, down: bool) -> None:
+        """在当前位置同步发送一格滚轮。返回时可开始等待输入后的新截图。"""
+        with self._mouse_lock:
+            scroll_interaction_row(down)
 
     def release_all(self) -> None:
         """暂停时调用：作废排队中的即时动作，并立刻松开全部按键。"""
@@ -897,7 +903,8 @@ class BagelInputWorker:
             angle: 转向角度（度）。
         """
         with self._mouse_lock:
-            self.ctx.controller.turn_by_angle_diff(angle)
+            if self._turn_enabled:
+                self.ctx.controller.turn_by_angle_diff(angle)
 
     # ---------- 即时通道 ----------
 
@@ -963,6 +970,3 @@ class BagelInputWorker:
             time.sleep(command.duration or 0.0)
             key(release=True)
             return
-        if command.kind == ALT_CLICK and command.point is not None:
-            with self._mouse_lock:
-                controller.click(command.point, pc_alt=True)
