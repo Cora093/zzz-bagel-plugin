@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from ..vision import template
-from .operation import BagelOperation
+from ..vision.prompt_list import PromptFrame, PromptSelection
+from .operation import BagelOperation, scroll_interaction_row
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,15 +51,6 @@ def container_state(operation: BagelOperation, target: str) -> str:
         """只读取当前截图。"""
         return operation._has(area, screen)
 
-    def has_interact_key() -> bool:
-        """读插件自带的 F 键模板；不经过主仓模板库。"""
-        area = operation.ctx.screen_loader.get_area('贝果-局内', '交互F键')
-        if area is None:
-            return False
-        return template.has_template(
-            operation.last_screenshot, area.pc_rect, 'interact_key_f', INTERACT_KEY_THRESHOLD,
-        )
-
     box = has('搜查容器标题')
     safe = has('电子保险箱标题')
     unlocking = has('大保险解锁提示')
@@ -73,8 +64,7 @@ def container_state(operation: BagelOperation, target: str) -> str:
         return 'panel'
     if not has('按键-普通攻击', '战斗画面'):
         return 'unknown'
-    prompt = '武备箱交互' if target == 'box' else '电子保险箱交互'
-    return 'prompt' if has(prompt) and has_interact_key() else 'missing'
+    return 'field'
 
 
 class BagelContainerOperation(BagelOperation):
@@ -83,10 +73,13 @@ class BagelContainerOperation(BagelOperation):
     def __init__(
         self, ctx: ZContext, target: str, op_name: str,
         recovery: ContainerRecovery | None = None,
+        prepare_open: Callable[[BagelContainerOperation], OperationRoundResult | None] | None = None,
     ) -> None:
         """独立执行自建预算；流程执行复用传入的预算。"""
         super().__init__(ctx, op_name=op_name)
         self.target: str = target
+        self.prepare_open: Callable[[BagelContainerOperation], OperationRoundResult | None] | None = prepare_open
+        self.selection: PromptSelection = PromptSelection()
         self._owns_recovery: bool = recovery is None
         self.recovery: ContainerRecovery = recovery or ContainerRecovery(lambda: self.operation_usage_time)
         self._missing_since: float | None = None
@@ -97,6 +90,30 @@ class BagelContainerOperation(BagelOperation):
         if self._owns_recovery:
             self.recovery = ContainerRecovery(lambda: self.operation_usage_time)
         self._missing_since = None
+        self.selection.reset(float('-inf'))
+
+    def _select_standalone(self) -> OperationRoundResult | None:
+        """独立运行时使用相同的选行规则，此时没有路线转向线程。"""
+        frame = PromptFrame(self.ctx, self.last_screenshot, self.last_screenshot_time)
+        kind = 'electronic_safe' if self.target == 'safe' else 'box'
+        step = frame.step_toward(kind)
+        if step is None:
+            self.selection.reset(frame.stamp)
+            now = self.recovery.clock()
+            if self._missing_since is None:
+                self._missing_since = now
+            if now - self._missing_since >= 0.5:
+                return self.round_recoverable_fail(ContainerRecovery.STATUS_REAPPROACH)
+            return self.round_wait('等待目标交互提示恢复', wait=0.1)
+        self._missing_since = None
+        if not self.selection.observe(frame):
+            return self.round_wait('等待选中行稳定', wait=0.1)
+        if step:
+            scroll_interaction_row(step > 0)
+            self.selection.reset(max(time.time(), frame.stamp))
+            return self.round_wait('已滚动一格，复核高亮条目', wait=0.2)
+        self.selection.reset(frame.stamp)
+        return None
 
     def interact_container(
         self, sent_status: str | None = None,
@@ -123,13 +140,9 @@ class BagelContainerOperation(BagelOperation):
             return self.round_wait('等待开箱交互结果', wait=observation_wait)
         if self.recovery.interactions >= self.recovery.INTERACT_LIMIT:
             return self.round_recoverable_fail('容器开箱交互已达3次上限')
-        if state == 'missing':
-            if self._missing_since is None:
-                self._missing_since = now
-            if now - self._missing_since < 0.5:
-                return self.round_wait('等待目标交互提示恢复', wait=observation_wait)
-            return self.round_recoverable_fail(ContainerRecovery.STATUS_REAPPROACH)
-        self._missing_since = None
+        waiting = self._select_standalone() if self.prepare_open is None else self.prepare_open(self)
+        if waiting is not None:
+            return waiting
         # 识别耗时也计入预算，在实际输入前再次检查。
         reason = self.recovery.error()
         if reason:

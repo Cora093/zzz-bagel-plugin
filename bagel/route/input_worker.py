@@ -8,7 +8,9 @@
 - 转向（独立判稳）：主线只提交目标方向，这里自己采样朝向、数连续 3 帧稳定、
   1 度防抖、偏离 5 度才转一次，转稳后自己算校准样本。转向是相对位移，
   不排队不叠加，上一笔没校准完不开下一笔。
-- 即时动作（队列）：点按 F、长按 F、松开 F、闪避，按顺序执行。
+- 即时动作（队列）：点按 F、长按 F、松开 F、闪避、侧移，按顺序执行。
+
+滚轮切换在主线同步发送，与转向共用鼠标锁。
 
 三条通道互不占用，所以转向永远不会把前进顶掉（曾因此原地不动）。
 """
@@ -26,6 +28,7 @@ from one_dragon.base.geometry.point import Point
 from one_dragon.utils import cal_utils, cv2_utils
 from one_dragon.utils.log_utils import log
 
+from ..operation.operation import scroll_interaction_row
 from ..vision.minimap_angle import analyze
 
 if TYPE_CHECKING:
@@ -190,6 +193,12 @@ class _InstantChannel:
                 return
             self._queue.append(command)
         self._wake.set()
+
+    @property
+    def idle(self) -> bool:
+        """检查目前没有执行或排队的即时动作。"""
+        with self._lock:
+            return not self._running and not self._queue
 
     def clear(self) -> None:
         """丢掉还没执行的指令；已出队的那条由执行前的版本号检查拦下。"""
@@ -579,6 +588,9 @@ class BagelInputWorker:
         self._stopping: bool = False
         self._action_epoch: int = 0
         """即时动作的版本号：暂停时加一，入队早于暂停的指令随之作废。"""
+        self._mouse_lock: threading.Lock = threading.Lock()
+        """转向与滚轮共用的鼠标输入锁。"""
+        self._turn_enabled: bool = False
 
         self._turn_worker: _TurnWorker = _TurnWorker(
             self._run_turn, self._sample_angle, initial_ratio=initial_turn_ratio,
@@ -677,6 +689,10 @@ class BagelInputWorker:
             cruise_only: 近距离只做边走边转，单次幅度受 CRUISE_TURN_CAP 限制。
             deadband: 本次目标的对准死区；快速移动传 2 度，其余用默认 5 度。
         """
+        enabled = target is not None
+        if enabled != self._turn_enabled:
+            with self._mouse_lock:
+                self._turn_enabled = enabled
         self._turn_worker.submit(target, cruise_only=cruise_only, deadband=deadband)
 
     @property
@@ -693,6 +709,11 @@ class BagelInputWorker:
         """入队时记下当前版本号，暂停后这条指令就不再执行。"""
         command.epoch = self._action_epoch
         self._instant_channel.put(command)
+
+    @property
+    def instant_idle(self) -> bool:
+        """避免向旧动作后面追加依赖当前截图的交互。"""
+        return self._instant_channel.idle
 
     def tap_interact(self, duration: float = 0.2) -> None:
         """点按交互键。
@@ -734,6 +755,11 @@ class BagelInputWorker:
         self._enqueue(
             _Command(SIDE_STEP, duration=duration, angle=1.0 if direction > 0 else -1.0),
         )
+
+    def scroll_prompt(self, down: bool) -> None:
+        """在当前位置同步发送一格滚轮。返回时可开始等待输入后的新截图。"""
+        with self._mouse_lock:
+            scroll_interaction_row(down)
 
     def release_all(self) -> None:
         """暂停时调用：作废排队中的即时动作，并立刻松开全部按键。"""
@@ -876,7 +902,9 @@ class BagelInputWorker:
         Args:
             angle: 转向角度（度）。
         """
-        self.ctx.controller.turn_by_angle_diff(angle)
+        with self._mouse_lock:
+            if self._turn_enabled:
+                self.ctx.controller.turn_by_angle_diff(angle)
 
     # ---------- 即时通道 ----------
 
@@ -941,3 +969,4 @@ class BagelInputWorker:
             key(press=True)
             time.sleep(command.duration or 0.0)
             key(release=True)
+            return

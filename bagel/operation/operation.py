@@ -25,6 +25,11 @@ if TYPE_CHECKING:
     from zzz_od.context.zzz_context import ZContext
 
 
+def scroll_interaction_row(down: bool) -> None:
+    """发送一格垂直滚轮，保持光标和镜头原位。"""
+    ctypes.windll.user32.mouse_event(0x0800, 0, 0, -120 if down else 120, 0)
+
+
 def is_bagel_result(operation: Operation) -> bool:
     """用 DEFEAT 识别失败结算，供应用与操作复用。"""
     return operation.round_by_find_area(operation.last_screenshot, '贝果-结算', '失败').is_success

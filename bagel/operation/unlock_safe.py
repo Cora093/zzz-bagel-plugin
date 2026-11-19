@@ -12,6 +12,8 @@ from ..defs import SAFE_UNLOCK_HITS
 from .container import BagelContainerOperation
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
     from zzz_od.context.zzz_context import ZContext
 
@@ -25,9 +27,12 @@ class BagelUnlockSafe(BagelContainerOperation):
     INTERRUPT_CONFIRM_SECONDS: float = 0.5
     """解锁与搜查特征均消失后，持续确认局内画面的最短时间。"""
 
-    def __init__(self, ctx: ZContext, recovery: ContainerRecovery | None = None) -> None:
+    def __init__(
+        self, ctx: ZContext, recovery: ContainerRecovery | None = None,
+        prepare_open: Callable[[BagelContainerOperation], OperationRoundResult | None] | None = None,
+    ) -> None:
         """一次完成开箱、光圈解锁和等待搜查面板。"""
-        super().__init__(ctx, target='safe', op_name='贝果-解锁电子保险箱', recovery=recovery)
+        super().__init__(ctx, target='safe', op_name='贝果-解锁电子保险箱', recovery=recovery, prepare_open=prepare_open)
         self.timeout_seconds = 45
         self.hits_done: int = 0
         self.ring_armed: bool = False

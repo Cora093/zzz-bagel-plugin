@@ -41,12 +41,6 @@ def parse_value(text: str) -> int | None:
     return round(float(number) * _VALUE_UNITS[unit])
 
 
-def parse_quantity(text: str) -> int:
-    """安全箱格子下方的数量；装备显示「Lv.50」之类等级，按 1 件计。"""
-    compact = text.replace(' ', '')
-    return int(compact) if compact.isdigit() else 1
-
-
 def format_value(value: int | None) -> str:
     """按游戏习惯缩写成 K / M，未知时显示「未读到」。"""
     if value is None:

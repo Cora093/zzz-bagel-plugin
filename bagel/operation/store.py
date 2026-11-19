@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from one_dragon.base.controller.drag_timing import DragTiming
 from one_dragon.base.geometry.point import Point
-from one_dragon.base.geometry.rectangle import Rect
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 from one_dragon.utils.log_utils import log
@@ -13,7 +12,6 @@ from one_dragon.utils.log_utils import log
 from ..stats import (
     QUALITY_RED,
     BagelSafeLedger,
-    parse_quantity,
 )
 from ..vision.item_vision import (
     ACTION_FILL,
@@ -29,6 +27,7 @@ from ..vision.item_vision import (
     inspect_occupied,
     stack_icon_unchanged,
 )
+from ..vision.quantity import read_quantity
 from ..vision.search_panel import SearchPanelGuard
 from ..vision.search_progress import BagelSearchProgress
 from ..vision.slots import (
@@ -59,10 +58,6 @@ _DEST_LABEL: dict[str, str] = {
 _STATUS_SKIP_SLOT: str = '跳过不入箱的格子'
 # 叠放没成、已经恢复原位置，回挑选节点重新挑；不能留在核对节点，那里没有待核对数据。
 _STATUS_RESELECT: str = '重新挑选'
-# 安全箱格子下方数量文字的纵向范围与半宽，按局内 1080p 画面。
-_SAFE_QUANTITY_TOP: int = 922
-_SAFE_QUANTITY_BOTTOM: int = 952
-_SAFE_QUANTITY_HALF_WIDTH: int = 45
 
 
 class BagelStoreSafe(BagelOperation):
@@ -286,11 +281,19 @@ class BagelStoreSafe(BagelOperation):
         return None
 
     def _check_collection_deadline(self) -> OperationRoundResult | None:
-        """等待、拖前和拖后都检查期限，确认进展不延长总用时。"""
+        """等待、拖前和拖后都检查期限，确认进展不延长总用时。
+
+        有拖拽待核对时只查总用时，不查无进展：搬运成功要等核对节点回读画面才算
+        进展，先查无进展会在读到成功证据前就判失败，把已经入箱的这一件和面板里
+        刚揭示的物品一起丢下（#71）。核对本身有重拖、等面板和安全箱不明的次数
+        上限，再加总用时兜底，不会因此卡住。
+        """
         elapsed = self.operation_usage_time
         if elapsed >= self.TOTAL_TIMEOUT_SECONDS:
             self._clear_pending()
             return self.round_fail(self.STATUS_TIMEOUT)
+        if self._pending_source_index is not None:
+            return None
         progress_time = self._search_progress.last_progress_time
         if progress_time is not None and elapsed - progress_time >= self.NO_PROGRESS_SECONDS:
             log.warning(
@@ -414,6 +417,7 @@ class BagelStoreSafe(BagelOperation):
             safe.empty,
             self.blueprint_priority,
             stack_target=lambda mark: find_stack_target(screen, mark, safes, self._stack_blocked),
+            quantity=lambda mark: read_quantity(self.ctx, screen, mark.center),
         )
         if choice is None:
             self._safe_unknown_rounds = 0
@@ -452,10 +456,10 @@ class BagelStoreSafe(BagelOperation):
             f'{previous_item.quality} {previous_item.item_type}' if previous_item is not None else '空格'
         )
         log.info(
-            '贝果入箱：%s %s 结果格 %s %s -> %s格 %s %s；选择时目标=%s，蓝图优先=%s',
+            '贝果入箱：%s %s 结果格 %s %s -> %s格 %s %s；选择时目标=%s，蓝图优先=%s%s',
             choice.mark.quality, choice.mark.item_type, choice.source_index + 1, source.tuple(),
             _DEST_LABEL[choice.kind], choice.dest_index + 1, destination.tuple(),
-            destination_item, self.blueprint_priority,
+            destination_item, self.blueprint_priority, choice.quantity_note(),
         )
         if self.ledger is not None:
             self.ledger.start_transfer(choice.dest_index, (choice.mark.item_type, choice.mark.quality))
@@ -797,15 +801,7 @@ def record_safe_items(ctx: ZContext, screen: MatLike, ledger: BagelSafeLedger | 
             return
         items: dict[int, tuple[str, str, int | None]] = {}
         for mark in inspect_occupied(screen, SAFE_SLOT_CENTERS, safe.occupied):
-            if mark.quality != QUALITY_RED:
-                items[mark.index] = (mark.item_type, mark.quality, None)
-                continue
-            rect = Rect(
-                mark.center.x - _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_TOP,
-                mark.center.x + _SAFE_QUANTITY_HALF_WIDTH, _SAFE_QUANTITY_BOTTOM,
-            )
-            texts = ctx.ocr_service.get_ocr_result_list(image=screen, rect=rect)
-            quantity = parse_quantity(''.join(item.data for item in texts))
+            quantity = read_quantity(ctx, screen, mark.center) if mark.quality == QUALITY_RED else None
             items[mark.index] = (mark.item_type, mark.quality, quantity)
         ledger.slot_items = items
     except Exception:

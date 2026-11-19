@@ -34,6 +34,7 @@ from ..vision.item_vision import (
     inspect_occupied,
     stack_icon_unchanged,
 )
+from ..vision.quantity import read_quantity
 from ..vision.slots import (
     SAFE_SLOT_CENTERS,
     inspect_safe_slots,
@@ -227,7 +228,11 @@ class BagelOrganizeBackpack(BagelOperation):
     @node_from(from_name='核对整理变化', status=_STATUS_NEXT)
     @operation_node(name='逐件换入安全箱')
     def store_next(self) -> OperationRoundResult:
-        """每次只拖一件：能叠放先叠放；有空格就填，满了只和箱内最差的一格严格更优才对换。"""
+        """每次只拖一件：能叠放先叠放；有空格就填，满了只和箱内最差的一格严格更优才对换。
+
+        同优先级时比件数，件数严格更多才对换，规则与开箱入箱相同。换出来的物品落回
+        背包，下一轮可能再参与比较；每次对换都让这一档的总件数严格增加，不会来回换。
+        """
         if not self._backpack_open():
             return self._wait_panel('背包页不在画面内')
         screen = self.last_screenshot
@@ -240,6 +245,7 @@ class BagelOrganizeBackpack(BagelOperation):
         choice = choose_store_action(
             backpack, safes, safe.empty, self.blueprint_priority,
             stack_target=lambda mark: find_stack_target(screen, mark, safes, self._stack_blocked),
+            quantity=lambda mark: read_quantity(self.ctx, screen, mark.center),
         )
         if choice is None:
             return self.round_success(self.STATUS_DONE)
@@ -248,11 +254,11 @@ class BagelOrganizeBackpack(BagelOperation):
             return self.round_success(self.STATUS_DONE)
         target = next((mark for mark in safes if mark.index == choice.dest_index), None)
         log.info(
-            '贝果整理背包：%s %s 背包格 %s -> 安全箱格 %s（%s）；目标=%s，蓝图优先=%s',
+            '贝果整理背包：%s %s 背包格 %s -> 安全箱格 %s（%s）；目标=%s，蓝图优先=%s%s',
             choice.mark.quality, choice.mark.item_type, choice.source_index + 1, choice.dest_index + 1,
             _KIND_LABEL[choice.kind],
             f'{target.quality} {target.item_type}' if target is not None else '空格',
-            self.blueprint_priority,
+            self.blueprint_priority, choice.quantity_note(),
         )
         self._pending_before = self.last_screenshot.copy()
         self._pending_source = choice.source_index
