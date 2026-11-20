@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import cv2
@@ -18,6 +20,16 @@ from .template import load_template
 if TYPE_CHECKING:
     from cv2.typing import MatLike
     from zzz_od.context.zzz_context import ZContext
+
+
+ICON_ROW_TOLERANCE: int = 12
+"""图标行心与条目行心的最大纵向差（像素）。"""
+
+ICON_COLUMN: tuple[int, int] = (1324, 1404)
+"""按行找图标时的横向范围（整屏 x，左闭右开）。
+
+归档提示截图里三种图标的左边缘都在 1336–1338，模板宽 52，右边缘约 1390。
+"""
 
 
 def highlight_center(screen: MatLike) -> int | None:
@@ -62,16 +74,31 @@ class PromptRow:
 class PromptFrame:
     """同一截图只读一次。移动时只需要选中行，到点时才展开可见列表。"""
 
-    def __init__(self, ctx: ZContext, screen: MatLike, stamp: float) -> None:
+    on_cost: Callable[[str, float], None] | None = None
+    """计时回调：段名和耗时（秒），只用于日志。"""
+
+    def __init__(
+        self, ctx: ZContext, screen: MatLike, stamp: float,
+        on_cost: Callable[[str, float], None] | None = None,
+    ) -> None:
         self.ctx: ZContext = ctx
         self.screen: MatLike = screen
         self.stamp: float = stamp
+        self.on_cost = on_cost
+        start = perf_counter()
         self.center: int | None = highlight_center(screen)
+        self._cost('高亮', start)
         self._icons: dict[str, list[int]] = {}
+        self._icons_near: dict[tuple[str, int], bool] = {}
+
+    def _cost(self, name: str, start: float) -> None:
+        if self.on_cost is not None:
+            self.on_cost(name, perf_counter() - start)
 
     def icons(self, name: str) -> list[int]:
         """缓存某种图标的全部行心，也供长按期间查询被遮挡的条目。"""
         if name not in self._icons:
+            start = perf_counter()
             rows: list[int] = []
             area = self.ctx.screen_loader.get_area('贝果-局内', '交互图标')
             template = load_template(name)
@@ -81,13 +108,42 @@ class PromptFrame:
                                                 only_best=False, ignore_inf=True)
                 rows = sorted(area.pc_rect.y1 + hit.center.y for hit in hits)
             self._icons[name] = rows
+            self._cost('图标', start)
         return self._icons[name]
+
+    def icon_near(self, name: str, y: int) -> bool:
+        """某行附近有没有这种图标。只匹配该行的图标列，比整区 ``icons`` 快一个数量级。
+
+        Args:
+            name: 图标模板 id。
+            y: 条目行心（整屏）。
+        """
+        if name in self._icons:
+            return any(abs(y - iy) <= ICON_ROW_TOLERANCE for iy in self._icons[name])
+        key = (name, y)
+        if key not in self._icons_near:
+            start = perf_counter()
+            found = False
+            template = load_template(name)
+            if template is not None:
+                half = template[0].shape[0] // 2
+                top = y - ICON_ROW_TOLERANCE - half
+                bottom = y + ICON_ROW_TOLERANCE + template[0].shape[0] - half + 1
+                crop = self.screen[max(top, 0):bottom, ICON_COLUMN[0]:ICON_COLUMN[1]]
+                hits = cv2_utils.match_template(crop, template[0], 0.8, mask=template[1],
+                                                only_best=False, ignore_inf=True)
+                found = any(abs(max(top, 0) + hit.center.y - y) <= ICON_ROW_TOLERANCE for hit in hits)
+            self._icons_near[key] = found
+            self._cost('图标', start)
+        return self._icons_near[key]
 
     def text_at(self, y: int, right: int = 1575) -> str:
         """保留可能在第二行的物品数量或持卡数。"""
+        start = perf_counter()
         hits = self.ctx.ocr_service.get_ocr_result_list(
             image=self.screen, rect=Rect(1400, y - 31, right, y + 31),
         )
+        self._cost('OCR', start)
         return ''.join(str_utils.remove_whitespace(hit.data) for hit in hits)
 
     def _read(self, y: int) -> PromptRow | None:
@@ -95,7 +151,7 @@ class PromptFrame:
             return None
         for icon, kind in (('searched_icon', 'searched'), ('card_key_icon', 'card_reader'),
                            ('interact_icon', 'container')):
-            if any(abs(y - iy) <= 12 for iy in self.icons(icon)):
+            if self.icon_near(icon, y):
                 text = self.text_at(y, 1620 if kind == 'card_reader' else 1575)
                 if kind == 'container':
                     kind = _container_kind(text)

@@ -70,6 +70,19 @@ def test_visible_rows_use_real_icons_and_row_text(name: str, labels: dict[int, s
     assert frame.selected in frame.rows
 
 
+@pytest.mark.parametrize('name', ['prompt_aligned', 'prompt_done_zero', 'prompt_holding', 'prompt_pickup_above',
+                                  'prompt_pickup_over_box', 'prompt_pickup_over_safe', 'prompt_searched'])
+def test_row_icon_lookup_matches_full_area_scan(name: str) -> None:
+    """在 _read 会查的行（选中行与上下两行）上，按行只扫图标列的结论须与整区扫描一致。"""
+    ctx = Mock()
+    ctx.screen_loader.get_area.return_value.pc_rect = Rect(1324, 430, 1640, 760)
+    full, near = PromptFrame(ctx, archived_screen(name), 1), PromptFrame(ctx, archived_screen(name), 1)
+    center = full.center or 595
+    for icon in ('searched_icon', 'card_key_icon', 'interact_icon'):
+        for y in (round(center + k * 78.5) for k in (-2, -1, 0, 1, 2)):
+            assert near.icon_near(icon, y) == any(abs(y - iy) <= 12 for iy in full.icons(icon)), (icon, y)
+
+
 @pytest.mark.parametrize(('row', 'elapsed', 'stable'), [
     (PromptRow(559, 'pickup', '纳米纤维×4'), 1.5, True),
     (PromptRow(560, 'pickup', '纳米纤维×4'), 0.1, False),

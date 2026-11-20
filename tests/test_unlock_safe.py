@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from one_dragon.base.operation.operation_round_result import OperationRoundResultEnum
 
+from bagel.defs import INTERACT_TAP_SECONDS
 from bagel.operation import unlock_safe
 from bagel.operation.unlock_safe import BagelUnlockSafe
 
@@ -68,5 +69,5 @@ def test_keeps_pressing_after_required_hits_while_prompt_remains(
     assert result.result == OperationRoundResultEnum.WAIT
     assert op.hits_done == 5
     assert op.ctx.controller.interact.call_args_list == [
-        call(press=True, press_time=0.05, release=True),
+        call(press=True, press_time=INTERACT_TAP_SECONDS, release=True),
     ]

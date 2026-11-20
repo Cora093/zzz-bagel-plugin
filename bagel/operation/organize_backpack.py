@@ -73,6 +73,12 @@ _KIND_LABEL: dict[str, str] = {ACTION_FILL: '填空', ACTION_SWAP: '对换', ACT
 _REPRESS_SECONDS: float = 3.0
 """按 B 后这么久还没看到背包页，才允许再按一次；过早再按会把刚打开的背包又关掉。"""
 
+_CLOSE_WAIT_SECONDS: float = 1.0
+"""按 esc 关背包后这么久内只轮询、不再按；再按一次 esc 会打开暂停菜单。"""
+
+_PAGE_POLL_SECONDS: float = 0.1
+"""按 B／esc 后等背包页出现或消失的轮询间隔（秒）。实机录屏里背包页在按键后 0.3 秒内打开。"""
+
 
 class BagelOrganizeBackpack(BagelOperation):
     """打开局内背包页，把背包物品按优先级换进安全箱，再关掉背包页。
@@ -119,6 +125,8 @@ class BagelOrganizeBackpack(BagelOperation):
         self._pending_kind: str | None = None
         self._repeated: int = 0
         self._pressed_at: float | None = None
+        self._esc_at: float | None = None
+        """关背包时按 esc 的时刻（monotonic）；None 表示还没按。"""
         self._centers: tuple[Point, ...] = ()
         self._scrolls: int = 0
         self._last_header_y: int | None = None
@@ -135,6 +143,7 @@ class BagelOrganizeBackpack(BagelOperation):
         self._stack_blocked = set()
         self._panel_wait = 0
         self._pressed_at = None
+        self._esc_at = None
         self._centers = ()
         self._scrolls = 0
         self._last_header_y = None
@@ -161,11 +170,11 @@ class BagelOrganizeBackpack(BagelOperation):
             self.ctx.controller.btn_press('esc', press_time=0.1)
             return self.round_wait('先关闭搜查面板', wait=0.5)
         if self._pressed_at is not None and time.monotonic() - self._pressed_at < _REPRESS_SECONDS:
-            return self.round_wait('等待背包页', wait=0.3)
+            return self.round_wait('等待背包页', wait=_PAGE_POLL_SECONDS)
         if self.round_by_find_area(self.last_screenshot, '战斗画面', '按键-普通攻击').is_success:
             self.ctx.controller.btn_press(BACKPACK_KEY, press_time=0.1)
             self._pressed_at = time.monotonic()
-            return self.round_wait('已按 B 打开背包', wait=0.8)
+            return self.round_wait('已按 B 打开背包', wait=_PAGE_POLL_SECONDS)
         return self.round_retry('未识别局内画面，无法打开背包', wait=0.5)
 
     def _find_header(self) -> tuple[int, int] | None:
@@ -386,10 +395,14 @@ class BagelOrganizeBackpack(BagelOperation):
                 self.STATUS_DONE,
                 data={'moved': self.moved, 'swapped': self.swapped, 'stacked': self.stacked},
             )
+        now = time.monotonic()
+        if self._esc_at is not None and now - self._esc_at < _CLOSE_WAIT_SECONDS:
+            return self.round_wait('等待背包页关闭', wait=_PAGE_POLL_SECONDS)
         if self._backpack_open():
             record_safe_items(self.ctx, self.last_screenshot, self.ledger)
             self.ctx.controller.btn_press('esc', press_time=0.1)
-            return self.round_wait('关闭背包页', wait=0.8)
+            self._esc_at = now
+            return self.round_wait('关闭背包页', wait=_PAGE_POLL_SECONDS)
         return self.round_retry('等待回到局内画面', wait=0.5)
 
     def _backpack_marks(self) -> list[BagelSlotMark]:

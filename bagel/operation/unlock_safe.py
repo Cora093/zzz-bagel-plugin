@@ -8,7 +8,7 @@ import numpy as np
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 
-from ..defs import SAFE_UNLOCK_HITS
+from ..defs import INTERACT_TAP_SECONDS, SAFE_UNLOCK_HITS
 from .container import BagelContainerOperation
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ class BagelUnlockSafe(BagelContainerOperation):
 
     def _press_timing(self) -> None:
         """精确点按；F 与 Space 等价，沿用交互键。"""
-        self.ctx.controller.interact(press=True, press_time=0.05, release=True)
+        self.ctx.controller.interact(press=True, press_time=INTERACT_TAP_SECONDS, release=True)
         self.hits_done += 1
 
     def _search_ready(self) -> bool:

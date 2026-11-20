@@ -80,10 +80,17 @@ class BagelStoreSafe(BagelOperation):
     # 结算后重开。一件搬不动只跳过该格；连续两件都搬不动，多半是这一局的面板或
     # 交互已经不对，继续磨只会把整局时间耗光。
     CONSECUTIVE_FAILURE_LIMIT: int = 2
-    # 连续等不到稳定画面的帧数上限（每帧等待 0.3 秒，即约 3 秒）。
+    # 连续等不到稳定画面的时长上限（秒）。按时间而不是帧数计，轮询间隔改了也不变。
     # 面板刚打开、以及拖拽后物品落地都有动画，留足时间；每次发出拖拽前会清零，
     # 所以这是「一件物品一次」的预算，不会跨件累计。
-    PANEL_WAIT_ROUNDS_LIMIT: int = 10
+    PANEL_WAIT_SECONDS: float = 4.5
+    # 等面板判稳、等结果格揭示、等安全箱格子明确时的轮询间隔（秒）。
+    # 这些判据都要「两张新截图一致」，间隔只决定多快拿到下一张图，不放宽判据。
+    PANEL_POLL_SECONDS: float = 0.1
+    # 安全箱格子不明时额外复查的帧数上限。
+    SAFE_UNKNOWN_ROUNDS_LIMIT: int = 5
+    # 拖拽松手后到回读画面的等待（秒）。核对节点自己要求两帧稳定，这里只跳过最明显的落地动画。
+    AFTER_DRAG_WAIT: float = 0.3
     # 判「搜查被打断」要连续这么多帧都成立：单帧同时满足「面板没就绪 + 无标题 +
     # 无大保险提示 + 能看到普通攻击键」时，物品落地动画或 HUD 遮挡也会让四个条件
     # 短暂同时成立，实测因此误判过两局（面板明明开着、格子里已经识别出物品）。
@@ -132,7 +139,8 @@ class BagelStoreSafe(BagelOperation):
         self._result_centers: tuple[Point, ...] = ()
         self._logged_items: dict[str, tuple[tuple[int, str, str], ...]] = {}
         self._panel_guard: SearchPanelGuard = SearchPanelGuard()
-        self._panel_wait_rounds: int = 0
+        self._panel_wait_since: float | None = None
+        """连续等不到稳定画面的起点（operation_usage_time）；None 表示没有在等。"""
         self._interrupt_rounds: int = 0
         self._safe_unknown_rounds: int = 0
         self._paused_usage_time: float | None = None
@@ -188,16 +196,16 @@ class BagelStoreSafe(BagelOperation):
         self._result_centers = ()
         self._logged_items.clear()
         self._panel_guard.reset()
-        self._panel_wait_rounds = 0
+        self._panel_wait_since = None
         self._interrupt_rounds = 0
         self._safe_unknown_rounds = 0
 
     def _check_search_panel(self) -> OperationRoundResult | None:
         """搜查和拖后回读共用门槛；中断优先，未知画面有界等待。
 
-        `_panel_wait_rounds` 是「连续等不到稳定画面」的帧数，**每次发出拖拽
-        前都会清零**（见 `store_next`）。之前它只在守卫通过时清零，于是开局
-        等面板铺开的几帧会被一直记着，拖完一件后再等几帧就累积越过上限，
+        `_panel_wait_since` 是「连续等不到稳定画面」的起点，**每次发出拖拽
+        前都会清零**（见 `_drag_item`）。之前它只在守卫通过时清零，于是开局
+        等面板铺开的时间会被一直记着，拖完一件后再等一会就累积越过上限，
         在画面完全正常的情况下误报「搜查面板状态持续不明」。
         """
         if self.is_bagel_result():
@@ -232,14 +240,16 @@ class BagelStoreSafe(BagelOperation):
                 centers = self._panel_guard.result_centers
                 assert centers is not None
                 self._result_centers = centers
-                self._panel_wait_rounds = 0
+                self._panel_wait_since = None
                 return None
         if self._result_layout_changed:
             self._clear_pending()
             return self.round_recoverable_fail('结果格位置变化，无法沿用本次搜查登记')
-        self._panel_wait_rounds += 1
-        if self._panel_wait_rounds < self.PANEL_WAIT_ROUNDS_LIMIT:
-            return self.round_wait('等待搜查面板到位并稳定', wait=0.3)
+        now = self.operation_usage_time
+        if self._panel_wait_since is None:
+            self._panel_wait_since = now
+        if now - self._panel_wait_since < self.PANEL_WAIT_SECONDS:
+            return self.round_wait('等待搜查面板到位并稳定', wait=self.PANEL_POLL_SECONDS)
         self._clear_pending()
         return self._give_up('搜查面板状态持续不明')
 
@@ -310,7 +320,7 @@ class BagelStoreSafe(BagelOperation):
         if not progress.registered or progress.pending or self._pending_source_index is not None:
             self._finish_snapshot = None
             self._finish_frame_time = None
-            return self.round_wait('等待结果格揭示并确认', wait=0.3)
+            return self.round_wait('等待结果格揭示并确认', wait=self.PANEL_POLL_SECONDS)
         snapshot = progress.summary()
         if self._finish_snapshot != snapshot or self._finish_frame_time is None:
             self._finish_snapshot = snapshot
@@ -329,10 +339,10 @@ class BagelStoreSafe(BagelOperation):
         return self.round_success(status, data={'moved': self.moved})
 
     def _wait_for_safe_slots(self) -> OperationRoundResult:
-        """未知格最多额外复查三帧；等待期间保留拖拽基线，不发送输入。"""
+        """未知格有限次额外复查；等待期间保留拖拽基线，不发送输入。"""
         self._safe_unknown_rounds += 1
-        if self._safe_unknown_rounds <= 3:
-            return self.round_wait('安全箱格子暂不明确，等待下一帧', wait=0.3)
+        if self._safe_unknown_rounds <= self.SAFE_UNKNOWN_ROUNDS_LIMIT:
+            return self.round_wait('安全箱格子暂不明确，等待下一帧', wait=self.PANEL_POLL_SECONDS)
         self._clear_pending()
         return self.round_fail('安全箱格子状态不明，停止并保留现场')
 
@@ -464,7 +474,7 @@ class BagelStoreSafe(BagelOperation):
         if self.ledger is not None:
             self.ledger.start_transfer(choice.dest_index, (choice.mark.item_type, choice.mark.quality))
         self._drag_item(source, destination)
-        return self.round_success('已拖拽一件', wait=0.7)
+        return self.round_success('已拖拽一件', wait=self.AFTER_DRAG_WAIT)
 
     def _recheck_source(self, source_index: int, expected_type: str) -> OperationRoundResult | None:
         """亮度和角标达标后延迟 0.1 秒，复核仍可处理才发送拖拽。
@@ -490,7 +500,7 @@ class BagelStoreSafe(BagelOperation):
         item_type = identify_type(self.last_screenshot, source)
         if item_type == ITEM_TYPE_OTHER:
             self._search_progress.invalidate(source_index)
-            return self.round_wait('等待结果格有效角标', wait=0.3)
+            return self.round_wait('等待结果格有效角标', wait=self.PANEL_POLL_SECONDS)
         if item_type != ITEM_TYPE_CURRENCY:
             if item_type != expected_type:
                 self._search_progress.invalidate(source_index)
@@ -759,8 +769,8 @@ class BagelStoreSafe(BagelOperation):
         """先按住再移动，给游戏时间抓起物品，避免拖成结果列表滚动。"""
         self._panel_guard.reset()
         # 每次发出拖拽都重新给一次「等面板稳住」的预算：开局等面板铺开、
-        # 拖后等物品落地是两段独立动画，不能把前者的帧数算进后者的上限。
-        self._panel_wait_rounds = 0
+        # 拖后等物品落地是两段独立动画，不能把前者的时长算进后者的上限。
+        self._panel_wait_since = None
         timing = (
             self.BACKGROUND_DRAG_TIMING
             if self.ctx.controller.background_mode
