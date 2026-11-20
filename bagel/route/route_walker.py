@@ -27,11 +27,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
+from one_dragon.base.operation.operation_round_result import OperationRoundResultEnum
 from one_dragon.utils import cal_utils, cv2_utils, str_utils
 from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 
-from ..defs import MAP_JANUS
+from ..defs import INTERACT_TAP_SECONDS, MAP_JANUS
 from ..diag import diag
 from ..operation.close_search import BagelCloseSearch
 from ..operation.container import INTERACT_KEY_THRESHOLD
@@ -57,6 +58,7 @@ from .input_worker import (
     BagelInputWorker,
     TurnRatioMemory,
 )
+from .round_perf import RepeatMerger, RoundPerf
 from .route_model import (
     BEACON,
     BOX_CATEGORIES,
@@ -274,8 +276,11 @@ BOX_PROMPT_SECONDS: float = 1.0
 没东西，直接跳到下一个点，不判失败、也不原地死等。
 """
 
-SURROUND_CHECK_SECONDS: float = 2.0
-"""走完路线后原地观察交互物的时长。"""
+SURROUND_CHECK_SECONDS: float = 0.5
+"""走完路线后原地观察交互物的时长。
+
+游标推进已经等到局内提示恢复，末尾再看两三帧即可；原先 2 秒在实机里只看到已搜过的绿勾。
+"""
 
 MECHANICAL_HOLD_SECONDS: float = 5.0
 """机械保险箱长按 F 的最长时间（秒）。"""
@@ -291,8 +296,15 @@ MECHANICAL_PROMPT_LOST_SECONDS: float = 0.5
 MECHANICAL_PROMPT_LOST_LIMIT: int = 2
 """同一个机械保险箱点因长按中提示消失而重新靠近的最多次数，用完后按原超时逻辑处理。"""
 
-INTERACT_TAP_SECONDS: float = 0.2
-"""点按交互键 F 的按住时长（秒）。"""
+
+PRESS_F_RESULT_SECONDS: float = 0.4
+"""点按 F 后这段时间内只轮询结果、不重按（秒）。
+
+实机录屏里普通容器面板在点按后 0.2 秒内出现；面板开着时再按 F 是「全部拾取」，所以不能提前重按。
+"""
+
+PRESS_F_POLL_SECONDS: float = 0.1
+"""点按 F 后等面板或门提示消失的轮询间隔（秒）。"""
 
 PRESS_F_MAX_TAPS: int = 20
 """同一个点最多点按 F 的次数（每次约 0.4 秒）。点这么多次提示还在、面板也没出，
@@ -390,8 +402,35 @@ PICKUP_FAIL_LIMIT: int = 3
 """本局累计这么多条拾取物捡不起来，按背包已满处理，不再拾取。"""
 
 PICKUP_TAP_WAIT: float = 0.4
-"""点按 F 拾取后，这么久内不再按下一下（秒）。停下时等满再看下一帧；
-移动中照常走，只是不按。"""
+"""点按 F 拾取后，同一条目这么久内不再重按（秒）。
+
+只限同名条目：游戏反应慢时，前几帧可能还是刚按过的那件，重按会白白计入
+``PICKUP_TAP_LIMIT``。换成别的拾取物时不等，两帧判稳后就按。
+入箱后点按「全部拾取」也按这个时长等面板反应。
+"""
+
+PICKUP_FAST_SECONDS: float = 0.6
+"""移动中连续走「拾取快轮」的最长时长（秒）。
+
+快轮只截图、找高亮、读选中行，跳过定位、提示列表和朝向。到时做一轮
+完整判断，更新到点、转向目标和卡位计时，然后可以再开快轮。
+必须小于转向线程的提交新鲜度 ``TURN_TARGET_FRESH_SECONDS``（1 秒），否则转向线程会自己停。
+"""
+
+PICKUP_FAST_AFTER_TAP: float = 0.6
+"""点按 F 拾取后这么久内，选中行读不到也继续走快轮（秒），用来跨过列表重排的过渡帧。"""
+
+PICKUP_FAST_BEACON_DISTANCE: float = 20.0
+"""按住前进走向途径点、且上一轮完整判断时距离不超过这个值（像素）时，不走快轮。
+
+冲刺约 24px/秒，快轮期间不做到点判定，离得太近会冲过途径点。
+"""
+
+MERGED_LOG_NODES: frozenset[str] = frozenset({'导航移动', '碎步移动'})
+"""等待轮的决策日志可以合并的节点。"""
+
+NUMBER_PATTERN: re.Pattern[str] = re.compile(r'-?\d+(?:\.\d+)?')
+"""合并决策日志时，状态文字里的数字一律视为相同。"""
 
 SELECT_TIMEOUT: float = 8.0
 """同一目标连续无法选中时的最长等待，包含滚轮后的重新识别。"""
@@ -490,6 +529,8 @@ class BagelRouteWalker(BagelOperation):
         self.f_pressed: bool = False
         self.door_missing_at: float | None = None
         self.press_f_taps: int = 0
+        self.press_f_at: float = float('-inf')
+        """本点上次点按 F 的时刻（monotonic）。"""
         self.mechanical_hold_until: float | None = None
         self.mechanical_retried: bool = False
         self.mechanical_lost_since: float | None = None
@@ -535,6 +576,16 @@ class BagelRouteWalker(BagelOperation):
         self.pickup_tap_at: float = float('-inf')
         """最近一次点按 F 拾取的单调时钟时刻。"""
         self.pickup_pending: bool = False
+        self.pickup_fast_since: float | None = None
+        """本段连续拾取快轮的起始时刻；没在走快轮时为 None。"""
+        self.pickup_fast_rounds: int = 0
+        """本段已走的快轮轮数，只用于日志。"""
+        self.pickup_fast_presses: int = 0
+        """本段开始时的 ``pickup_presses``，用于日志统计本段点按次数。"""
+        self.perf: RoundPerf = RoundPerf()
+        """本轮分段计时，只用于决策日志。"""
+        self.log_merger: RepeatMerger = RepeatMerger()
+        """合并连续相同的移动等待行，只用于决策日志。"""
         self.prompt_frame: PromptFrame | None = None
         self.selection: PromptSelection = PromptSelection()
         self.select_since: float | None = None
@@ -649,6 +700,7 @@ class BagelRouteWalker(BagelOperation):
         用户切出游戏时，按键会打进别的窗口，必须先松键并停下，
         否则会在后台一直空转。
         """
+        self.perf.start()
         if not self._game_in_foreground():
             self._release_forward()
             self.decision = '游戏不在前台 · 已停止'
@@ -657,14 +709,17 @@ class BagelRouteWalker(BagelOperation):
         node_name = '未知' if self._current_node is None else self._current_node.cn
         status = result.status or result.status_display or ''
         self.decision = f'{node_name} · {status}' if status else node_name
-        self._log_decision(node_name, status)
+        mergeable = node_name in MERGED_LOG_NODES and result.result == OperationRoundResultEnum.WAIT
+        self._log_decision(node_name, status, mergeable=mergeable)
         return result
 
-    def _log_decision(self, node_name: str, status: str) -> None:
-        """每轮打一条决策日志，带点位、距离与角度，便于核对停在哪一步。
+    def _log_decision(self, node_name: str, status: str, mergeable: bool = False) -> None:
+        """每轮一条决策日志，带点位、距离、位置和分段耗时，便于核对停在哪一步。
 
-        同样的文字连续重复时也照打：卡住的表现正是同一条反复出现，
-        静默掉就看不到「一直短步」「一直转圈」这类症状。
+        导航与碎步节点的等待轮，连续相同的决策合并输出（见 ``RepeatMerger``）：
+        首行照打，之后只累计，键变了或满 1 秒再打一条汇总。键是节点、
+        去掉数字后的状态文字和游标，所以「停车等转向 61度」与「停车等转向 18度」算同一条。
+        卡住时同一条反复出现，每秒仍留一条完整行和一条汇总，「一直短步」「一直转圈」照样看得到。
 
         到点那一轮不能把「当前游标」和「位置」直接配对：游标已经推进到
         下一个点，位置还是走到上一个点时的位置，两边一算就得到一个
@@ -685,7 +740,35 @@ class BagelRouteWalker(BagelOperation):
             parts.append(f'位置 ({self.position[0]:.0f},{self.position[1]:.0f})')
         if self.current_kind is not None:
             parts.append(f'提示 {self.current_kind}')
-        log.info('贝果执行 %s', ' · '.join(parts))
+        key = f'{node_name}|{NUMBER_PATTERN.sub("#", status)}|{self.route_index}|{self.cursor}' if mergeable else None
+        for line in self.log_merger.submit(key, ' · '.join(parts), self.perf):
+            log.info('贝果执行 %s', line)
+
+    def _flush_decision_log(self) -> None:
+        """打出尚未汇总的合并轮次，用于暂停和结束时。"""
+        for line in self.log_merger.flush():
+            log.info('贝果执行 %s', line)
+
+    def screenshot(self) -> MatLike:
+        """框架每轮开头的截图，计入本轮耗时。"""
+        with self.perf.measure('截图'):
+            return super().screenshot()
+
+    def _after_round_wait(self, wait: float | None = None, wait_round_time: float | None = None) -> None:
+        """轮末睡眠，计入本轮耗时。
+
+        区域核对等内部调用也会经过这里，但不等待；只在真的要睡时计入，免得次数虚高。
+        """
+        if (wait is None or wait <= 0) and (wait_round_time is None or wait_round_time <= 0):
+            super()._after_round_wait(wait=wait, wait_round_time=wait_round_time)
+            return
+        with self.perf.measure('睡眠'):
+            super()._after_round_wait(wait=wait, wait_round_time=wait_round_time)
+
+    def _has(self, area: str, screen_name: str = '贝果-局内') -> bool:
+        """画面区域核对多是 OCR，计入本轮耗时。"""
+        with self.perf.measure('区域'):
+            return super()._has(area, screen_name)
 
     def _game_in_foreground(self) -> bool:
         """游戏窗口是否在前台；拿不到窗口句柄时按前台处理，避免误停。"""
@@ -711,7 +794,8 @@ class BagelRouteWalker(BagelOperation):
 
     def locate(self) -> tuple[float, float] | None:
         """定位一次并更新所在地图。"""
-        result = self.locator.locate(self.minimap())
+        with self.perf.measure('定位'):
+            result = self.locator.locate(self.minimap())
         if result is None:
             return None
         locator, _score, center = result
@@ -727,7 +811,8 @@ class BagelRouteWalker(BagelOperation):
         鼠标转动只改变镜头，角色朝向几乎不变，取错就会出现
         「不管怎么转，角度完全没更新」。
         """
-        _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
+        with self.perf.measure('朝向'):
+            _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
         return sector
 
     # ---------- 节点 ----------
@@ -874,7 +959,7 @@ class BagelRouteWalker(BagelOperation):
             if scan is not None:
                 return scan
             if elapsed < SURROUND_CHECK_SECONDS:
-                return self.round_wait('原地观察交互提示', wait=0.25)
+                return self.round_wait('原地观察交互提示', wait=0.1)
         self.target_wait_since = None
         self._log_leftover_prompts()
         return self.round_success('现场无交互物')
@@ -1464,7 +1549,9 @@ class BagelRouteWalker(BagelOperation):
     def _prompts(self) -> PromptFrame:
         """同一轮的拾取、停步和选行共享截图与识别结果。"""
         if self.prompt_frame is None or self.prompt_frame.stamp != self.last_screenshot_time:
-            self.prompt_frame = PromptFrame(self.ctx, self.last_screenshot, self.last_screenshot_time)
+            self.prompt_frame = PromptFrame(
+                self.ctx, self.last_screenshot, self.last_screenshot_time, on_cost=self.perf.add,
+            )
         return self.prompt_frame
 
     def _scroll(self, down: bool) -> OperationRoundResult:
@@ -1589,10 +1676,11 @@ class BagelRouteWalker(BagelOperation):
         return None
 
     def _try_pickup(self, *, moving: bool = False, all_rows: bool = False) -> OperationRoundResult | None:
-        """行进中只捡选中项；原地收尾可滚到其他拾取物。"""
-        remaining = PICKUP_TAP_WAIT - (time.monotonic() - self.pickup_tap_at)
-        if remaining > 0:
-            return None if moving else self.round_wait('等待拾取结果', wait=remaining)
+        """行进中只捡选中项；原地收尾可滚到其他拾取物。
+
+        每张新截图都观察选中行，不设固定冷却：按过 F 后换成别的拾取物，两帧判稳就按。
+        只有同名条目在 ``PICKUP_TAP_WAIT`` 内不重按。
+        """
         frame = self._prompts()
         stable = self._ready(frame)
         row = frame.selected
@@ -1608,13 +1696,21 @@ class BagelRouteWalker(BagelOperation):
         if row is not None and row.kind == 'pickup' and row.text not in self.pickup_ignored:
             if not stable:
                 return None if moving else self.round_wait('等待拾取物高亮稳定', wait=0.1)
+            remaining = PICKUP_TAP_WAIT - (time.monotonic() - self.pickup_tap_at)
+            if row.text == self.pickup_text and remaining > 0:
+                return None if moving else self.round_wait('等待拾取结果', wait=remaining)
             if not self._should_tap(row.text):
                 return None if moving else self.round_wait('跳过无法拾取的条目', wait=0.1)
+            since = time.monotonic() - self.pickup_tap_at
             self._tap_pickup(row.text)
             self.selection.reset(self.last_input_frame or self.last_screenshot_time)
             self.scanned_rows.clear()
-            log.info('贝果%s点按F拾取「%s」', '移动中' if moving else '原地', row.text)
-            return None if moving else self.round_wait('已点按F拾取', wait=PICKUP_TAP_WAIT)
+            log.info(
+                '贝果%s点按F拾取「%s」（第 %s 次按它%s）',
+                '移动中' if moving else '原地', row.text, self.pickup_taps,
+                f'，距上次拾取点按 {since:.2f}s' if since < 10 else '',
+            )
+            return None if moving else self.round_wait('已点按F拾取', wait=0.1)
         if all_rows and row is not None:
             target = next((r for r in frame.rows if r.kind == 'pickup' and r.text not in self.pickup_ignored), None)
             if target is not None:
@@ -1658,6 +1754,8 @@ class BagelRouteWalker(BagelOperation):
             self._reset_point_state()
             return self.round_success('已完成')
         self.door_missing_at = None
+        if time.monotonic() - self.press_f_at < PRESS_F_RESULT_SECONDS:
+            return self.round_wait('已点按F，等待结果', wait=PRESS_F_POLL_SECONDS)
         if self.press_f_taps >= PRESS_F_MAX_TAPS:
             log.info('贝果第 %s 点（%s）点按 F %s 次后提示仍在，判本局失败', self.cursor + 1, kind, self.press_f_taps)
             self._reset_point_state()
@@ -1669,7 +1767,8 @@ class BagelRouteWalker(BagelOperation):
         self.selection.reset(self.last_screenshot_time)
         self.f_pressed = True
         self.press_f_taps += 1
-        return self.round_wait('已点按F，等待结果', wait=0.4)
+        self.press_f_at = time.monotonic()
+        return self.round_wait('已点按F，等待结果', wait=PRESS_F_POLL_SECONDS)
 
     @node_from(from_name='按类型交互', status='电子保险箱已解锁')
     @node_from(from_name='按类型交互', status='机械保险箱已打开')
@@ -1805,9 +1904,9 @@ class BagelRouteWalker(BagelOperation):
         timeout = self._check_timeout(point)
         if timeout is not None:
             return timeout
-        hud = self._check_hud()
-        if hud is not None:
-            return hud
+        fast = self._pickup_fast_round(point)
+        if fast is not None:
+            return fast
         recovered = self._recover_pickup_panel()
         if recovered is not None:
             return recovered
@@ -1818,6 +1917,9 @@ class BagelRouteWalker(BagelOperation):
             self._release_forward()
             if self.is_bagel_result():
                 return self.round_fail(self.STATUS_DEFEATED)
+            hud = self._check_hud()
+            if hud is not None:
+                return hud
             stray = self._handle_stray_unlock(point)
             if stray is not None:
                 return stray
@@ -1893,6 +1995,82 @@ class BagelRouteWalker(BagelOperation):
             return self._short_step()
         self.small_step_since = None
         return self._slow_step(point, position, short_press=self.electronic_small_steps)
+
+    def _pickup_fast_round(self, point: BagelRoutePoint) -> OperationRoundResult | None:
+        """拾取物在选中行时只走快轮：截图、找高亮、读选中行、判稳后点按 F。
+
+        完整一轮还要做定位、朝向，40px 内还要读整个提示列表；两帧判稳要两轮，
+        边走边捡时下一件常在判稳前就出了范围。快轮跳过这些步骤，前进键和转向线程
+        按上一轮完整判断的意图继续，不停步。
+
+        以下情况不走快轮，返回 None 交给完整一轮：
+        - 正在退回、开挡路的门或试探刷卡；拾取已按背包满停用；
+        - 按住前进走向途径点、且距离不超过 ``PICKUP_FAST_BEACON_DISTANCE``；
+        - 选中行不是可捡的拾取物，且不在点按后的过渡期内；
+        - 本段快轮已满 ``PICKUP_FAST_SECONDS``。
+
+        Args:
+            point: 当前游标点。
+
+        Returns:
+            快轮的等待结果；要做完整一轮时返回 None。
+        """
+        now = time.monotonic()
+        if self.pickup_fast_since is not None and now - self.pickup_fast_since >= PICKUP_FAST_SECONDS:
+            self._end_pickup_fast('满时长')
+            return None
+        if not self._pickup_fast_allowed(point):
+            self._end_pickup_fast('条件不满足')
+            return None
+        presses = self.pickup_presses
+        self._try_pickup(moving=True)
+        row = self._prompts().selected
+        if row is not None:
+            in_play = row.kind == 'pickup' and row.text not in self.pickup_ignored
+        else:
+            in_play = now - self.pickup_tap_at < PICKUP_FAST_AFTER_TAP
+        if not in_play:
+            self._end_pickup_fast('选中行不是拾取物')
+            return None
+        if self.pickup_fast_since is None:
+            self.pickup_fast_since = now
+            self.pickup_fast_rounds = 0
+            self.pickup_fast_presses = self.pickup_presses
+        self.pickup_fast_rounds += 1
+        if self.pickup_presses > presses:
+            status = '快轮已点按F拾取'
+        elif row is None:
+            status = '快轮等列表重排'
+        else:
+            status = '快轮等拾取物判稳'
+        return self.round_wait(status, wait=0)
+
+    def _pickup_fast_allowed(self, point: BagelRoutePoint) -> bool:
+        """当前状态能不能走拾取快轮，见 ``_pickup_fast_round``。"""
+        if (self.retreat_point is not None or self.opening_blocking_door
+                or self.card_probe_step is not None or self.last_position is None
+                or self.pickup_failures >= PICKUP_FAIL_LIMIT):
+            return False
+        if point.kind != BEACON:
+            return True
+        distance = hypot(point.x - self.last_position[0], point.y - self.last_position[1])
+        holding = self.input_worker.forward_held_seconds() is not None and not self.input_worker.forward_step_active()
+        return not (holding and distance <= PICKUP_FAST_BEACON_DISTANCE)
+
+    def _end_pickup_fast(self, reason: str) -> None:
+        """结束本段快轮并打一条汇总日志；没在走快轮时什么也不做。
+
+        Args:
+            reason: 结束原因，写进日志。
+        """
+        if self.pickup_fast_since is None:
+            return
+        log.info(
+            '贝果拾取快轮结束（%s）：%s 轮 %.2fs，点按 %s 次',
+            reason, self.pickup_fast_rounds, time.monotonic() - self.pickup_fast_since,
+            self.pickup_presses - self.pickup_fast_presses,
+        )
+        self.pickup_fast_since = None
 
     def _handle_stray_unlock(self, point: BagelRoutePoint) -> OperationRoundResult | None:
         """移动中出现电子保险箱解锁界面时接手；没有该界面返回 None。
@@ -2450,15 +2628,21 @@ class BagelRouteWalker(BagelOperation):
         return None
 
     def _check_hud(self) -> OperationRoundResult | None:
-        """局内 HUD 检查：暂停菜单直接失败。
+        """局内 HUD 检查：暂停菜单直接失败。只在定位失败时调用。
+
+        暂停菜单盖满整屏，小地图也被盖住，打开时定位必然失败（归档截图
+        ``docs/materials/screens/pause_menu.webp`` 离线定位为空）。所以不必每轮都做这次
+        约 70ms 的 OCR，定位失败那一轮查一次即可，发现时机与每轮检查相同。
 
         这里不能因为没识别到普通攻击按钮就松前进键。长距离行进时
         只要某一帧模板没命中，前进键就被松开，表现就是走两步停一下。
         只有确认打开了暂停菜单才停。
         """
-        if self.round_by_find_area(
-            self.last_screenshot, '战斗-菜单', '按钮-退出战斗',
-        ).is_success:
+        with self.perf.measure('HUD'):
+            paused = self.round_by_find_area(
+                self.last_screenshot, '战斗-菜单', '按钮-退出战斗',
+            ).is_success
+        if paused:
             self._release_forward()
             return self.round_recoverable_fail('移动中打开了暂停菜单')
         return None
@@ -2501,6 +2685,7 @@ class BagelRouteWalker(BagelOperation):
         self.f_pressed = False
         self.door_missing_at = None
         self.press_f_taps = 0
+        self.press_f_at = float('-inf')
         self.mechanical_hold_until = None
         self.mechanical_retried = False
         self.mechanical_lost_since = None
@@ -2608,6 +2793,8 @@ class BagelRouteWalker(BagelOperation):
             self.card_hold_started = None
             self.card_held = False
         self.mechanical_hold_until = None
+        self.pickup_fast_since = None
+        self._flush_decision_log()
         self.input_worker.release_all()
         self.input_worker.submit_turn(None)
         super().handle_pause()
@@ -2618,6 +2805,7 @@ class BagelRouteWalker(BagelOperation):
 
     def after_operation_done(self, result: OperationResult) -> None:
         """退出路径统一松键，含冲刺键，并停掉输入线程。"""
+        self._flush_decision_log()
         self._stop_sprint()
         self.input_worker.shutdown()
         super().after_operation_done(result)

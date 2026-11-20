@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from ..defs import INTERACT_TAP_SECONDS
 from ..vision.prompt_list import PromptFrame, PromptSelection
 from .operation import BagelOperation, scroll_interaction_row
 
@@ -151,7 +152,7 @@ class BagelContainerOperation(BagelOperation):
         self.recovery.interactions += 1
         self.recovery.last_interact_at = self.recovery.clock()
         self.recovery.last_input_frame = max(time.time(), self.last_screenshot_time)
-        self.ctx.controller.interact(press=True, press_time=0.2, release=True)
+        self.ctx.controller.interact(press=True, press_time=INTERACT_TAP_SECONDS, release=True)
         self.recovery.last_interact_at = self.recovery.clock()
         self.recovery.last_input_frame = max(time.time(), self.last_screenshot_time)
         return self.round_success(sent_status, wait=wait_after_interact)

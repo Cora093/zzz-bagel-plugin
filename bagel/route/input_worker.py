@@ -28,6 +28,7 @@ from one_dragon.base.geometry.point import Point
 from one_dragon.utils import cal_utils, cv2_utils
 from one_dragon.utils.log_utils import log
 
+from ..defs import INTERACT_TAP_SECONDS
 from ..operation.operation import scroll_interaction_row
 from ..vision.minimap_angle import analyze
 
@@ -715,7 +716,7 @@ class BagelInputWorker:
         """避免向旧动作后面追加依赖当前截图的交互。"""
         return self._instant_channel.idle
 
-    def tap_interact(self, duration: float = 0.2) -> None:
+    def tap_interact(self, duration: float = INTERACT_TAP_SECONDS) -> None:
         """点按交互键。
 
         Args:

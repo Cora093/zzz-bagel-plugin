@@ -91,5 +91,8 @@ KEYCARD_DIFFICULTY: str = DIFFICULTY_HAZARD
 MODE_DEFAULT_MAPS: dict[str, str] = {MODE_RUN: MAP_JANUS, MODE_KEYCARD: MAP_OUTSKIRTS}
 #: 每种模式当前可选的难度。
 MODE_DIFFICULTIES: dict[str, tuple[str, ...]] = {MODE_RUN: DIFFICULTIES, MODE_KEYCARD: (KEYCARD_DIFFICULTY,)}
+#: 点按交互键 F 的按住时长（秒）：拾取、普通箱、门、全部拾取、电子保险箱都用它。
+#: 点按期间输入通道忙，按得越短越早能做下一个动作；碎步前进短按 0.08 秒也能被识别。
+INTERACT_TAP_SECONDS: float = 0.05
 #: 开房卡模式出售时一律跳过的类型，防止卖掉要用的卡。
 KEYCARD_KEEP_TYPES: tuple[str, ...] = ('门禁卡',)
