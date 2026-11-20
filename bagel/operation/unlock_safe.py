@@ -106,17 +106,17 @@ class BagelUnlockSafe(BagelContainerOperation):
     @node_from(from_name='等待解锁界面', status='已在解锁界面')
     @operation_node(name='时序点按解锁', timeout_seconds=20)
     def timing_hits(self) -> OperationRoundResult:
-        """每轮先看到小圈，再在命中半径内点按一次，避免固定间隔逐轮漂移。"""
+        """每轮先看到小圈，再在命中半径内点按一次，避免固定间隔逐轮漂移。
+
+        解锁完成取决于进度条满，点按数只是参考，所以提示还在就继续点按。
+        提示消失后进度条可能已满、面板正在切入，一律交给等待搜查面板的节点复核。
+        """
         if not self.round_by_find_area(
             self.last_screenshot, '贝果-局内', '大保险解锁提示',
         ).is_success:
             if self.is_bagel_result():
                 return self.round_fail(self.STATUS_DEFEATED)
-            if self._search_ready():
-                return self.round_success(self.STATUS_UNLOCKED)
-            return self.round_recoverable_fail('解锁界面消失，无法点按')
-        if self.hits_done >= SAFE_UNLOCK_HITS:
-            return self.round_success('点按完成')
+            return self.round_success(self.STATUS_UNLOCKED)
         return self.round_wait(self._observe_ring(), wait=0.02)
 
     def _observe_ring(self) -> str:
@@ -131,10 +131,9 @@ class BagelUnlockSafe(BagelContainerOperation):
         if self.ring_armed and hit_radius <= radius <= 220:
             self._press_timing()
             self.ring_armed = False
-            return f'{color}圈已发送点按 {self.hits_done}/{SAFE_UNLOCK_HITS}'
+            return f'{color}圈已发送点按 {self.hits_done}（参考 {SAFE_UNLOCK_HITS}）'
         return '等待光圈进入命中范围'
 
-    @node_from(from_name='时序点按解锁', status='点按完成')
     @node_from(from_name='进入大保险解锁', status=STATUS_UNLOCKED)
     @node_from(from_name='等待解锁界面', status=STATUS_UNLOCKED)
     @node_from(from_name='时序点按解锁', status=STATUS_UNLOCKED)
