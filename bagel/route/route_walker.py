@@ -1907,6 +1907,9 @@ class BagelRouteWalker(BagelOperation):
         fast = self._pickup_fast_round(point)
         if fast is not None:
             return fast
+        hud = self._check_hud()
+        if hud is not None:
+            return hud
         recovered = self._recover_pickup_panel()
         if recovered is not None:
             return recovered
@@ -1917,9 +1920,6 @@ class BagelRouteWalker(BagelOperation):
             self._release_forward()
             if self.is_bagel_result():
                 return self.round_fail(self.STATUS_DEFEATED)
-            hud = self._check_hud()
-            if hud is not None:
-                return hud
             stray = self._handle_stray_unlock(point)
             if stray is not None:
                 return stray
@@ -2628,11 +2628,12 @@ class BagelRouteWalker(BagelOperation):
         return None
 
     def _check_hud(self) -> OperationRoundResult | None:
-        """局内 HUD 检查：暂停菜单直接失败。只在定位失败时调用。
+        """局内 HUD 检查：暂停菜单直接失败。每个移动轮都调用。
 
-        暂停菜单盖满整屏，小地图也被盖住，打开时定位必然失败（归档截图
-        ``docs/materials/screens/pause_menu.webp`` 离线定位为空）。所以不必每轮都做这次
-        约 70ms 的 OCR，定位失败那一轮查一次即可，发现时机与每轮检查相同。
+        这次 OCR 约 70ms，兼作移动轮的节拍：碎步靠「短按前进、等新截图、再短按」
+        推进，轮次间隔压到 0.1s 以内时，每步位移明显变小（雅努斯电子保险箱前
+        从约 18 步涨到 60–183 步，7/18 局撞单点输入上限）。别把它挪成只在定位
+        失败时查，除非先给碎步显式加节拍。
 
         这里不能因为没识别到普通攻击按钮就松前进键。长距离行进时
         只要某一帧模板没命中，前进键就被松开，表现就是走两步停一下。

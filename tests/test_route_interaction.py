@@ -245,6 +245,7 @@ def test_fast_round_skips_locate_until_time_limit(scene: Scene, monkeypatch: pyt
     scene.target('box')
     walker.last_position = (50.0, 0.0)
     monkeypatch.setattr(walker, 'locate', Mock(side_effect=RuntimeError('完整一轮')))
+    monkeypatch.setattr(walker, '_check_hud', Mock(return_value=None))
     statuses = []
     for stamp, row in ((100, POWDER), (100.1, POWDER), (100.2, None), (100.3, NANO)):
         scene.show(stamp, row)
@@ -268,8 +269,8 @@ def test_fast_round_off_near_beacon_while_holding_forward(scene: Scene) -> None:
     assert walker._pickup_fast_round(walker._current_point()) is not None
 
 
-def test_hud_checked_only_when_locate_fails(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> None:
-    """暂停菜单盖住小地图，只在定位失败那一轮查 HUD。"""
+def test_hud_checked_every_moving_round(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> None:
+    """暂停菜单检查每个移动轮都做，定位成功也查；它的耗时兼作碎步的节拍。"""
     walker = scene.walker
     scene.target('beacon')
     hud = Mock(return_value=walker.round_recoverable_fail('移动中打开了暂停菜单'))
@@ -277,12 +278,8 @@ def test_hud_checked_only_when_locate_fails(scene: Scene, monkeypatch: pytest.Mo
     monkeypatch.setattr(walker, 'is_bagel_result', Mock(return_value=False))
     monkeypatch.setattr(walker, 'locate', Mock(return_value=(0.0, 0.0)))
     scene.show(100, None)
-    assert walker._move_toward().status == '已到点'
-    hud.assert_not_called()
-    walker.cursor = 0
-    walker.locate.return_value = None
-    scene.show(100.1, None)
     assert walker._move_toward().status == '移动中打开了暂停菜单'
+    hud.assert_called_once()
 
 
 def test_box_f_not_retapped_while_panel_opening(scene: Scene) -> None:
