@@ -3,8 +3,8 @@
  "route_id": "芝邦邦餐厅-房间段-默认",
  "name": "芝邦邦餐厅-房间段-默认",
  "spawn_id": "",
- "started_at": "2026-11-13T09:30:07-08:00",
- "ended_at": "2026-11-13T09:30:19-08:00",
+ "started_at": "2026-11-19T08:36:36-08:00",
+ "ended_at": "2026-11-19T09:02:45-08:00",
  "keycard": {
   "room": "bunless_zhibangbang",
   "segment": "room"
@@ -41,6 +41,12 @@
    "kind": "beacon"
   },
   {
+   "x": 969,
+   "y": 137,
+   "layer": "城郊幻境/Custom4",
+   "kind": "beacon"
+  },
+  {
    "x": 964,
    "y": 137,
    "layer": "城郊幻境/Custom4",
@@ -53,14 +59,14 @@
    "kind": "beacon"
   },
   {
-   "x": 982,
-   "y": 138,
+   "x": 984,
+   "y": 139,
    "layer": "城郊幻境/Custom4",
    "kind": "electronic_safe"
   },
   {
-   "x": 983,
-   "y": 139,
+   "x": 982,
+   "y": 140,
    "layer": "城郊幻境/Custom4",
    "kind": "mechanical_safe"
   }
