@@ -57,7 +57,7 @@ DIFFICULTY_RECOMMENDED_VALUES: dict[str, str] = {
 
 RECOMMENDED_VALUE: str = DIFFICULTY_RECOMMENDED_VALUES[DIFFICULTY_HAZARD]
 
-# 电子保险箱完成四轮点按后等待搜索结果，点按时机按光圈状态判断。
+# 电子保险箱界面显示的点按参考次数，只写进日志，不决定解锁是否完成（以进度条满为准）。
 SAFE_UNLOCK_HITS: int = 4
 
 # 仓库清理：default 按下面的两步出售；custom 按 clean_steps 顺序出售。
