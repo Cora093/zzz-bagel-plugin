@@ -60,7 +60,9 @@ _FIRST_ROW_OFFSET: int = 77
 _ROW_STEP: int = 120
 _CARD_HALF_HEIGHT: int = 55
 _VISIBLE_TOP: int = 95
-"""左栏可见区上沿（页签栏下方）。"""
+"""独立背包页左栏可见区上沿（页签栏下方）。"""
+_SEARCH_VISIBLE_TOP: int = 40
+"""搜查面板左栏可见区上沿（无顶部页签栏）。"""
 _VISIBLE_BOTTOM: int = 795
 """左栏可见区下沿，再往下是固定的安全箱面板。"""
 _SCROLL_POS: Point = Point(461, 600)
@@ -78,6 +80,12 @@ _CLOSE_WAIT_SECONDS: float = 1.0
 
 _PAGE_POLL_SECONDS: float = 0.1
 """按 B／esc 后等背包页出现或消失的轮询间隔（秒）。实机录屏里背包页在按键后 0.3 秒内打开。"""
+
+_EMPTY_RECHECK_SECONDS: float = 0.4
+"""刚按过「全部拾取」且背包暂读到 0 件时，在此窗口内先复核一帧，避免左栏数字未刷新就提前跳过。"""
+
+_EMPTY_RECHECK_WAIT: float = 0.15
+"""空包复核等待间隔（秒）。"""
 
 
 class BagelOrganizeBackpack(BagelOperation):
@@ -101,16 +109,23 @@ class BagelOrganizeBackpack(BagelOperation):
     def __init__(
         self, ctx: ZContext, blueprint_priority: bool = True,
         ledger: BagelSafeLedger | None = None,
+        in_search_panel: bool = False,
+        pickup_at: float | None = None,
     ) -> None:
         """
         Args:
             ctx: 运行上下文。
             blueprint_priority: 蓝图是否优先入箱，与开箱入箱同一开关。
             ledger: 本局安全箱物品账本；给定时整理后按画面覆盖，只用于统计日志。
+            in_search_panel: 是否直接在已打开的容器搜查面板左栏整理；为 True 时不按 B 打开，
+                也不按 esc 关闭面板，由调用方继续关闭搜查面板。
+            pickup_at: 若刚在搜查面板执行过「全部拾取」，传入点按时刻（monotonic），用于空包复核。
         """
         super().__init__(ctx, op_name='贝果-整理背包', timeout_seconds=60)
         self.blueprint_priority: bool = blueprint_priority
         self.ledger: BagelSafeLedger | None = ledger
+        self.in_search_panel: bool = in_search_panel
+        self._pickup_at: float | None = pickup_at
         self.moved: int = 0
         self.swapped: int = 0
         self.stacked: int = 0
@@ -131,6 +146,7 @@ class BagelOrganizeBackpack(BagelOperation):
         self._scrolls: int = 0
         self._last_header_y: int | None = None
         self._logged_unknown: set[int] = set()
+        self._empty_rechecked: bool = False
 
     def handle_init(self) -> None:
         """每次执行清空计数与待核对拖拽。"""
@@ -148,10 +164,22 @@ class BagelOrganizeBackpack(BagelOperation):
         self._scrolls = 0
         self._last_header_y = None
         self._logged_unknown = set()
+        self._empty_rechecked = False
         self._clear_pending()
 
+    @property
+    def _visible_top(self) -> int:
+        """当前宿主界面下左栏可见区上沿。"""
+        return _SEARCH_VISIBLE_TOP if self.in_search_panel else _VISIBLE_TOP
+
     def _backpack_open(self) -> bool:
-        """背包页签和安全箱标题同时可见，且不是开箱的搜查面板。"""
+        """宿主界面是否处于可操作状态。
+
+        独立背包页要求背包页签与安全箱同时可见、且非搜查面板；
+        容器搜查面板模式要求安全箱与搜查标题同时可见。
+        """
+        if self.in_search_panel:
+            return self._has('搜查安全箱') and (self._has('搜查容器标题') or self._has('电子保险箱标题'))
         return (
             self._has('背包页签')
             and self._has('搜查安全箱')
@@ -161,11 +189,13 @@ class BagelOrganizeBackpack(BagelOperation):
 
     @operation_node(name='打开背包', is_start_node=True, timeout_seconds=10)
     def open_backpack(self) -> OperationRoundResult:
-        """局内画面按 B；开着的搜查面板先按 esc 关掉。"""
+        """局内画面按 B；容器内模式只确认搜查面板仍在，不按键。"""
         if self.is_bagel_result():
             return self.round_fail(self.STATUS_DEFEATED)
         if self._backpack_open():
             return self.round_success('背包已打开')
+        if self.in_search_panel:
+            return self.round_fail('搜查面板已关闭，无法在容器内整理背包')
         if self._has('搜查容器标题') or self._has('电子保险箱标题'):
             self.ctx.controller.btn_press('esc', press_time=0.1)
             return self.round_wait('先关闭搜查面板', wait=0.5)
@@ -191,7 +221,7 @@ class BagelOrganizeBackpack(BagelOperation):
     @node_from(from_name='打开背包')
     @operation_node(name='定位背包格', timeout_seconds=10)
     def locate_grid(self) -> OperationRoundResult:
-        """按标题定格心；件数多于可见格时往下滚，标题不动了或滚到上限就按当前画面定。"""
+        """按标题定格心；件数为 0 直接完成，件数多于可见格时往下滚。"""
         if not self._backpack_open():
             return self._wait_panel('背包页不在画面内')
         header = self._find_header()
@@ -204,8 +234,15 @@ class BagelOrganizeBackpack(BagelOperation):
                 return self.round_wait('找不到背包标题，往上滚一格', wait=0.5)
             return self.round_fail('左栏里找不到背包标题')
         header_y, count = header
+        if count == 0:
+            if (self._pickup_at is not None and not self._empty_rechecked
+                    and time.monotonic() - self._pickup_at < _EMPTY_RECHECK_SECONDS):
+                self._empty_rechecked = True
+                return self.round_wait('背包暂显示 0 件，等待全部拾取刷新', wait=_EMPTY_RECHECK_WAIT)
+            log.info('贝果整理背包：背包 0 件，跳过整理')
+            return self.round_success(self.STATUS_DONE)
         needed_rows = min(_BACKPACK_ROWS, max(1, -(-count // len(_BACKPACK_XS))))
-        rows = self._visible_rows(header_y)
+        rows = self._visible_rows(header_y, self._visible_top)
         if (len(rows) < needed_rows and self._scrolls < _SCROLL_LIMIT
                 and header_y != self._last_header_y):
             self._scrolls += 1
@@ -224,12 +261,12 @@ class BagelOrganizeBackpack(BagelOperation):
         return self.round_success('已定位背包格')
 
     @staticmethod
-    def _visible_rows(header_y: int) -> list[int]:
+    def _visible_rows(header_y: int, visible_top: int = _VISIBLE_TOP) -> list[int]:
         """标题在 header_y 时，卡片上下沿都落在左栏可见区内的排号（从 0 开始）。"""
         rows: list[int] = []
         for row in range(_BACKPACK_ROWS):
             center = header_y + _FIRST_ROW_OFFSET + _ROW_STEP * row
-            if center - _CARD_HALF_HEIGHT >= _VISIBLE_TOP and center + _CARD_HALF_HEIGHT <= _VISIBLE_BOTTOM:
+            if center - _CARD_HALF_HEIGHT >= visible_top and center + _CARD_HALF_HEIGHT <= _VISIBLE_BOTTOM:
                 rows.append(row)
         return rows
 
@@ -377,6 +414,7 @@ class BagelOrganizeBackpack(BagelOperation):
         self._clear_pending()
         return self.round_success(_STATUS_NEXT, wait=0.2)
 
+    @node_from(from_name='定位背包格', status=STATUS_DONE)
     @node_from(from_name='逐件换入安全箱', status=STATUS_DONE)
     @node_from(from_name='打开背包', success=False)
     @node_from(from_name='定位背包格', success=False)
@@ -384,9 +422,21 @@ class BagelOrganizeBackpack(BagelOperation):
     @node_from(from_name='核对整理变化', success=False)
     @operation_node(name='关闭背包', timeout_seconds=10)
     def close_backpack(self) -> OperationRoundResult:
-        """按 esc 关掉背包页，回到局内画面；esc 若直接打开了暂停菜单也算关好，退出流程认得它。"""
+        """独立背包页按 esc 关回局内；容器搜查面板模式保留面板交给关闭面板步骤。"""
         if self.is_bagel_result():
             return self.round_fail(self.STATUS_DEFEATED)
+        if self.in_search_panel:
+            previous = self._previous_round_result
+            if previous is not None and not previous.is_success:
+                return self.round_fail(previous.status or '容器内整理背包失败', data=previous.data)
+            if self._backpack_open():
+                record_safe_items(self.ctx, self.last_screenshot, self.ledger)
+            log.info('贝果整理背包（容器内）：填入安全箱 %s 件，对换 %s 件，叠放 %s 件，跳过 %s 格',
+                     self.moved, self.swapped, self.stacked, len(self._skipped))
+            return self.round_success(
+                self.STATUS_DONE,
+                data={'moved': self.moved, 'swapped': self.swapped, 'stacked': self.stacked},
+            )
         if (self.round_by_find_area(self.last_screenshot, '战斗画面', '按键-普通攻击').is_success
                 or self._has('按钮-退出战斗', '战斗-菜单')):
             log.info('贝果整理背包：填入安全箱 %s 件，对换 %s 件，叠放 %s 件，跳过 %s 格',

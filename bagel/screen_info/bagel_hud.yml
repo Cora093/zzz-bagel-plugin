@@ -241,6 +241,6 @@ area_list:
 - area_name: 背包标题
   pc_rect:
   - 200
-  - 90
+  - 35
   - 720
   - 800

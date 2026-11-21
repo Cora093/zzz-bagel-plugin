@@ -797,6 +797,11 @@ class BagelStoreSafe(BagelOperation):
         """箱子或电子保险箱标题任一可见即仍在搜查面板。"""
         return self._has('搜查容器标题') or self._has('电子保险箱标题')
 
+    @property
+    def result_centers(self) -> tuple[Point, ...]:
+        """本次搜查已校准的结果格心；尚未定位时为空元组。"""
+        return self._result_centers
+
 
 def record_safe_items(ctx: ZContext, screen: MatLike, ledger: BagelSafeLedger | None) -> None:
     """记下安全箱各格的类型和品质，只读红色物品的数量；只用于统计日志。
