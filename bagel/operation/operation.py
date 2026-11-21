@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 from one_dragon.base.controller.pc_button import pc_button_utils
 from one_dragon.base.operation.operation import Operation
+from one_dragon.utils import str_utils
+from one_dragon.utils.i18_utils import gt
 from one_dragon.utils.log_utils import log
 from pynput import mouse
 from zzz_od.operation.zzz_operation import ZOperation
@@ -206,13 +208,31 @@ class BagelOperation(ZOperation):
 
         「搜查容器标题」会展开成箱、包、柜、搜索物资、医疗站同坐标区域：容器
         叫法有很多种，只认其中一个词就认不出其它容器，面板开着也会被当成没开。
+        五个区域共用同一坐标，合并为一次 OCR 匹配多个关键词，避免同区域重复识别。
         """
         if screen_name == '贝果-局内' and area == '搜查容器标题':
-            return any(
-                self.round_by_find_area(self.last_screenshot, screen_name, name).is_success
-                for name in CONTAINER_TITLE_AREAS
-            )
+            return self._has_container_title()
         return self.round_by_find_area(self.last_screenshot, screen_name, area).is_success
+
+    def _has_container_title(self) -> bool:
+        """对普通容器标题栏只跑一次 OCR，再按各区域配置匹配五个标题关键词。"""
+        base = self.ctx.screen_loader.get_area('贝果-局内', CONTAINER_TITLE_AREAS[0])
+        if base is None:
+            return False
+        matches = self.ctx.ocr_service.get_ocr_result_list(
+            image=self.last_screenshot, rect=base.pc_rect,
+            crop_first=True, color_range=base.color_range,
+        )
+        if not matches:
+            return False
+        for name in CONTAINER_TITLE_AREAS:
+            area = self.ctx.screen_loader.get_area('贝果-局内', name)
+            if area is None or not area.text:
+                continue
+            target = gt(area.text, 'game')
+            if any(str_utils.find_by_lcs(target, item.data, percent=area.lcs_percent) for item in matches):
+                return True
+        return False
 
     def _at_main_page(self) -> bool:
         """核对是否停在贝果计划-主页面。

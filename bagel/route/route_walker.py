@@ -37,6 +37,7 @@ from ..diag import diag
 from ..operation.close_search import BagelCloseSearch
 from ..operation.container import INTERACT_KEY_THRESHOLD
 from ..operation.operation import BagelOperation
+from ..operation.organize_backpack import BagelOrganizeBackpack
 from ..operation.store import BagelStoreSafe
 from ..operation.unlock_safe import BagelUnlockSafe
 from ..screenshot import save_screenshot
@@ -51,6 +52,7 @@ from ..vision.map_locator import (
 )
 from ..vision.minimap_angle import analyze
 from ..vision.prompt_list import PromptFrame, PromptSelection
+from ..vision.slots import slot_occupied
 from ..vision.template import load_template
 from .input_worker import (
     STEP_REST_SECONDS,
@@ -63,6 +65,7 @@ from .round_perf import RepeatMerger, RoundPerf
 from .route_model import (
     BEACON,
     BOX_CATEGORIES,
+    CONTAINER_KINDS,
     ELEVATOR,
     ELEVATOR_EXIT_BACKWARD,
     KEYCARD_DOOR,
@@ -89,6 +92,7 @@ from .spawn import (
 
 if TYPE_CHECKING:
     from cv2.typing import MatLike
+    from one_dragon.base.geometry.point import Point
     from one_dragon.base.matcher.ocr.ocr_match_result import OcrMatchResult
     from one_dragon.base.operation.operation_base import OperationResult
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
@@ -416,8 +420,16 @@ PICKUP_TAP_WAIT: float = 0.4
 
 只限同名条目：游戏反应慢时，前几帧可能还是刚按过的那件，重按会白白计入
 ``PICKUP_TAP_LIMIT``。换成别的拾取物时不等，两帧判稳后就按。
-入箱后点按「全部拾取」也按这个时长等面板反应。
 """
+
+PICK_ALL_INITIAL_WAIT: float = 0.10
+"""点按 F「全部拾取」后首次回读前的等待（秒），覆盖 0.05s 点按与游戏首帧响应。"""
+
+PICK_ALL_POLL_SECONDS: float = 0.05
+"""点按 F「全部拾取」后轮询结果格是否清空的间隔（秒）。"""
+
+PICK_ALL_MAX_WAIT: float = PICKUP_TAP_WAIT
+"""点按 F「全部拾取」后的最长等待上限（秒）；背包已满导致结果格仍有剩余时到此放行。"""
 
 PICKUP_FAST_SECONDS: float = 0.6
 """移动中连续走「拾取快轮」的最长时长（秒）。
@@ -486,6 +498,7 @@ class BagelRouteWalker(BagelOperation):
         self, ctx: ZContext, blueprint_priority: bool = True,
         route_ref: BagelRouteRef | None = None, keycard_room: str | None = None,
         turn_memory: TurnRatioMemory | None = None,
+        organize_backpack: bool = False,
     ) -> None:
         """加载出生点清单并准备定位。
 
@@ -499,6 +512,8 @@ class BagelRouteWalker(BagelOperation):
                 去这个房间的「入口段 + 房间段」。None 表示跑刀。试跑时忽略。
             turn_memory: 同一次应用运行内的跨局转向校准记忆；本局从它的值起步，
                 局末由 remember_turn_ratio 记回。None 表示从 1.0 起步、局末不记。
+            organize_backpack: 是否允许在路线最后一个容器的搜查面板内就地整理背包；
+                正式应用传入 True，路线试跑默认 False。
 
         Raises:
             ValueError: 出生点清单无法读取，或指定路线不存在、损坏、绑定的出生点未登记。
@@ -603,8 +618,18 @@ class BagelRouteWalker(BagelOperation):
         self.scanned_rows: set[tuple[str, str, int]] = set()
         self.opening_blocking_door: bool = False
         self.pickup_presses: int = 0
-        """本局为地面拾取物点按 F 的总次数，含刷卡前捡走挡路的拾取物。
-        不为 0 时背包里可能有东西，正常局退出前据此决定要不要整理背包。"""
+        """本局为地面拾取物和容器「全部拾取」点按 F 的总次数。
+        大于 ``organized_at_presses`` 时背包里可能有未整理的新物品。"""
+        self.organize_backpack: bool = organize_backpack
+        """是否允许在最后一个容器的搜查面板内就地整理背包。"""
+        self.organized_at_presses: int = 0
+        """上次成功整理背包时的 ``pickup_presses``；后续若再拾取，退出前仍会兜底整理。"""
+        self._last_result_centers: tuple[Point, ...] = ()
+        """最近一次入箱已定位的结果格心，用于跳过空箱全部拾取及轮询清空。"""
+        self._pick_all_sent_at: float | None = None
+        """本次「全部拾取」点按 F 的时刻（monotonic）；等待生效期间不为 None。"""
+        self._last_pick_all_at: float | None = None
+        """最近一次「全部拾取」点按 F 的时刻，供容器内整理空包复核使用。"""
         self.card_probe_step: int | None = None
         """房卡门左右试探已执行到第几步；没在试探时为 None。"""
         self.card_verify_since: float | None = None
@@ -1782,6 +1807,26 @@ class BagelRouteWalker(BagelOperation):
         self.press_f_at = time.monotonic()
         return self.round_wait('已点按F，等待结果', wait=PRESS_F_POLL_SECONDS)
 
+    @property
+    def needs_backpack_organize(self) -> bool:
+        """是否存在尚未整理进安全箱的新拾取。"""
+        return self.pickup_presses > self.organized_at_presses
+
+    def _is_last_container(self) -> bool:
+        """当前容器之后路线中是否不再有容器点（含路线末尾的现场交互容器）。"""
+        point = self._current_point()
+        if point is None:
+            return True
+        route = self.routes[self.route_index]
+        return not any(item.kind in CONTAINER_KINDS for item in route.points[self.cursor + 1:])
+
+    def _result_slots_empty(self) -> bool:
+        """已定位的结果格是否全部为空；无坐标或非标准图时返回 False（不跳过）。"""
+        screen = self.last_screenshot
+        if not self._last_result_centers or screen is None or screen.shape != (1080, 1920, 3):
+            return False
+        return not any(slot_occupied(screen, center) for center in self._last_result_centers)
+
     @node_from(from_name='按类型交互', status='电子保险箱已解锁')
     @node_from(from_name='按类型交互', status='机械保险箱已打开')
     @node_from(from_name='按类型交互', status='面板已打开')
@@ -1794,24 +1839,65 @@ class BagelRouteWalker(BagelOperation):
         op = BagelStoreSafe(self.ctx, blueprint_priority=self.blueprint_priority, ledger=self.ledger)
         result = op.execute()
         self._adopt_screenshot(op)
+        self._pick_all_sent_at = None
         if result.success:
+            self._last_result_centers = op.result_centers
             return self.round_success('已入箱')
+        self._last_result_centers = ()
         return self._fail_after_survey(f'入箱失败：{result.status}')
 
     @node_from(from_name='收集入箱', status='已入箱')
     @operation_node(name='拾取剩余')
     def pick_all_rest(self) -> OperationRoundResult:
-        """用新截图确认搜查面板仍可拾取，再点按 F 并登记拾取次数。"""
+        """用新截图确认搜查面板有剩余物品且可拾取，点按 F 并轮询结果格清空。"""
+        now = time.monotonic()
+        if self._pick_all_sent_at is not None:
+            elapsed = now - self._pick_all_sent_at
+            if elapsed >= PICK_ALL_MAX_WAIT:
+                self._pick_all_sent_at = None
+                return self.round_success('已点按全部拾取')
+            if self.input_worker.instant_idle and self._result_slots_empty():
+                self._pick_all_sent_at = None
+                return self.round_success('全部拾取已清空')
+            return self.round_wait('等待全部拾取生效', wait=PICK_ALL_POLL_SECONDS)
+        if self._result_slots_empty():
+            log.info('贝果拾取：结果区已清空，跳过「全部拾取」')
+            return self.round_success('结果区已空，跳过')
         has_title = self._has('搜查容器标题') or self._has('电子保险箱标题')
-        has_button = self._has('全部拾取_单行') or self._has('全部拾取_双行')
+        has_button = self._has('搜查完成')
         if not (has_title and has_button):
             return self.round_success('面板不可拾取，跳过', wait=0.2)
         self.input_worker.tap_interact(INTERACT_TAP_SECONDS)
         self.pickup_presses += 1
+        self._pick_all_sent_at = now
+        self._last_pick_all_at = now
         log.info('贝果拾取：入箱后点按 F「全部拾取」')
-        return self.round_success('已点按全部拾取', wait=PICKUP_TAP_WAIT)
+        return self.round_wait('等待全部拾取生效', wait=PICK_ALL_INITIAL_WAIT)
 
     @node_from(from_name='拾取剩余')
+    @operation_node(name='容器内整理背包', screenshot_before_round=False)
+    def organize_in_panel(self) -> OperationRoundResult:
+        """最后一个容器内若有未整理拾取，直接在当前搜查面板左栏整理背包，省去关面板再按 B。"""
+        if not self.organize_backpack or not self._is_last_container() or not self.needs_backpack_organize:
+            return self.round_success('无需容器内整理')
+        op = BagelOrganizeBackpack(
+            self.ctx,
+            blueprint_priority=self.blueprint_priority,
+            ledger=self.ledger,
+            in_search_panel=True,
+            pickup_at=self._last_pick_all_at,
+        )
+        result = op.execute()
+        self._adopt_screenshot(op)
+        if result.status == self.STATUS_DEFEATED:
+            return self.round_fail(self.STATUS_DEFEATED)
+        if result.success:
+            self.organized_at_presses = self.pickup_presses
+            return self.round_success('容器内背包整理完成')
+        log.warning('贝果容器内整理背包未完成：%s；留待退出前处理', result.status)
+        return self.round_success('容器内整理跳过')
+
+    @node_from(from_name='容器内整理背包')
     @operation_node(name='关闭面板')
     def close_panel(self) -> OperationRoundResult:
         """关闭搜查面板并确认回到局内。"""

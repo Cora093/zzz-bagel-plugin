@@ -71,6 +71,11 @@ BOX_CATEGORIES: dict[str, str] = {
 完全相同；分类只记下这里是什么容器，不改变走法和收集规则。
 """
 
+CONTAINER_KINDS: frozenset[str] = frozenset(
+    {'electronic_safe', 'mechanical_safe', 'box', *BOX_CATEGORIES},
+)
+"""会打开搜查面板的容器类点类型。"""
+
 KIND_ALIASES: dict[str, str] = {
     'briefcase': 'box',
 }

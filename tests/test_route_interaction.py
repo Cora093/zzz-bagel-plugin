@@ -5,15 +5,19 @@ from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
+from one_dragon.base.geometry.point import Point
+from one_dragon.base.operation.operation_base import OperationResult
+from one_dragon.base.operation.operation_round_result import OperationRoundResultEnum
 
 from bagel.defs import INTERACT_TAP_SECONDS
-from bagel.operation import container
+from bagel.operation import container, organize_backpack
 from bagel.operation.container import ContainerRecovery
 from bagel.operation.operation import BagelOperation
+from bagel.operation.organize_backpack import BagelOrganizeBackpack
 from bagel.operation.unlock_safe import BagelUnlockSafe
 from bagel.route import route_walker
 from bagel.route.input_worker import STEP_REST_SECONDS, BagelInputWorker
-from bagel.route.route_model import KEYCARD_DOOR, BagelRoute, BagelRoutePoint
+from bagel.route.route_model import BEACON, KEYCARD_DOOR, BagelRoute, BagelRoutePoint
 from bagel.route.route_walker import BagelRouteWalker
 from bagel.vision.prompt_list import PromptRow
 
@@ -329,3 +333,140 @@ def test_box_f_not_retapped_while_panel_opening(scene: Scene) -> None:
         scene.show(stamp, box)
         walker._press_f('box')
     assert scene.worker.tap_interact.call_count == 2
+
+
+def test_pick_all_rest_skips_empty_and_finishes_early_when_cleared(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结果区已空跳过全部拾取；有物时按一次 F，清空后提前放行，未清空到上限放行。"""
+    walker = scene.walker
+    walker.last_screenshot = np.zeros((1080, 1920, 3), np.uint8)
+    walker._last_result_centers = (Point(1353, 256),)
+    scene.panels.update({'搜查容器标题', '搜查完成'})
+    occupied = [False]
+    monkeypatch.setattr(route_walker, 'slot_occupied', lambda *_: occupied[0])
+
+    # 结果区已空：直接跳过
+    assert walker.pick_all_rest().status == '结果区已空，跳过'
+    assert walker.pickup_presses == 0
+    scene.worker.tap_interact.assert_not_called()
+
+    # 有物 → 点按 F，0.10s 清空即提前放行
+    occupied[0] = True
+    scene.now = 200.0
+    assert walker.pick_all_rest().result == OperationRoundResultEnum.WAIT
+    assert walker.pickup_presses == 1
+    scene.worker.tap_interact.assert_called_once_with(INTERACT_TAP_SECONDS)
+    occupied[0] = False
+    scene.now = 200.10
+    assert walker.pick_all_rest().status == '全部拾取已清空'
+
+    # 背包满一直未清空 → 满 0.4s 上限放行
+    occupied[0] = True
+    scene.now = 300.0
+    assert walker.pick_all_rest().result == OperationRoundResultEnum.WAIT
+    scene.now = 300.20
+    assert walker.pick_all_rest().result == OperationRoundResultEnum.WAIT
+    scene.now = 300.41
+    assert walker.pick_all_rest().status == '已点按全部拾取'
+
+
+def test_organize_in_panel_last_container_and_followup_pickup(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非末容器跳过；末容器就地整理；后续途径点再拾取重新触发兜底；DEFEAT 透传。"""
+    walker = scene.walker
+    walker.organize_backpack = True
+    walker.pickup_presses = 1
+    walker.routes = [BagelRoute('r', '测试', 's', points=[
+        BagelRoutePoint(0, 0, '测试/L', 'box'),
+        BagelRoutePoint(10, 0, '测试/L', 'box'),
+        BagelRoutePoint(20, 0, '测试/L', BEACON),
+    ])]
+    outcomes: list[OperationResult] = []
+    calls: list[dict[str, object]] = []
+
+    def fake_op(ctx, **kwargs):
+        calls.append(kwargs)
+        op = Mock()
+        op.last_screenshot = None
+        op.execute.return_value = outcomes.pop(0)
+        return op
+
+    monkeypatch.setattr(route_walker, 'BagelOrganizeBackpack', fake_op)
+
+    # 第 1 个容器后面还有容器：不整理
+    walker.cursor = 0
+    assert walker.organize_in_panel().status == '无需容器内整理'
+    assert calls == []
+
+    # 第 2 个容器后面只有途径点：就地整理成功
+    walker.cursor = 1
+    outcomes.append(OperationResult(True, BagelOrganizeBackpack.STATUS_DONE))
+    assert walker.organize_in_panel().status == '容器内背包整理完成'
+    assert calls[-1]['in_search_panel'] is True
+    assert not walker.needs_backpack_organize
+
+    # 收尾途径点路上又捡了东西：退出前重新需要兜底整理
+    walker.pickup_presses += 1
+    assert walker.needs_backpack_organize
+
+    # 末尾现场容器：整理失败保留兜底；DEFEAT 透传失败
+    walker.cursor = 3
+    outcomes.append(OperationResult(False, '搜查面板已关闭'))
+    assert walker.organize_in_panel().status == '容器内整理跳过'
+    assert walker.needs_backpack_organize
+
+    outcomes.append(OperationResult(False, BagelOperation.STATUS_DEFEATED))
+    defeat = walker.organize_in_panel()
+    assert defeat.is_fail and defeat.status == BagelOperation.STATUS_DEFEATED
+
+
+def test_organize_backpack_in_search_panel_and_empty_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """容器内模式不按 B/esc，失败直接透传；刚全部拾取后 0 件先复核一帧再跳过。"""
+    ctx = Mock()
+    clock = [100.0]
+    monkeypatch.setattr(organize_backpack.time, 'monotonic', lambda: clock[0])
+    op = BagelOrganizeBackpack(ctx, in_search_panel=True, pickup_at=99.9)
+    op.last_screenshot = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(op, 'is_bagel_result', lambda: False)
+
+    # 面板已关闭：直接失败、不按 B/esc，关闭节点透传失败
+    monkeypatch.setattr(op, '_has', lambda *_: False)
+    opened = op.open_backpack()
+    assert opened.is_fail
+    op._previous_round_result = opened
+    assert op.close_backpack().is_fail
+    ctx.controller.btn_press.assert_not_called()
+
+    # 面板开着、刚按过全部拾取且读到 0 件：先复核一帧再完成，结束不按 esc
+    monkeypatch.setattr(op, '_has', lambda area, *_: area in {'搜查安全箱', '搜查容器标题'})
+    monkeypatch.setattr(op, '_find_header', lambda: (480, 0))
+    assert op.open_backpack().is_success
+    assert op.locate_grid().result == OperationRoundResultEnum.WAIT
+    done = op.locate_grid()
+    assert done.is_success and done.status == op.STATUS_DONE
+    op._previous_round_result = done
+    monkeypatch.setattr(organize_backpack, 'record_safe_items', Mock())
+    assert op.close_backpack().is_success
+    ctx.controller.btn_press.assert_not_called()
+
+
+def test_container_title_single_ocr_matches_all_variants() -> None:
+    """「搜查容器标题」五个同坐标关键词合并为单次 OCR 识别。"""
+    ctx = Mock()
+    areas = {
+        '搜查容器标题': Mock(pc_rect=(1290, 140, 1745, 195), color_range=None, text='箱', lcs_percent=0.7),
+        '搜查容器标题_包': Mock(text='包', lcs_percent=0.7),
+        '搜查容器标题_柜': Mock(text='柜', lcs_percent=0.7),
+        '搜查容器标题_搜索物资': Mock(text='搜索物资', lcs_percent=0.6),
+        '搜查容器标题_医疗站': Mock(text='医疗站', lcs_percent=0.6),
+    }
+    ctx.screen_loader.get_area.side_effect = lambda _screen, name: areas.get(name)
+    ctx.ocr_service.get_ocr_result_list.return_value = [Mock(data='搜索物资')]
+    op = BagelOperation(ctx, op_name='test')
+    op.last_screenshot = np.zeros((1080, 1920, 3), np.uint8)
+    assert op._has('搜查容器标题') is True
+    assert ctx.ocr_service.get_ocr_result_list.call_count == 1
