@@ -35,7 +35,8 @@ class BagelUnlockSafe(BagelContainerOperation):
         super().__init__(ctx, target='safe', op_name='贝果-解锁电子保险箱', recovery=recovery, prepare_open=prepare_open)
         self.timeout_seconds = 45
         self.hits_done: int = 0
-        self.ring_armed: bool = False
+        self.ring_armed: bool = True
+        """当前光圈尚未点按；首圈与界面同时出现，开始即为真。"""
         self.search_hud_since: float | None = None
         """等待搜查时首次确认回到局内的截图时间；用于排除面板过渡。"""
 
@@ -43,16 +44,16 @@ class BagelUnlockSafe(BagelContainerOperation):
         """每次运行重置解锁进度。"""
         super().handle_init()
         self.hits_done = 0
-        self.ring_armed = False
+        self.ring_armed = True
         self.search_hud_since = None
 
     def _unlock_ready(self) -> OperationRoundResult:
-        """确认解锁界面的截图立即参与光圈判断，不丢掉首张小圈。"""
+        """确认解锁界面的截图立即参与光圈判断，不丢掉首圈。"""
         self._observe_ring()
         return self.round_success('已在解锁界面')
 
     def _open_container(self) -> OperationRoundResult:
-        """按 F 后立即观察开箱结果，不丢掉首张小圈。"""
+        """按 F 后立即观察开箱结果，不丢掉首圈。"""
         return self.interact_container('已按F进入解锁', observation_wait=0.02, wait_after_interact=0)
 
     def _press_timing(self) -> None:
@@ -106,7 +107,7 @@ class BagelUnlockSafe(BagelContainerOperation):
     @node_from(from_name='等待解锁界面', status='已在解锁界面')
     @operation_node(name='时序点按解锁', timeout_seconds=20)
     def timing_hits(self) -> OperationRoundResult:
-        """每轮先看到小圈，再在命中半径内点按一次，避免固定间隔逐轮漂移。
+        """每轮光圈在命中半径内点按一次，避免固定间隔逐轮漂移。
 
         解锁完成取决于进度条满，点按数只是参考，所以提示还在就继续点按。
         提示消失后进度条可能已满、面板正在切入，一律交给等待搜查面板的节点复核。
@@ -120,14 +121,17 @@ class BagelUnlockSafe(BagelContainerOperation):
         return self.round_wait(self._observe_ring(), wait=0.02)
 
     def _observe_ring(self) -> str:
-        """处理当前截图中的光圈，入口确认和持续点按共用同一判断。"""
+        """处理当前截图中的光圈，入口确认和持续点按共用同一判断。
+
+        光圈只外扩、点过的圈停在外缘，所以命中半径以内的圈必是新一轮；不要求先看到小圈。
+        """
         ring = unlock_ring(self.last_screenshot)
         if ring is None:
             return '等待下一轮光圈'
         color, radius = ring
-        if radius <= 120:
-            self.ring_armed = True
         hit_radius = 180 if color == '红' else 160
+        if radius < hit_radius:
+            self.ring_armed = True
         if self.ring_armed and hit_radius <= radius <= 220:
             self._press_timing()
             self.ring_armed = False

@@ -64,10 +64,26 @@ def test_keeps_pressing_after_required_hits_while_prompt_remains(
     op.areas = {'大保险解锁提示'}
     op.hits_done = 4
     show_ring(monkeypatch, ('黄', 200))
-    op.ring_armed = True
     result = op.timing_hits()
     assert result.result == OperationRoundResultEnum.WAIT
     assert op.hits_done == 5
     assert op.ctx.controller.interact.call_args_list == [
         call(press=True, press_time=INTERACT_TAP_SECONDS, release=True),
     ]
+
+
+@pytest.mark.parametrize(('rings', 'hits'), [
+    pytest.param([('红', 125), ('红', 197), ('红', 235), None], 1, id='入口截图已过小圈'),
+    pytest.param([('红', 200)], 1, id='入口截图已在命中范围'),
+    pytest.param([('红', 190), ('红', 210), ('红', 235), None, ('黄', 140), ('黄', 200), ('黄', 235)], 2, id='每圈只点一次'),
+    pytest.param([('红', 200), None, ('黄', 230)], 1, id='首见已超范围放过'),
+])
+def test_ring_presses(
+    op: BagelUnlockSafe, monkeypatch: pytest.MonkeyPatch, rings: list[tuple[str, float] | None], hits: int,
+) -> None:
+    """首圈与界面同时出现，不要求先看到小圈；之后每圈只在命中范围内点一次。"""
+    op.areas = {'大保险解锁提示'}
+    for ring in rings:
+        show_ring(monkeypatch, ring)
+        op.timing_hits()
+    assert op.hits_done == hits
