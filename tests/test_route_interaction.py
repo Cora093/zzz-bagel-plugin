@@ -12,7 +12,7 @@ from bagel.operation.container import ContainerRecovery
 from bagel.operation.operation import BagelOperation
 from bagel.operation.unlock_safe import BagelUnlockSafe
 from bagel.route import route_walker
-from bagel.route.input_worker import BagelInputWorker
+from bagel.route.input_worker import STEP_REST_SECONDS, BagelInputWorker
 from bagel.route.route_model import KEYCARD_DOOR, BagelRoute, BagelRoutePoint
 from bagel.route.route_walker import BagelRouteWalker
 from bagel.vision.prompt_list import PromptRow
@@ -269,17 +269,52 @@ def test_fast_round_off_near_beacon_while_holding_forward(scene: Scene) -> None:
     assert walker._pickup_fast_round(walker._current_point()) is not None
 
 
-def test_hud_checked_every_moving_round(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> None:
-    """暂停菜单检查每个移动轮都做，定位成功也查；它的耗时兼作碎步的节拍。"""
+def test_hud_throttled_when_located_but_forced_on_locate_fail(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """定位成功时暂停菜单检查按 0.5 秒节流；定位失败那一轮不看节流，必查。"""
+    walker = scene.walker
+    find = Mock(return_value=Mock(is_success=False))
+    monkeypatch.setattr(walker, 'round_by_find_area', find)
+    checks = []
+    for stamp, force in ((100, False), (100.2, False), (100.45, False), (100.5, False),
+                         (100.6, True), (100.7, False), (101.1, False)):
+        scene.show(stamp, None)
+        walker._check_hud(force=force)
+        checks.append(find.call_count)
+    assert checks == [1, 1, 1, 2, 3, 3, 4]
+
+
+def test_pause_menu_found_on_locate_fail_round(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> None:
+    """节流期内定位失败，当轮就查到暂停菜单并停下。"""
     walker = scene.walker
     scene.target('beacon')
-    hud = Mock(return_value=walker.round_recoverable_fail('移动中打开了暂停菜单'))
-    monkeypatch.setattr(walker, '_check_hud', hud)
+    walker.last_position = (5.0, 0.0)
+    walker.hud_checked_at = 100.0
+    paused = Mock(is_success=True)
+    find = Mock(return_value=paused)
+    monkeypatch.setattr(walker, 'round_by_find_area', find)
     monkeypatch.setattr(walker, 'is_bagel_result', Mock(return_value=False))
-    monkeypatch.setattr(walker, 'locate', Mock(return_value=(0.0, 0.0)))
-    scene.show(100, None)
+    monkeypatch.setattr(walker, 'locate', Mock(return_value=None))
+    scene.show(100.1, None)
     assert walker._move_toward().status == '移动中打开了暂停菜单'
-    hud.assert_called_once()
+    find.assert_called_once()
+
+
+def test_short_step_waits_for_frame_after_rest(scene: Scene) -> None:
+    """碎步只在松键加停顿之后拍的截图上迈步，主线轮次再快也不提前。"""
+    walker = scene.walker
+    scene.worker.forward_step_active.return_value = False
+    scene.worker.forward_released_at = 100.0
+    statuses = []
+    for stamp in (100.01, 100.05, 100.09, 100.1):
+        scene.show(stamp, None)
+        statuses.append(walker._short_step().status)
+    assert statuses == ['前进停顿中'] * 4
+    scene.worker.step_forward.assert_not_called()
+    scene.show(100.0 + STEP_REST_SECONDS + 0.005, None)
+    assert walker._short_step().status == '短步前进'
+    scene.worker.step_forward.assert_called_once_with(route_walker.SMALL_STEP_PRESS)
 
 
 def test_box_f_not_retapped_while_panel_opening(scene: Scene) -> None:

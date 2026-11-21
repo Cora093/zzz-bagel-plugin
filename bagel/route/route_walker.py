@@ -6,7 +6,7 @@
 
 - 下一格是途径点：正常导航，进入 3px 到达半径即算路过。
 - 下一格是箱类：按距离慢步或碎步靠近。当前目标是电子保险箱时，进入
-  15px 后保持 0.08 秒短步；可信提示出现后松键，按类型交互。
+  15px 后保持 0.10 秒短步；可信提示出现后松键，按类型交互。
 - 路线走完：原地判断现场有无交互物，没有就结束；由应用层走既有退出结算链。
 
 出生点不在已登记范围内、或出生点没有开启路线时，返回 ``STATUS_ANCHOR_MISS``，
@@ -53,6 +53,7 @@ from ..vision.minimap_angle import analyze
 from ..vision.prompt_list import PromptFrame, PromptSelection
 from ..vision.template import load_template
 from .input_worker import (
+    STEP_REST_SECONDS,
     TURN_DEADBAND,
     TURN_DEADBAND_FAST,
     BagelInputWorker,
@@ -210,8 +211,17 @@ WALK_TURN_ANGLE: float = 10.0
 同时走和大角度转会互相干扰，表现为原地乱转，所以大偏差必须先松键。
 """
 
-SMALL_STEP_PRESS: float = 0.08
-"""碎步单次按压时长（秒）。"""
+SMALL_STEP_PRESS: float = 0.10
+"""碎步单次按压时长（秒）。两次短按之间的停顿由 ``STEP_REST_SECONDS`` 管。
+
+实测按 0.05、0.08 秒每步都约 0.4px，0.12 秒约 0.8px；0.10 秒落在两档之间，
+尚未单独标定，按线性推算约 0.6px。"""
+
+STEP_REST_POLL: float = 0.03
+"""停顿期间主线的轮询上限（秒）：停顿结束后最多晚这么久拍到决策帧。"""
+
+HUD_CHECK_INTERVAL: float = 0.5
+"""定位成功时，暂停菜单检查的最小间隔（秒）；定位失败那一轮总是检查。"""
 
 LOCATE_FAIL_SECONDS: float = 10.0
 """连续定位失败超过这个时长才判失败（用户给定 10 秒）。
@@ -606,6 +616,8 @@ class BagelRouteWalker(BagelOperation):
         self.locate_misses: int = 0
         self.locate_miss_since: float | None = None
         """连续定位失败的起始时刻，恢复定位后清空。"""
+        self.hud_checked_at: float = float('-inf')
+        """上次检查暂停菜单的时刻（单调时钟），用于定位成功时的节流。"""
         self.angle_miss_since: float | None = None
         """连续读不到镜头朝向的起始时刻，读到朝向后清空。"""
         self.last_position: tuple[float, float] | None = None
@@ -1920,6 +1932,9 @@ class BagelRouteWalker(BagelOperation):
             self._release_forward()
             if self.is_bagel_result():
                 return self.round_fail(self.STATUS_DEFEATED)
+            hud = self._check_hud(force=True)
+            if hud is not None:
+                return hud
             stray = self._handle_stray_unlock(point)
             if stray is not None:
                 return stray
@@ -2315,13 +2330,22 @@ class BagelRouteWalker(BagelOperation):
         self.input_worker.stop_forward()
 
     def _prepare_forward_step(self) -> OperationRoundResult | None:
-        """上一短按结束并取得松键后的截图，才允许发起下一步。"""
+        """决策帧到了才允许发起下一步：上一短按已结束，且本轮截图拍于松键加停顿之后。
+
+        停顿下限 ``STEP_REST_SECONDS`` 是节拍的唯一来源，不随主线每轮耗时变化。
+        停顿期间每轮照常截图、定位、读提示，到点和可信提示不受停顿约束；
+        轮末最多睡 ``STEP_REST_POLL``，停顿一结束就拍决策帧。
+        """
         if self.input_worker.forward_step_active():
             return self.round_wait('等待本次前进短按结束', wait=0.02)
         self._release_forward()
         released_at = self.input_worker.forward_released_at
-        if released_at is None or self.last_screenshot_time <= released_at:
-            return self.round_wait('等待松键后的新截图', wait=0.02)
+        if released_at is None:
+            return self.round_wait('等待松键', wait=0.02)
+        ready_at = released_at + STEP_REST_SECONDS
+        if self.last_screenshot_time <= ready_at:
+            remaining = max(0.0, ready_at - time.time())
+            return self.round_wait('前进停顿中', wait=min(remaining, STEP_REST_POLL))
         return None
 
     def _short_step(self) -> OperationRoundResult:
@@ -2393,7 +2417,7 @@ class BagelRouteWalker(BagelOperation):
         Args:
             point: 当前目标点。
             position: 当前可靠定位。
-            short_press: 是否使用 0.08 秒短步；否则使用 0.5 秒慢步。
+            short_press: 是否使用 ``SMALL_STEP_PRESS`` 短步；否则使用 0.5 秒慢步。
         """
         ready = self._prepare_forward_step()
         if ready is not None:
@@ -2627,18 +2651,25 @@ class BagelRouteWalker(BagelOperation):
             )
         return None
 
-    def _check_hud(self) -> OperationRoundResult | None:
-        """局内 HUD 检查：暂停菜单直接失败。每个移动轮都调用。
+    def _check_hud(self, force: bool = False) -> OperationRoundResult | None:
+        """局内 HUD 检查：暂停菜单直接失败。
 
-        这次 OCR 约 70ms，兼作移动轮的节拍：碎步靠「短按前进、等新截图、再短按」
-        推进，轮次间隔压到 0.1s 以内时，每步位移明显变小（雅努斯电子保险箱前
-        从约 18 步涨到 60–183 步，7/18 局撞单点输入上限）。别把它挪成只在定位
-        失败时查，除非先给碎步显式加节拍。
+        菜单盖满整屏，小地图也被盖住，打开时定位必然失败，所以定位失败那一轮
+        总是检查（``force``）。其余移动轮按 ``HUD_CHECK_INTERVAL`` 节流兜底，
+        防菜单弹出动画的中间帧被误定位。这次 OCR 约 70ms，不再每轮都做；
+        碎步节拍由 ``STEP_REST_SECONDS`` 管，不依赖轮次耗时。
 
         这里不能因为没识别到普通攻击按钮就松前进键。长距离行进时
         只要某一帧模板没命中，前进键就被松开，表现就是走两步停一下。
         只有确认打开了暂停菜单才停。
+
+        Args:
+            force: 为 True 时不看节流，本轮必查。
         """
+        now = time.monotonic()
+        if not force and now - self.hud_checked_at < HUD_CHECK_INTERVAL:
+            return None
+        self.hud_checked_at = now
         with self.perf.measure('HUD'):
             paused = self.round_by_find_area(
                 self.last_screenshot, '战斗-菜单', '按钮-退出战斗',

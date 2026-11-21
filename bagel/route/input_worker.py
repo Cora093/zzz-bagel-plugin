@@ -58,6 +58,14 @@ SIDE_STEP: str = 'side_step'
 SLEEP_SLICE: float = 0.01
 """等待轮询的切片时长（秒）。"""
 
+STEP_REST_SECONDS: float = 0.10
+"""前进短按的停顿下限（秒）：W 实际松开后至少过这么久，才按下一次短按。
+
+停顿太短，游戏不响应短按。按 0.08 秒时实测：停 30ms 每步约 -0.03px（不走，
+反而略退），50ms 约 0.13px，70ms 约 0.30px，90ms 起约 0.35px 不再变差。
+取 0.10 秒，留出线程调度抖动的余量。前进线程按它卡住按下时刻，
+任何调用方都绕不过去；主线另按它选决策帧（松键加停顿之后拍的第一张截图）。"""
+
 SCREEN_CENTER: Point = Point(960, 540)
 """画面中心，点它推进对话。按 1080p 基准。"""
 
@@ -633,6 +641,8 @@ class BagelInputWorker:
 
         前进线程从实际按下开始计时，到期后松键。切换到持续前进或停止
         会取消该截止时刻，不创建可能影响后续输入的独立定时器。
+        距上次实际松键不足 ``STEP_REST_SECONDS`` 时，请求照样接受，
+        但前进线程等停顿满了才按下；正按着前进时先松键，再从松键起算停顿。
 
         Args:
             duration: 按住时长（秒），必须大于零。
@@ -802,7 +812,7 @@ class BagelInputWorker:
         """对齐前进键，并在实际按下后计时完成短按。
 
         状态检查、发键和时间记录共用一把锁。持续前进改为短按时，先
-        实际松键再重新按下；停止或新移动方式会取消旧截止时刻。
+        实际松键，停顿满 ``STEP_REST_SECONDS`` 再按下；停止或新移动方式会取消旧截止时刻。
         """
         while not self._stopping:
             with self._forward_lock:
@@ -824,6 +834,9 @@ class BagelInputWorker:
                         self._forward_pressed_at = None
                         self._forward_released_at = time.time()
                     want = self._forward_want
+                    if want and not self._forward_down and self._step_resting():
+                        # 短按的停顿未满：先不按，下一片再看。
+                        want = False
                     if want != self._forward_down:
                         if want:
                             self.ctx.controller.move_w(press=True)
@@ -843,6 +856,13 @@ class BagelInputWorker:
                 except Exception:
                     log.error('贝果输入线程切换前进键失败', exc_info=True)
             time.sleep(SLEEP_SLICE)
+
+    def _step_resting(self) -> bool:
+        """有待执行的短按，且距上次实际松键不足 ``STEP_REST_SECONDS``；调用方持有前进锁。"""
+        return (
+            self._forward_step_duration is not None
+            and time.time() - self._forward_released_at < STEP_REST_SECONDS
+        )
 
     def _backward_loop(self) -> None:
         """每周期把后退键（S）对齐到意图状态；与前进通道同一套写法。
@@ -921,7 +941,7 @@ class BagelInputWorker:
         会以为已经按着，再也不补这一下。
         """
         with self._forward_lock:
-            if not self._forward_want or self._forward_down:
+            if not self._forward_want or self._forward_down or self._step_resting():
                 return
             try:
                 self.ctx.controller.move_w(press=True)
