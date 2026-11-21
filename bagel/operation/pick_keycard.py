@@ -35,7 +35,7 @@ from ..vision.keycard_pick import (
     scroll_effect,
     title_matches,
 )
-from ..vision.screen import read_area
+from ..vision.screen import parse_capacity_pair, read_area
 from ..vision.slots import safe_occupied_indices
 from ..vision.template import load_template
 from .operation import BagelOperation
@@ -102,7 +102,10 @@ class BagelPickKeycard(BagelOperation):
     STATUS_PICKED: str = '已挑卡放入安全箱'
     STATUS_RESERVE: str = '仓库该房间的门禁卡已到保留张数'
     STOP_STATUSES: tuple[str, ...] = (STATUS_NO_CARD, STATUS_RESERVE)
-    """仓库没有可用的卡：调用方应正常结束任务。"""
+    """仓库没有可用的卡：调用方应正常结束任务。
+
+    这两种结果的 ``data`` 是切回「全部」后读到的仓库 ``(占用, 容量)``，读不到为 None，供自动买卡定张数。
+    """
 
     def __init__(
         self, ctx: ZContext, room_name: str, template_id: str | None, *, from_prepare: bool,
@@ -372,11 +375,15 @@ class BagelPickKeycard(BagelOperation):
             self.result = None
             return result
         header = self._header()
-        if '全部' in header or self.filter_clicks == 0 or self.restore_clicks >= FILTER_CHECKS:
-            if '全部' not in header and self.filter_clicks > 0:
+        # 进仓库时若已是门禁卡筛选，没点过也要切回，否则读不到全仓占用。
+        untouched = self.filter_clicks == 0 and '门禁' not in header
+        if '全部' in header or untouched or self.restore_clicks >= FILTER_CHECKS:
+            if '全部' not in header and not untouched:
                 log.warning('贝果挑卡：没能切回全部筛选，标题「%s」', header)
             result = self.result
             self.result = None
+            if result.status in self.STOP_STATUSES:
+                result.data = parse_capacity_pair(header) if '全部' in header else None
             return result
         self.restore_clicks += 1
         self.ctx.controller.click(FILTER_ALL_POS, press_time=0.05)

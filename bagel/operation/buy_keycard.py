@@ -43,6 +43,24 @@ GAIN_TITLE_RECT: Rect = Rect(860, 390, 1060, 455)
 """
 
 
+def buy_count_for_capacity(wanted: int, capacity: tuple[int, int] | None) -> int:
+    """按仓库空位定本次买几张：放不下的卡会进背包，入场核对零携带时停住。
+
+    门禁卡在仓库里一张占一格（买 10 张、仓库 279/280 时 1 张入仓、9 张进背包）。
+
+    Args:
+        wanted: 配置的购买张数。
+        capacity: 挑卡结束时读到的仓库 ``(占用, 容量)``；读不到为 None。
+
+    Returns:
+        实际购买张数。0 表示仓库已满，不能买。读不到空位时只买 1 张。
+    """
+    if capacity is None:
+        return 1
+    used, total = capacity
+    return max(0, min(wanted, total - used))
+
+
 class BagelBuyKeycard(BagelOperation):
     """自动前往主页面的商店购买指定房间的门禁卡。
 
