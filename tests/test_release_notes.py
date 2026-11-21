@@ -92,10 +92,9 @@ def test_extract_against_repo_changelog() -> None:
         text, tag='v0.6.0', repo='Cora093/zzz-bagel-plugin'
     )
     assert notes_060 is not None
-    assert '#### 新增' in notes_060
-    assert '#### 修复' in notes_060
-    assert '\n### 新增' not in notes_060
-    assert '\n### 变更' not in notes_060
+    assert '### 新增' in notes_060
+    assert '### 修复' in notes_060
+    assert '## 0.5.0' not in notes_060
     assert '140ms' not in notes_060
 
     notes_034 = module.extract_release_notes(text, tag='v0.3.4')
