@@ -13,3 +13,36 @@ jobs:
     # 模板仓库自身的 v1/v2 等 tag 是可复用工作流的版本号，不发布示例插件
     if: github.repository != 'OneDragon-Anyone/plugin-template'
     uses: OneDragon-Anyone/plugin-template/.github/workflows/reusable-release.yml@v1
+
+  update-release-notes:
+    # 等打包上传完成后，从 CHANGELOG.md 提取对应版本说明覆写默认 Release 正文
+    if: github.repository != 'OneDragon-Anyone/plugin-template'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: extract
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          python .github/scripts/extract_release_notes.py \
+            --changelog CHANGELOG.md \
+            --tag "$TAG" \
+            --repo "$REPO" \
+            --out "$RUNNER_TEMP/release_notes.md"
+
+      - name: Update GitHub Release notes
+        if: steps.extract.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --notes-file "$RUNNER_TEMP/release_notes.md"

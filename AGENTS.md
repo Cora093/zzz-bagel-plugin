@@ -87,9 +87,10 @@
 
 1. 改 `bagel/plugin.json`：`version` 与 `versionCode` 一起递增，`versionCode` 必须是递增整数
 2. `python scripts/generate_const.py --repo .`
-3. `python scripts/validate_plugin.py --repo . --strict`
-4. 提交并推 tag `v<version>`，tag 必须与 `version` 对应
-5. GitHub Actions 调 `scripts/build_zip.py` 打包 `<id>.zip` 并上传 Release
+3. 整理 `CHANGELOG.md`：把 `## 未发布` 改为 `## <version> — YYYY-MM-DD`，大版本在最前面加 `### 概要`（面向用户的精炼说明，供插件商店更新日志展示）
+4. `python scripts/validate_plugin.py --repo . --strict`
+5. 提交并推 tag `v<version>`，tag 必须与 `version` 对应
+6. GitHub Actions 调 `scripts/build_zip.py` 打包 `<id>.zip` 并上传 Release，随后从 `CHANGELOG.md` 提取对应版本说明覆写 Release 正文
 
 ## 代码约定
 
