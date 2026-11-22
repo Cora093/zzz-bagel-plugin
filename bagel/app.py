@@ -10,7 +10,7 @@ from one_dragon.utils.log_utils import log
 from zzz_od.application.zzz_application import ZApplication
 
 from . import const, screenshot, stats, usage
-from .operation.buy_keycard import BagelBuyKeycard
+from .operation.buy_keycard import BagelBuyKeycard, buy_count_for_capacity
 from .operation.deposit import BagelDeposit
 from .operation.enter import BagelEnter
 from .operation.exit import BagelExit
@@ -122,6 +122,8 @@ class BagelApp(ZApplication):
         """开房卡模式：挑卡时仓库已没有该房间的卡；本局收尾后结束任务。"""
         self._buy_card_attempted: bool = False
         """开房卡模式：当前轮次是否已尝试过自动购买房卡，防止循环购买。"""
+        self._warehouse_capacity: tuple[int, int] | None = None
+        """开房卡模式：最近一次挑卡发现没卡时读到的仓库 (占用, 容量)，读不到为 None；自动买卡按它定张数。"""
         self._keycard_room_name: str = ''
         """开房卡模式：目标房间的显示名称，启动检查时读出。"""
 
@@ -298,6 +300,7 @@ class BagelApp(ZApplication):
         self._round_card_swiped = False
         self._cards_out = False
         self._buy_card_attempted = False
+        self._warehouse_capacity = None
         self._keycard_room_name = ''
         self._route_recorder.prune()
         screenshot.prune_screenshots(self.ctx)
@@ -472,6 +475,7 @@ class BagelApp(ZApplication):
             card_reserve=self.config.keycard_reserve if keycard else 0,
         ).execute()
         if keycard and not result.success and result.status in BagelPickKeycard.STOP_STATUSES:
+            self._warehouse_capacity = result.data
             return self.round_success(self.STATUS_CARDS_OUT)
         if keycard and result.success:
             # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
@@ -499,6 +503,7 @@ class BagelApp(ZApplication):
             self._buy_card_attempted = False
         elif result.status in BagelPickKeycard.STOP_STATUSES:
             self._cards_out = True
+            self._warehouse_capacity = result.data
         else:
             log.warning('贝果开房卡：结算仓库挑卡未完成（%s），下一局在备战再挑', result.status)
 
@@ -508,7 +513,7 @@ class BagelApp(ZApplication):
         """入场挑卡时仓库已没有该房间的卡：若开启自动买卡则去商店购买，否则正常结束任务。"""
         if self.config.auto_buy_keycard and not self._buy_card_attempted:
             self._buy_card_attempted = True
-            log.info('贝果开房卡：门禁卡不足，准备自动前往商店购买 %s 张', self.config.buy_keycard_count)
+            log.info('贝果开房卡：门禁卡不足，准备自动前往商店买卡')
             return self.round_success('需要自动购买房卡')
         self._buy_card_attempted = False
         log.info('贝果开房卡：%s，任务结束。已成功 %s 局。', self.STATUS_CARDS_OUT, self.success_rounds)
@@ -519,16 +524,21 @@ class BagelApp(ZApplication):
     @node_from(from_name='判断连续失败次数', status='需要自动购买房卡', ignore_status=False)
     @operation_node(name='自动购买房卡', screenshot_before_round=False)
     def auto_buy_cards(self) -> OperationRoundResult:
-        """自动前往商店购买目标房间门禁卡。"""
-        log.info(
-            '贝果开房卡：自动购买房卡，目标房间「%s」，购买数量 %s 张',
-            self._keycard_room_name, self.config.buy_keycard_count,
-        )
-        op = BagelBuyKeycard(
-            self.ctx,
-            room_name=self._keycard_room_name,
-            count=self.config.buy_keycard_count,
-        )
+        """自动前往商店购买目标房间门禁卡；张数不超过仓库空位，仓库满了就停止。"""
+        wanted = self.config.buy_keycard_count
+        capacity = self._warehouse_capacity
+        count = buy_count_for_capacity(wanted, capacity)
+        if count == 0:
+            return self.round_fail(
+                f'仓库已满（{capacity[0]}/{capacity[1]}），自动买的门禁卡会进背包导致无法入场；请先清理仓库再启动',
+            )
+        if capacity is None:
+            log.warning('贝果开房卡：没读到仓库空位，只买 1 张，以免放不下的卡进背包')
+        elif count < wanted:
+            log.info('贝果开房卡：仓库 %s/%s 只剩 %s 格，购买数量从 %s 张降为 %s 张',
+                     capacity[0], capacity[1], capacity[1] - capacity[0], wanted, count)
+        log.info('贝果开房卡：自动购买房卡，目标房间「%s」，购买数量 %s 张', self._keycard_room_name, count)
+        op = BagelBuyKeycard(self.ctx, room_name=self._keycard_room_name, count=count)
         result = op.execute()
         self.screenshot()
         if not result.success:
@@ -762,7 +772,7 @@ class BagelApp(ZApplication):
         if self.config.is_keycard and self._cards_out:
             if self.config.auto_buy_keycard and not self._buy_card_attempted:
                 self._buy_card_attempted = True
-                log.info('贝果开房卡：结算挑卡时门禁卡不足，准备自动前往商店购买 %s 张', self.config.buy_keycard_count)
+                log.info('贝果开房卡：结算挑卡时门禁卡不足，准备自动前往商店买卡')
                 return self.round_success('需要自动购买房卡')
             self._buy_card_attempted = False
             log.info('贝果开房卡：%s，任务结束。已成功 %s 局。', self.STATUS_CARDS_OUT, self.success_rounds)
@@ -880,7 +890,7 @@ class BagelApp(ZApplication):
                     self._record_route(self._stats.finish_round())
                     if not returned.success:
                         return self._finish_failed_round(returned, '返回入口')
-                    log.info('贝果开房卡：失败局结算挑卡时门禁卡不足，准备自动前往商店购买 %s 张', self.config.buy_keycard_count)
+                    log.info('贝果开房卡：失败局结算挑卡时门禁卡不足，准备自动前往商店买卡')
                     return self.round_success('需要自动购买房卡')
                 self._buy_card_attempted = False
                 log.info('贝果开房卡：%s，任务结束。最后一局失败：%s', self.STATUS_CARDS_OUT, self.failure_reason)
