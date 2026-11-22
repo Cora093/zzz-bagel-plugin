@@ -1554,7 +1554,7 @@ class BagelRouteWalker(BagelOperation):
         ys = frame.icons('card_key_icon')
         if not ys:
             return None
-        return ys[0], frame.text_at(ys[0], 1620)
+        return ys[0], frame.text_at(ys[0])
 
     @staticmethod
     def _card_count(text: str) -> int | None:

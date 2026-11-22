@@ -137,11 +137,16 @@ class PromptFrame:
             self._cost('图标', start)
         return self._icons_near[key]
 
-    def text_at(self, y: int, right: int = 1575) -> str:
-        """保留可能在第二行的物品数量或持卡数。"""
+    def text_at(self, y: int) -> str:
+        """保留可能在第二行的物品数量或持卡数。
+
+        右边界 1575 切在条目右侧自带的小圆圈（约 x 1590–1596）之前。刷卡条目的房间名会因此
+        少掉第一行末字，但名字只用于判稳和非空检查，不拿去比对；圆圈离文字远时（名称折两行）
+        OCR 会时有时无地读出「O」，让判稳反复重来。
+        """
         start = perf_counter()
         hits = self.ctx.ocr_service.get_ocr_result_list(
-            image=self.screen, rect=Rect(1400, y - 31, right, y + 31),
+            image=self.screen, rect=Rect(1400, y - 31, 1575, y + 31),
         )
         self._cost('OCR', start)
         return ''.join(str_utils.remove_whitespace(hit.data) for hit in hits)
@@ -152,7 +157,7 @@ class PromptFrame:
         for icon, kind in (('searched_icon', 'searched'), ('card_key_icon', 'card_reader'),
                            ('interact_icon', 'container')):
             if self.icon_near(icon, y):
-                text = self.text_at(y, 1620 if kind == 'card_reader' else 1575)
+                text = self.text_at(y)
                 if kind == 'container':
                     kind = _container_kind(text)
                 return PromptRow(y, kind, text)
