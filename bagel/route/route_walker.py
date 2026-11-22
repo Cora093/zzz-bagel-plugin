@@ -209,11 +209,13 @@ ANGLE_FAIL_SECONDS: float = 10.0
 """
 
 WALK_TURN_ANGLE: float = 10.0
-"""束角（用户术语）：朝向偏差在它以内不松前进键，边走边转微调。
+"""停车转向退出阈值（度）：停车等转向时偏差降回它以内即恢复前进。"""
 
-转向线程 5 度内算对准不转，所以 5~10 度是边走边修，超过 10 度停车等转。
-同时走和大角度转会互相干扰，表现为原地乱转，所以大偏差必须先松键。
-"""
+WALK_STOP_TURN_ANGLE: float = 16.0
+"""行进中触发停车转向的偏差阈值（度）：与 ``WALK_TURN_ANGLE`` 组成滞回带。
+
+行进中偏差在 16 度以内继续边走边修，超过 16 度才松键停车，停车后转回 10 度内再走，
+避免 10 度边缘因朝向读数 ±2 度抖动反复松键停顿和打断冲刺。"""
 
 SMALL_STEP_PRESS: float = 0.10
 """碎步单次按压时长（秒）。两次短按之间的停顿由 ``STEP_REST_SECONDS`` 管。
@@ -668,14 +670,17 @@ class BagelRouteWalker(BagelOperation):
         """最近一轮的决策文字，供执行态悬浮窗显示。"""
         self.sprinting: bool = False
         """当前是否在冲刺。"""
+        self.turning_in_place: bool = False
+        """巡航中是否已进入停车等转向；用于 ``WALK_STOP_TURN_ANGLE`` 与 ``WALK_TURN_ANGLE`` 滞回判断。"""
         self.last_dodge_at: float | None = None
         """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
         self.turn_memory: TurnRatioMemory | None = turn_memory
         """跨局转向校准记忆；试跑时为 None，每次从 1.0 起步。"""
         initial_ratio = turn_memory.hint if turn_memory is not None else 1.0
+        trust_initial = bool(turn_memory is not None and turn_memory.trusted)
         log.info(
-            '贝果转向本局 turn_dx=%.4f，起步校准值 %.3f，局内由转向线程学习；不写回 turn_dx',
-            self._turn_dx(), initial_ratio,
+            '贝果转向本局 turn_dx=%.4f，起步校准值 %.3f（%s），局内由转向线程学习；不写回 turn_dx',
+            self._turn_dx(), initial_ratio, '跨局可信' if trust_initial else '未校准',
         )
         self.elevator_phase: str | None = None
         """电梯当前阶段：进门 / 选楼层 / 出电梯；不在电梯里时为 None。"""
@@ -683,7 +688,9 @@ class BagelRouteWalker(BagelOperation):
         """当前电梯阶段的起始时刻，用于计时。"""
         self.elevator_last_tap: float = 0.0
         """上次为推进对话而点按的时刻，控制每秒一次。"""
-        self.input_worker: BagelInputWorker = BagelInputWorker(ctx, initial_turn_ratio=initial_ratio)
+        self.input_worker: BagelInputWorker = BagelInputWorker(
+            ctx, initial_turn_ratio=initial_ratio, trust_initial_ratio=trust_initial,
+        )
         """按键单独线程：主线投递即返回；同种操作不打断自己，不同操作打断旧的。"""
         self.ledger: BagelSafeLedger = BagelSafeLedger()
         """本局安全箱物品，只用于统计日志。"""
@@ -2288,12 +2295,12 @@ class BagelRouteWalker(BagelOperation):
     ) -> OperationRoundResult:
         """远距离移动：只提交目标方向，前进键自己管。
 
-        转向全由转向线程负责（稳 3 帧、5 度以上才转）。这里只按本轮
-        偏差管前进：超过 10 度松键停车等转，以内按住走。
+        转向全由转向线程负责（稳 3 帧、2 度以上才转）。这里按滞回束角管前进：
+        行进中偏差超过 16 度松键停车等转，停车后转回 10 度以内恢复前进；
         同时走和大角度转会互相干扰，表现为原地乱转。
 
         近距离不再按角度停车转：这个距离上的目标方位由定位抖动决定，
-        停下车来按它转只会原地打摆，改成边走边转（线程内限幅 15 度）。
+        停下车来按它转只会原地打摆，改成边走边转（线程内限幅 CRUISE_TURN_CAP）。
         """
         angle = self.player_angle()
         miss = self._angle_miss_result(angle)
@@ -2305,11 +2312,15 @@ class BagelRouteWalker(BagelOperation):
         distance = hypot(point.x - position[0], point.y - position[1])
         near = distance <= NEAR_STEP_TURN_RADIUS
         self._diag_cruise(point, position, angle_diff, distance)
-        self._submit_turn(target_angle, cruise_only=near, deadband=TURN_DEADBAND_FAST)
-        if abs(angle_diff) > WALK_TURN_ANGLE and not near:
+        stop_limit = WALK_TURN_ANGLE if self.turning_in_place else WALK_STOP_TURN_ANGLE
+        stop_turn = abs(angle_diff) > stop_limit and not near
+        self._submit_turn(target_angle, cruise_only=not stop_turn, deadband=TURN_DEADBAND_FAST)
+        if stop_turn:
             # 大偏差：松键停车等转向线程转到位再走。
+            self.turning_in_place = True
             self._release_forward()
             return self.round_wait(f'停车等转向 {angle_diff:.0f}度')
+        self.turning_in_place = False
         stuck = self._check_stuck(position, point, controller_angle)
         if stuck is not None:
             return stuck
@@ -2495,27 +2506,29 @@ class BagelRouteWalker(BagelOperation):
 
         只提交目标方向给转向线程；偏差超过 10 度时停车等转，
         其余情况短按前进。每步结束后使用新截图重新判断，
-        避免多次短按相互覆盖。
+        避免多次短按相互覆盖；短按按住中仅在小偏差内微调，松键停顿期按正常逻辑提交转向。
 
         近距离不再按角度停车转：这个距离上的目标方位由定位抖动决定，
-        改成边走边转（线程内限幅 15 度）；偏差超过 ``NEAR_STOP_TURN_ANGLE`` 时仍停车转到位。
+        改成边走边转（线程内限幅 CRUISE_TURN_CAP）；偏差超过 ``NEAR_STOP_TURN_ANGLE`` 时仍停车转到位。
 
         Args:
             point: 当前目标点。
             position: 当前可靠定位。
             short_press: 是否使用 ``SMALL_STEP_PRESS`` 短步；否则使用 0.5 秒慢步。
         """
+        distance = hypot(point.x - position[0], point.y - position[1])
+        target_angle = self._target_angle(position, point)
         ready = self._prepare_forward_step()
         if ready is not None:
+            if distance > BOX_SMALL_STEP_RADIUS:
+                self._submit_slow_step_turn(distance, target_angle)
             return ready
         action = '短步' if short_press else '慢步'
         angle = self.player_angle()
         miss = self._angle_miss_result(angle)
         if miss is not None:
             return miss
-        target_angle = self._target_angle(position, point)
         angle_diff = cal_utils.angle_delta(angle % 360, target_angle)
-        distance = hypot(point.x - position[0], point.y - position[1])
         near = distance <= NEAR_STEP_TURN_RADIUS
         stop_turn = abs(angle_diff) > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
         self._submit_turn(target_angle, cruise_only=near and not stop_turn)
@@ -2523,6 +2536,7 @@ class BagelRouteWalker(BagelOperation):
             # 大偏差：松键停车等转向线程转到位，不短按前进。
             self._release_forward()
             return self.round_wait(f'{action}停车等转向 {angle_diff:.0f}度')
+        self.turning_in_place = False
         blocked = self._check_slow_stuck(position)
         if blocked is not None:
             return blocked
@@ -2535,6 +2549,32 @@ class BagelRouteWalker(BagelOperation):
         self._record_input()
         wait = None if short_press else SLOW_STEP_WAIT
         return self.round_wait(f'{action}前进', wait=wait)
+
+    def _submit_slow_step_turn(self, distance: float, target_angle: float) -> None:
+        """慢步等待期按前进键状态分流提交转向，避免换点大转向被 15 度碎转占坑。
+
+        W 仍在短按或尚未松键时，仅在 ``WALK_STOP_TURN_ANGLE`` 内做边走边转微调；
+        大偏差不抢发，等松键后再全速转。W 已松开进入停顿期后，直接按与正式慢步
+        一致的 ``stop_turn`` 规则提交，大角度在停顿期内即可开始全速转。
+
+        Args:
+            distance: 距当前目标点的距离（px）。
+            target_angle: 目标方向（度）。
+        """
+        angle = self.player_angle()
+        if angle is None:
+            return
+        diff = abs(cal_utils.angle_delta(angle % 360, target_angle))
+        if (
+            self.input_worker.forward_step_active()
+            or self.input_worker.forward_released_at is None
+        ):
+            if diff <= WALK_STOP_TURN_ANGLE:
+                self._submit_turn(target_angle, cruise_only=True)
+            return
+        near = distance <= NEAR_STEP_TURN_RADIUS
+        stop_turn = diff > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
+        self._submit_turn(target_angle, cruise_only=near and not stop_turn)
 
     @staticmethod
     def _target_angle(
@@ -2827,6 +2867,7 @@ class BagelRouteWalker(BagelOperation):
         self.electronic_small_steps = False
         self.small_step_since = None
         self.steps = 0
+        self.turning_in_place = False
         self.stuck_since = None
         self.stuck_steps = 0
         self.slow_stuck_since = None
@@ -2904,6 +2945,7 @@ class BagelRouteWalker(BagelOperation):
         排队中的侧移、长按 F 等即时动作随 ``release_all`` 作废，暂停期间不会再按下。
         """
         self._release_forward()
+        self.turning_in_place = False
         self.selection.reset(self.last_screenshot_time)
         self.select_since = None
         self.card_stable_since = None

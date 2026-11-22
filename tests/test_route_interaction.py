@@ -470,3 +470,58 @@ def test_container_title_single_ocr_matches_all_variants() -> None:
     op.last_screenshot = np.zeros((1080, 1920, 3), np.uint8)
     assert op._has('搜查容器标题') is True
     assert ctx.ocr_service.get_ocr_result_list.call_count == 1
+
+
+def test_cruise_stop_turn_hysteresis(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> None:
+    """巡航偏差 >16 度才停车，停车后降回 <=10 度恢复前进；未停车时按边走边转提交。"""
+    walker = scene.walker
+    pt = BagelRoutePoint(100.0, 0.0, '测试层', BEACON)
+    scene.worker.hold_forward.return_value = False
+    scene.worker.forward_held_seconds.return_value = None
+    angle = [14.0]
+    monkeypatch.setattr(walker, 'player_angle', lambda: angle[0])
+
+    # 行进中 14 度（<=16）：不停车，cruise_only=True
+    assert walker._cruise(pt, (0.0, 0.0)).status == '冲刺前进'
+    assert scene.worker.submit_turn.call_args.kwargs['cruise_only'] is True
+
+    # 偏到 17 度（>16）：松键停车，cruise_only=False
+    angle[0] = 17.0
+    assert walker._cruise(pt, (0.0, 0.0)).status.startswith('停车等转向')
+    assert scene.worker.submit_turn.call_args.kwargs['cruise_only'] is False
+
+    # 回到 12 度（仍 >10）：保持停车，不反复启停
+    angle[0] = 12.0
+    assert walker._cruise(pt, (0.0, 0.0)).status.startswith('停车等转向')
+
+    # 降回 9 度（<=10）：恢复前进
+    angle[0] = 9.0
+    assert walker._cruise(pt, (0.0, 0.0)).status == '冲刺前进'
+
+
+def test_slow_step_turn_dispatch_during_step_wait(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """慢步等待期：短按中仅小偏差微调、大偏差不抢发；已松键停顿期大偏差直接全速转。"""
+    walker = scene.walker
+    pt = BagelRoutePoint(9.0, 0.0, '测试层', BEACON)
+    angle = [10.0]
+    monkeypatch.setattr(walker, 'player_angle', lambda: angle[0])
+
+    # 短按进行中 + 小偏差（10 度 <=16）：提交边走边转
+    scene.worker.forward_step_active.return_value = True
+    assert walker._slow_step(pt, (0.0, 0.0)).status == '等待本次前进短按结束'
+    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=True, deadband=route_walker.TURN_DEADBAND)
+
+    # 短按进行中 + 大偏差（136 度 >16）：不抢发 15 度碎转
+    scene.worker.submit_turn.reset_mock()
+    angle[0] = 136.0
+    assert walker._slow_step(pt, (0.0, 0.0)).status == '等待本次前进短按结束'
+    scene.worker.submit_turn.assert_not_called()
+
+    # 已松键进入停顿期 + 大偏差（136 度）：直接提交全速停车转（cruise_only=False）
+    scene.worker.forward_step_active.return_value = False
+    scene.worker.forward_released_at = 100.0
+    walker.last_screenshot_time = 100.05
+    assert walker._slow_step(pt, (0.0, 0.0)).status == '前进停顿中'
+    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND)
