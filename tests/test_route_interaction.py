@@ -502,26 +502,45 @@ def test_cruise_stop_turn_hysteresis(scene: Scene, monkeypatch: pytest.MonkeyPat
 def test_slow_step_turn_dispatch_during_step_wait(
     scene: Scene, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """慢步等待期：短按中仅小偏差微调、大偏差不抢发；已松键停顿期大偏差直接全速转。"""
+    """慢步等待期：8px 外按键态分流；8px 内临近到点不抢发微调，仅停顿期 >60 度提前全速转。"""
     walker = scene.walker
-    pt = BagelRoutePoint(9.0, 0.0, '测试层', BEACON)
+    pt_far = BagelRoutePoint(9.0, 0.0, '测试层', BEACON)
+    pt_near = BagelRoutePoint(5.0, 0.0, '测试层', BEACON)
     angle = [10.0]
     monkeypatch.setattr(walker, 'player_angle', lambda: angle[0])
 
-    # 短按进行中 + 小偏差（10 度 <=16）：提交边走边转
+    # 8px 外 + 短按进行中 + 小偏差（10 度 <=16）：提交边走边转
     scene.worker.forward_step_active.return_value = True
-    assert walker._slow_step(pt, (0.0, 0.0)).status == '等待本次前进短按结束'
+    assert walker._slow_step(pt_far, (0.0, 0.0)).status == '等待本次前进短按结束'
     scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=True, deadband=route_walker.TURN_DEADBAND)
 
-    # 短按进行中 + 大偏差（136 度 >16）：不抢发 15 度碎转
+    # 8px 外 + 短按进行中 + 大偏差（136 度 >16）：不抢发 15 度碎转
     scene.worker.submit_turn.reset_mock()
     angle[0] = 136.0
-    assert walker._slow_step(pt, (0.0, 0.0)).status == '等待本次前进短按结束'
+    assert walker._slow_step(pt_far, (0.0, 0.0)).status == '等待本次前进短按结束'
     scene.worker.submit_turn.assert_not_called()
 
-    # 已松键进入停顿期 + 大偏差（136 度）：直接提交全速停车转（cruise_only=False）
+    # 8px 外 + 已松键进入停顿期 + 大偏差（136 度）：直接提交全速停车转（cruise_only=False）
     scene.worker.forward_step_active.return_value = False
     scene.worker.forward_released_at = 100.0
     walker.last_screenshot_time = 100.05
-    assert walker._slow_step(pt, (0.0, 0.0)).status == '前进停顿中'
+    assert walker._slow_step(pt_far, (0.0, 0.0)).status == '前进停顿中'
+    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND)
+
+    # 8px 内 + 短按进行中 + 小偏差（10 度）：不抢发微调占坑
+    scene.worker.submit_turn.reset_mock()
+    scene.worker.forward_step_active.return_value = True
+    angle[0] = 10.0
+    assert walker._slow_step(pt_near, (0.0, 0.0)).status == '等待本次前进短按结束'
+    scene.worker.submit_turn.assert_not_called()
+
+    # 8px 内 + 已松键停顿期 + <=60 度偏差（25 度）：不抢发微调占坑
+    scene.worker.forward_step_active.return_value = False
+    angle[0] = 25.0
+    assert walker._slow_step(pt_near, (0.0, 0.0)).status == '前进停顿中'
+    scene.worker.submit_turn.assert_not_called()
+
+    # 8px 内 + 已松键停顿期 + >60 度大偏差（95 度）：提前全速停车转
+    angle[0] = 95.0
+    assert walker._slow_step(pt_near, (0.0, 0.0)).status == '前进停顿中'
     scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND)

@@ -68,7 +68,7 @@ def test_hold_then_step_releases_and_rests(worker: tuple[BagelInputWorker, _Keys
 def test_trusted_initial_ratio_lifts_warmup_cap_and_chunks_large_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """无记忆首局受 45 度热身限幅；跨局可信起步值放开上限，且 >90 度拆两段连发。"""
+    """无记忆首局受 45 度热身限幅；跨局可信起步值放开上限，<=120 度单段直发，>120 度拆两段连发。"""
     monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.002)
     monkeypatch.setattr(input_worker, 'TURN_CHUNK_INTERVAL', 0.0)
     monkeypatch.setattr(input_worker, 'TURN_POST_TURN_QUIET', 10.0)
@@ -87,6 +87,17 @@ def test_trusted_initial_ratio_lifts_warmup_cap_and_chunks_large_turn(
     finally:
         cold.stop()
 
+    mid_sent: list[float] = []
+    mid = input_worker._TurnWorker(
+        mid_sent.append, lambda: 0.0, initial_ratio=mem.hint, trust_initial_ratio=mem.trusted,
+    )
+    try:
+        mid.submit(110.0)
+        _wait(lambda: len(mid_sent) >= 1)
+        assert mid_sent == [pytest.approx(110.0 / 1.5)]
+    finally:
+        mid.stop()
+
     warm_sent: list[float] = []
     warm = input_worker._TurnWorker(
         warm_sent.append, lambda: 0.0, initial_ratio=mem.hint, trust_initial_ratio=mem.trusted,
@@ -98,6 +109,63 @@ def test_trusted_initial_ratio_lifts_warmup_cap_and_chunks_large_turn(
         assert sum(warm_sent) == pytest.approx(100.0)
     finally:
         warm.stop()
+
+
+def test_chunked_sample_isolated_and_prior_plus_outlier_guard_protect_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """拆段样本不写单段峰值箱；跨局先验权重防早局噪声劫持；偶发离群值忽略、连续 3 次放行。"""
+    monkeypatch.setattr(input_worker._TurnWorker, '_loop', lambda self: None)
+    tw = input_worker._TurnWorker(
+        lambda _: None, lambda: 0.0, initial_ratio=1.5, trust_initial_ratio=True,
+    )
+    try:
+        # 拆 2 段样本（倍率 1.7）：只消费放行，不污染单段比例，也不计入 turn_samples
+        tw._pending = 80.0
+        tw._pending_chunks = 2
+        tw._anchor = 0.0
+        assert tw._learn(0.0, 80.0, 136.0) is True
+        assert tw.turn_ratio == pytest.approx(1.5)
+        assert tw.turn_samples == 0
+
+        # 跨局先验权重 3 票：2 个略偏高样本（1.90，在 1.5*1.4=2.1 内）仍不撼动 1.5
+        for _ in range(2):
+            tw._pending = 40.0
+            tw._pending_chunks = 1
+            tw._anchor = 0.0
+            assert tw._learn(0.0, 40.0, 76.0) is True
+        assert tw.turn_ratio == pytest.approx(1.5)
+        assert tw.turn_samples == 2
+
+        # 偶发离群样本（3.0 > 1.5*1.4=2.1）连续 2 次均被忽略，正常样本到达后清零离群计数
+        for _ in range(2):
+            tw._pending = 20.0
+            tw._pending_chunks = 1
+            tw._anchor = 0.0
+            assert tw._learn(0.0, 20.0, 60.0) is True
+        assert tw.turn_samples == 2
+        tw._pending = 40.0
+        tw._pending_chunks = 1
+        tw._anchor = 0.0
+        assert tw._learn(0.0, 40.0, 60.0) is True
+        assert tw._outlier_streak == 0
+        assert tw.turn_samples == 3
+        assert tw._peak_count == input_worker.TURN_RATIO_PRIOR_WEIGHT + 1
+
+        # 真实灵敏度变化到 2.5：前 2 次带外样本拦截，第 3 次起连续放行，累计超过先验（4 票）后切到 2.5
+        for _ in range(6):
+            tw._pending = 20.0
+            tw._pending_chunks = 1
+            tw._anchor = 0.0
+            assert tw._learn(0.0, 20.0, 50.0) is True
+        assert tw.turn_ratio == pytest.approx(1.5)
+        tw._pending = 20.0
+        tw._pending_chunks = 1
+        tw._anchor = 0.0
+        assert tw._learn(0.0, 20.0, 50.0) is True
+        assert tw.turn_ratio == pytest.approx(2.5)
+    finally:
+        tw.stop()
 
 
 def test_small_turn_releases_without_still_timeout_and_big_target_preempts(

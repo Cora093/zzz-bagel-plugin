@@ -110,8 +110,8 @@ CRUISE_TURN_CAP: float = 15.0
 TURN_CRUISE_LIMIT: float = 10.0
 """未显式指定边走边转时，偏差在它以内按边走边转限幅；超过它按停车转。"""
 
-TURN_CHUNK_MAX_DESIRED: float = 90.0
-"""单次鼠标相对移动的期望转角上限（度）：实机日志统计推断单次约在 120 度处截断（未单独实测），超过 90 度拆段连发。"""
+TURN_CHUNK_MAX_DESIRED: float = 120.0
+"""单次鼠标相对移动的期望转角上限（度）：单段在约 120 度处开始截断，91~120 度拆 2 段反而偏高过冲，超过 120 度才拆段连发。"""
 
 TURN_CHUNK_INTERVAL: float = 0.035
 """大角度拆段连发时相邻两段的间隔（秒）：跨过 60fps 约 2 帧，避免被游戏合并截断。"""
@@ -121,6 +121,15 @@ TURN_PREEMPT_ANGLE: float = 45.0
 
 TURN_RATIO_PEAK_BIN_WIDTH: float = 0.05
 """实时校准分箱宽度：箱以 1.0 为中心（如 0.975~1.025），每样本只做一次槽计数加一与峰值比较。"""
+
+TURN_RATIO_PRIOR_WEIGHT: int = 3
+"""跨局可信起步值在峰值箱中的先验票数：防止开局首样本或 2 个受击噪声样本直接劫持本局比例。"""
+
+TURN_RATIO_OUTLIER_FACTOR: float = 1.4
+"""已有可信基准时，单次样本相对当前校准值的正常倍率带（[ratio/它, ratio*它]）；超出视为受击或背景干扰。"""
+
+TURN_RATIO_OUTLIER_ACCEPT_STREAK: int = 3
+"""连续这么多笔落在离群带外才放行入箱：拦住偶发干扰，同时允许局内真实灵敏度变化收敛。"""
 
 TURN_RATIO_CLAMP_WARN_STREAK: int = 5
 """校准值连续这么多个样本贴着可信区间的边界，就提示可能需要重做灵敏度检测。"""
@@ -306,7 +315,7 @@ class _TurnWorker:
         self._still_since: float | None = None
         """宽限过后首次看到画面没动的时刻；超时只放行下一笔，不碰校准。"""
         self.turn_ratio: float = initial_ratio
-        """转向校准值：名义转角乘它就是实际转角。从起步值开始，第一个有效样本起按本局峰值箱更新，局内不重置。"""
+        """转向校准值：名义转角乘它就是实际转角。从起步值开始，按本局峰值箱更新，局内不重置。"""
         self.turn_samples: int = 0
         """已累积的校准样本数，用于日志观察。"""
         self._peak_bins: dict[int, int] = {}
@@ -315,6 +324,13 @@ class _TurnWorker:
         """当前最高的槽号；不如它就保持不变。"""
         self._peak_count: int = 0
         """最高槽的样本数。"""
+        if trust_initial_ratio and TURN_RATIO_MIN <= initial_ratio <= TURN_RATIO_MAX:
+            prior_key = math.floor((initial_ratio - 1.0) / TURN_RATIO_PEAK_BIN_WIDTH + 0.5 + 1e-9)
+            self._peak_bins[prior_key] = TURN_RATIO_PRIOR_WEIGHT
+            self._peak_key = prior_key
+            self._peak_count = TURN_RATIO_PRIOR_WEIGHT
+        self._outlier_streak: int = 0
+        """连续落出当前可信校准值倍率带的样本计数。"""
         self._clamp_streak: int = 0
         """校准值连续几次贴到夹取边界的计数，用于提示重做灵敏度检测。"""
         self._lock: threading.Lock = threading.Lock()
@@ -362,6 +378,7 @@ class _TurnWorker:
             self._peak_bins.clear()
             self._peak_key = None
             self._peak_count = 0
+            self._outlier_streak = 0
             self._clamp_streak = 0
         self._wake.set()
         self._thread.join(timeout=1.0)
@@ -576,14 +593,34 @@ class _TurnWorker:
         if delta * pending <= 0:
             return True
         sample = abs(delta) / abs(pending)
-        chunk_note = f'，分 {chunks} 段' if chunks > 1 else ''
+        if chunks > 1:
+            # 拆段连发的等效倍率高于单段，不写入单段峰值箱，避免把单段校准值拉高导致中等角度欠转。
+            log.info(
+                '贝果转向校准分段样本，不更新比例：%.2f（名义 %.1f 实际 %.1f，分 %s 段，当前校准 %.3f）',
+                sample, pending, delta, chunks, self.turn_ratio,
+            )
+            return True
         with self._lock:
             if not (TURN_RATIO_MIN <= sample <= TURN_RATIO_MAX):
                 log.info(
-                    '贝果转向校准样本异常，忽略：%.2f（名义 %.1f 实际 %.1f%s）',
-                    sample, pending, delta, chunk_note,
+                    '贝果转向校准样本异常，忽略：%.2f（名义 %.1f 实际 %.1f）',
+                    sample, pending, delta,
                 )
                 return True
+            trusted_ref = self._trust_initial_ratio or self.turn_samples >= TURN_CAP_TRUST_SAMPLES
+            ref = self.turn_ratio
+            if trusted_ref and ref > 0 and not (
+                ref / TURN_RATIO_OUTLIER_FACTOR <= sample <= ref * TURN_RATIO_OUTLIER_FACTOR
+            ):
+                self._outlier_streak += 1
+                if self._outlier_streak < TURN_RATIO_OUTLIER_ACCEPT_STREAK:
+                    log.info(
+                        '贝果转向校准离群样本，忽略：%.2f（当前 %.3f，名义 %.1f 实际 %.1f，连续 %s 次）',
+                        sample, ref, pending, delta, self._outlier_streak,
+                    )
+                    return True
+            else:
+                self._outlier_streak = 0
             key = math.floor((sample - 1.0) / TURN_RATIO_PEAK_BIN_WIDTH + 0.5 + 1e-9)
             slot_count = self._peak_bins.get(key, 0) + 1
             self._peak_bins[key] = slot_count
@@ -594,8 +631,8 @@ class _TurnWorker:
             self.turn_samples += 1
             ratio, total = self.turn_ratio, self.turn_samples
         log.info(
-            '贝果转向校准 %.3f（样本 %.2f，峰值槽 %s 个，名义 %.1f 实际 %.1f%s，共 %s 次）',
-            ratio, sample, self._peak_count, pending, delta, chunk_note, total,
+            '贝果转向校准 %.3f（样本 %.2f，峰值槽 %s 个，名义 %.1f 实际 %.1f，共 %s 次）',
+            ratio, sample, self._peak_count, pending, delta, total,
         )
         if TURN_RATIO_MIN * 1.2 <= ratio <= TURN_RATIO_MAX / 1.2:
             with self._lock:

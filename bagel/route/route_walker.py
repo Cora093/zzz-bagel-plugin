@@ -2551,11 +2551,11 @@ class BagelRouteWalker(BagelOperation):
         return self.round_wait(f'{action}前进', wait=wait)
 
     def _submit_slow_step_turn(self, distance: float, target_angle: float) -> None:
-        """慢步等待期按前进键状态分流提交转向，避免换点大转向被 15 度碎转占坑。
+        """慢步等待期按距离与前进键状态分流提交转向，避免临近到点抢发微调占坑。
 
-        W 仍在短按或尚未松键时，仅在 ``WALK_STOP_TURN_ANGLE`` 内做边走边转微调；
-        大偏差不抢发，等松键后再全速转。W 已松开进入停顿期后，直接按与正式慢步
-        一致的 ``stop_turn`` 规则提交，大角度在停顿期内即可开始全速转。
+        距目标 ``NEAR_STEP_TURN_RADIUS``（8px）内时，角色可能一步就到点换向且定位抖动会放大偏差：
+        W 仍在短按中不发微调；已松键停顿期也只在偏差超过 ``NEAR_STOP_TURN_ANGLE`` 时提前全速转。
+        8px 外时，短按中仅在 ``WALK_STOP_TURN_ANGLE`` 内微调，停顿期按正式慢步规则提交。
 
         Args:
             distance: 距当前目标点的距离（px）。
@@ -2565,16 +2565,18 @@ class BagelRouteWalker(BagelOperation):
         if angle is None:
             return
         diff = abs(cal_utils.angle_delta(angle % 360, target_angle))
+        near = distance <= NEAR_STEP_TURN_RADIUS
         if (
             self.input_worker.forward_step_active()
             or self.input_worker.forward_released_at is None
         ):
-            if diff <= WALK_STOP_TURN_ANGLE:
+            if not near and diff <= WALK_STOP_TURN_ANGLE:
                 self._submit_turn(target_angle, cruise_only=True)
             return
-        near = distance <= NEAR_STEP_TURN_RADIUS
         stop_turn = diff > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
-        self._submit_turn(target_angle, cruise_only=near and not stop_turn)
+        if near and not stop_turn:
+            return
+        self._submit_turn(target_angle, cruise_only=False)
 
     @staticmethod
     def _target_angle(
