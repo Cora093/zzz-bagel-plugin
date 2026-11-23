@@ -83,6 +83,11 @@
 同时有工厂文件和常量文件，`plugin.json` 不参与判定。所以改完代码直接运行，不需要同步或复制。
 运行期数据写在主程序工作目录的 `plugin_data/bagel/`，由主程序按 APP_ID 分配。
 
+## PR 合入
+
+- 默认用 `squash` 合入并始终删除分支：`gh pr merge <PR> --squash --delete-branch --subject "<type>(bagel):<中文描述>（#<issue>）" --body ""`。
+- 合入后从最新 `main` 切新分支继续开发，不复用已合入分支。
+
 ## 发版
 
 1. 改 `bagel/plugin.json`：`version` 与 `versionCode` 一起递增，`versionCode` 必须是递增整数
