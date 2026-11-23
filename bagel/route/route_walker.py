@@ -47,6 +47,7 @@ from ..stats import (
     parse_value,
 )
 from ..vision.map_locator import (
+    MapLocator,
     MultiMapLocator,
     load_map_locators,
 )
@@ -501,6 +502,7 @@ class BagelRouteWalker(BagelOperation):
         route_ref: BagelRouteRef | None = None, keycard_room: str | None = None,
         turn_memory: TurnRatioMemory | None = None,
         organize_backpack: bool = False,
+        map_layers: list[MapLocator] | None = None,
     ) -> None:
         """加载出生点清单并准备定位。
 
@@ -516,11 +518,15 @@ class BagelRouteWalker(BagelOperation):
                 局末由 remember_turn_ratio 记回。None 表示从 1.0 起步、局末不记。
             organize_backpack: 是否允许在路线最后一个容器的搜查面板内就地整理背包；
                 正式应用传入 True，路线试跑默认 False。
+            map_layers: 调用方已加载的只读地图层，多局共用；None 表示本执行器自己加载。
+                每层约 6 MiB，23 层合计约 135 MiB，逐局加载会让内存随局数上涨。
 
         Raises:
             ValueError: 出生点清单无法读取，或指定路线不存在、损坏、绑定的出生点未登记。
         """
-        super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1)
+        # 不加「检测游戏窗口」节点：执行器只在确认局内后创建，这个节点用不上；
+        # 而它的回调闭包引用执行器自身，执行器结束后要等完整垃圾回收才能释放。
+        super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1, need_check_game_win=False)
         self.store: BagelRouteStore = BagelRouteStore(self.ctx)
         self.keycard_room: str | None = keycard_room if route_ref is None else None
         """正式运行开房卡模式的目标房间；跑刀与试跑为 None。"""
@@ -549,7 +555,9 @@ class BagelRouteWalker(BagelOperation):
         self.spawn_streak: int = 0
         """连续得出相同出生点结论的新截图次数。"""
         self.blueprint_priority: bool = blueprint_priority
-        self.locator: MultiMapLocator = MultiMapLocator(load_map_locators())
+        self.locator: MultiMapLocator = MultiMapLocator(
+            load_map_locators() if map_layers is None else map_layers,
+        )
         self.route_index: int = 0
         self.cursor: int = 0
         self.current_kind: str | None = None
@@ -2964,6 +2972,13 @@ class BagelRouteWalker(BagelOperation):
     def is_failure_scene(self, result: OperationResult) -> bool:
         """出生点没有可执行路线是正常的退出重开，不存图也不报错。"""
         return super().is_failure_scene(result) and result.status != self.STATUS_ANCHOR_MISS
+
+    def execute(self) -> OperationResult:
+        """初始化失败时框架不调用 ``after_operation_done``，这里兜底停掉输入线程。"""
+        try:
+            return super().execute()
+        finally:
+            self.input_worker.shutdown()
 
     def after_operation_done(self, result: OperationResult) -> None:
         """退出路径统一松键，含冲刺键，并停掉输入线程。"""

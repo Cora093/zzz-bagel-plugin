@@ -168,7 +168,29 @@ def bagel_run_events(operation: Operation) -> Iterator[None]:
             operation.ctx.run_context.event_bus.unlisten_all_event(events)
             operation.ctx.run_context.event_bus.unlisten_all_event(operation)
         finally:
-            operation._on_pause, operation._on_resume = events.on_pause, events.on_resume
+            # 删掉实例上的覆盖，恢复类上的方法；写回绑定方法会让操作引用自身，
+            # 结束后只能等完整垃圾回收释放，截图和地图会跨局滞留。
+            vars(operation).pop('_on_pause', None)
+            vars(operation).pop('_on_resume', None)
+
+
+def execute_foreign_operation(operation: Operation) -> OperationResult:
+    """执行主仓操作，返回后清掉它及其子操作留在运行事件总线上的监听。
+
+    主仓操作向 ``ctx.run_context.event_bus`` 注册暂停、恢复回调，收尾时却在
+    ``ctx`` 自身的总线上解除，回调会一直留着，连带持有操作和最后一张截图。
+    这里只移除执行期间新增、且属于操作对象的回调，不动其它监听。
+    """
+    bus = operation.ctx.run_context.event_bus
+    before = {event_id: list(callbacks) for event_id, callbacks in bus.callbacks.items()}
+    try:
+        return operation.execute()
+    finally:
+        for event_id, callbacks in list(bus.callbacks.items()):
+            existed = before.get(event_id, [])
+            for callback in list(callbacks):
+                if callback not in existed and isinstance(getattr(callback, '__self__', None), Operation):
+                    bus.unlisten_event(event_id, callback)
 
 
 @dataclass(frozen=True)

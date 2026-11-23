@@ -189,7 +189,7 @@ active_routes:
 
 `layers.json` 每层四个字段：`map_id`（所属地图）、`name`（层名）、`image`（相对路径）、`origin`（该层在所属地图原画布上的偏移）。
 
-`load_map_locators` 按清单顺序加载各层图像与偏移；`MultiMapLocator.locate` 按上节三档顺序搜索，返回命中的层、评分与全局坐标圆心。
+`load_map_locators` 按清单顺序加载各层图像与偏移。`MapLocator` 构造后只读，同一次运行内多局共用，见[长时间运行的内存](overview.md#长时间运行的内存)；`MultiMapLocator.locate` 按上节三档顺序搜索，返回命中的层、评分与全局坐标圆心。
 
 网页编辑器按 `origin` 把同一地图的各层拼成整图显示，反相成浅底深线，仅用于显示，不参与定位。
 

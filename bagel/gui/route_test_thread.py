@@ -68,7 +68,8 @@ class BagelRouteTestThread(QThread):
                 self.done.emit(False, '游戏窗口未切到前台，未开始试跑')
                 return
             self.status_changed.emit('试跑中，按打点顺序移动')
-            self._layer_images = {item.name: item.image_path for item in load_map_locators()}
+            layers = load_map_locators()
+            self._layer_images = {item.name: item.image_path for item in layers}
             # 先占用运行状态再创建执行器：执行器一创建就启动输入线程，
             # 占用失败时不能留下没人收尾的线程。
             if not self.ctx.run_context.start_running():
@@ -80,7 +81,7 @@ class BagelRouteTestThread(QThread):
             if self._stop_requested.is_set():
                 self.done.emit(False, '已手动停止试跑')
                 return
-            self._walker = BagelRouteWalker(self.ctx, route_ref=self.route_ref)
+            self._walker = BagelRouteWalker(self.ctx, route_ref=self.route_ref, map_layers=layers)
             result = self._run_with_state()
         except ValueError as error:
             self.done.emit(False, str(error))

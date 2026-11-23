@@ -12,7 +12,7 @@ from zzz_od.operation.compendium.compendium_choose_category import (
     CompendiumChooseCategory,
 )
 
-from .operation import BagelOperation
+from .operation import BagelOperation, execute_foreign_operation
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -147,7 +147,7 @@ class BagelOpenCompendium(BagelOperation):
         """复用快捷手册分类选择，下一节点重新读取卡片内容。"""
         operation = CompendiumChooseCategory(self.ctx, '周期征讨')
         operation.timeout_seconds = min(15, max(0, self.timeout_seconds - self.operation_usage_time))
-        return self.round_by_op_result(operation.execute())
+        return self.round_by_op_result(execute_foreign_operation(operation))
 
     @node_from(from_name='选择周期征讨')
     @operation_node(name='打开迷宫诡域', timeout_seconds=30)

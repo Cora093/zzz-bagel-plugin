@@ -95,7 +95,10 @@ def base_texture(rgba: MatLike) -> MatLike:
 
 
 class MapLocator:
-    """单层底图；纹理与积分图只计算一次，搜索结果加偏移返回全局坐标。"""
+    """单层底图；纹理与积分图只计算一次，搜索结果加偏移返回全局坐标。
+
+    构造后只读，可以在多局之间共用；每局的定位状态放在 ``MultiMapLocator``。
+    """
 
     def __init__(
         self,

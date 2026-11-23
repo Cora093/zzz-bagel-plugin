@@ -34,7 +34,7 @@ from .clear_loadout import LOADOUT_CENTERS, BagelClearLoadout
 from .exit import BagelExit
 from .go_back import BagelReturn
 from .open_compendium import BagelOpenCompendium
-from .operation import BagelOperation
+from .operation import BagelOperation, execute_foreign_operation
 from .pick_keycard import BagelPickKeycard
 from .settle import BagelSettleWarehouse
 from .store_carried import read_carried_backpack
@@ -287,7 +287,7 @@ class BagelEnter(BagelOperation):
                 self.world_recovery_attempted = True
                 operation = BackToNormalWorld(self.ctx)
                 operation.timeout_seconds = min(30, max(0, self.timeout_seconds - self.operation_usage_time))
-                result = operation.execute()
+                result = execute_foreign_operation(operation)
                 if not result.success:
                     return self.round_by_op_result(result)
                 return self.round_wait('已返回大世界，重新检查贝果入场', wait=0.5)
@@ -302,7 +302,7 @@ class BagelEnter(BagelOperation):
         """传送到「录像店－房间」，下一节点再打开快捷手册。"""
         operation = Transport(self.ctx, '录像店', '房间')
         operation.timeout_seconds = min(120, max(0, self.timeout_seconds - self.operation_usage_time))
-        return self.round_by_op_result(operation.execute())
+        return self.round_by_op_result(execute_foreign_operation(operation))
 
     @node_from(from_name='传送录像店')
     @operation_node(name='从快捷手册进入贝果', screenshot_before_round=False)
