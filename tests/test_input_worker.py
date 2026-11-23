@@ -63,3 +63,148 @@ def test_hold_then_step_releases_and_rests(worker: tuple[BagelInputWorker, _Keys
     _wait(lambda: not w.forward_step_active())
     assert [e[0] for e in keys.events] == ['down', 'up', 'down', 'up']
     assert keys.rests()[0] >= STEP_REST_SECONDS
+
+
+def test_trusted_initial_ratio_lifts_warmup_cap_and_chunks_large_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无记忆首局受 45 度热身限幅；跨局可信起步值放开上限，<=120 度单段直发，>120 度拆两段连发。"""
+    monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.002)
+    monkeypatch.setattr(input_worker, 'TURN_CHUNK_INTERVAL', 0.0)
+    monkeypatch.setattr(input_worker, 'TURN_POST_TURN_QUIET', 10.0)
+
+    mem = input_worker.TurnRatioMemory()
+    assert not mem.trusted
+    mem.absorb(1.5, input_worker.TURN_HINT_MIN_SAMPLES, -19.0)
+    assert mem.trusted and mem.hint == 1.5
+
+    cold_sent: list[float] = []
+    cold = input_worker._TurnWorker(cold_sent.append, lambda: 0.0, initial_ratio=1.0, trust_initial_ratio=False)
+    try:
+        cold.submit(150.0)
+        _wait(lambda: len(cold_sent) >= 1)
+        assert cold_sent == [pytest.approx(45.0)]
+    finally:
+        cold.stop()
+
+    mid_sent: list[float] = []
+    mid = input_worker._TurnWorker(
+        mid_sent.append, lambda: 0.0, initial_ratio=mem.hint, trust_initial_ratio=mem.trusted,
+    )
+    try:
+        mid.submit(110.0)
+        _wait(lambda: len(mid_sent) >= 1)
+        assert mid_sent == [pytest.approx(110.0 / 1.5)]
+    finally:
+        mid.stop()
+
+    warm_sent: list[float] = []
+    warm = input_worker._TurnWorker(
+        warm_sent.append, lambda: 0.0, initial_ratio=mem.hint, trust_initial_ratio=mem.trusted,
+    )
+    try:
+        warm.submit(150.0)
+        _wait(lambda: len(warm_sent) >= 2)
+        assert len(warm_sent) == 2
+        assert sum(warm_sent) == pytest.approx(100.0)
+    finally:
+        warm.stop()
+
+
+def test_chunked_sample_isolated_and_prior_plus_outlier_guard_protect_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """拆段样本不写单段峰值箱；跨局先验权重防早局噪声劫持；偶发离群值忽略、连续 3 次放行。"""
+    monkeypatch.setattr(input_worker._TurnWorker, '_loop', lambda self: None)
+    tw = input_worker._TurnWorker(
+        lambda _: None, lambda: 0.0, initial_ratio=1.5, trust_initial_ratio=True,
+    )
+    try:
+        # 拆 2 段样本（倍率 1.7）：只消费放行，不污染单段比例，也不计入 turn_samples
+        tw._pending = 80.0
+        tw._pending_chunks = 2
+        tw._anchor = 0.0
+        assert tw._learn(0.0, 80.0, 136.0) is True
+        assert tw.turn_ratio == pytest.approx(1.5)
+        assert tw.turn_samples == 0
+
+        # 跨局先验权重 3 票：2 个略偏高样本（1.90，在 1.5*1.4=2.1 内）仍不撼动 1.5
+        for _ in range(2):
+            tw._pending = 40.0
+            tw._pending_chunks = 1
+            tw._anchor = 0.0
+            assert tw._learn(0.0, 40.0, 76.0) is True
+        assert tw.turn_ratio == pytest.approx(1.5)
+        assert tw.turn_samples == 2
+
+        # 偶发离群样本（3.0 > 1.5*1.4=2.1）连续 2 次均被忽略，正常样本到达后清零离群计数
+        for _ in range(2):
+            tw._pending = 20.0
+            tw._pending_chunks = 1
+            tw._anchor = 0.0
+            assert tw._learn(0.0, 20.0, 60.0) is True
+        assert tw.turn_samples == 2
+        tw._pending = 40.0
+        tw._pending_chunks = 1
+        tw._anchor = 0.0
+        assert tw._learn(0.0, 40.0, 60.0) is True
+        assert tw._outlier_streak == 0
+        assert tw.turn_samples == 3
+        assert tw._peak_count == input_worker.TURN_RATIO_PRIOR_WEIGHT + 1
+
+        # 真实灵敏度变化到 2.5：前 2 次带外样本拦截，第 3 次起连续放行，累计超过先验（4 票）后切到 2.5
+        for _ in range(6):
+            tw._pending = 20.0
+            tw._pending_chunks = 1
+            tw._anchor = 0.0
+            assert tw._learn(0.0, 20.0, 50.0) is True
+        assert tw.turn_ratio == pytest.approx(1.5)
+        tw._pending = 20.0
+        tw._pending_chunks = 1
+        tw._anchor = 0.0
+        assert tw._learn(0.0, 20.0, 50.0) is True
+        assert tw.turn_ratio == pytest.approx(2.5)
+    finally:
+        tw.stop()
+
+
+def test_small_turn_releases_without_still_timeout_and_big_target_preempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """<8 度微调需有 >=0.5 度变化或满 0.4 秒宽限才放行；>=8 度转向宽限后遇 >=45 度新目标抢先放行。"""
+    monkeypatch.setattr(input_worker._TurnWorker, '_loop', lambda self: None)
+    now = [100.0]
+    monkeypatch.setattr(input_worker.time, 'monotonic', lambda: now[0])
+    tw = input_worker._TurnWorker(lambda _: None, lambda: 0.0)
+    try:
+        # <8 度小微调：宽限内画面未动仍等待，避免转稳前提前补转；满 0.4 秒宽限或已有变化即放行
+        tw._pending = 3.0
+        tw._pending_at = 100.0
+        tw._anchor = 10.0
+        now[0] = 100.2
+        assert tw._learn(10.0, 3.0, 10.0) is False
+        assert tw._learn(10.0, 3.0, 11.0) is True
+        assert tw._pending is None
+
+        tw._pending = 3.0
+        tw._pending_at = 100.0
+        tw._anchor = 10.0
+        now[0] = 100.45
+        assert tw._learn(10.0, 3.0, 10.0) is True
+        assert tw._pending is None
+
+        # >=8 度转向：宽限内仍等待；宽限过后无大目标进静止计时，遇 >=45 度新目标立刻放行
+        tw._pending = 12.0
+        tw._pending_at = 100.0
+        tw._anchor = 10.0
+        tw._target = 15.0
+        now[0] = 100.2
+        assert tw._learn(10.0, 12.0, 10.0) is False
+        now[0] = 100.5
+        assert tw._learn(10.0, 12.0, 10.0) is False
+        assert tw._still_since == 100.5
+        tw._target = 100.0
+        assert tw._learn(10.0, 12.0, 10.0) is True
+        assert tw._pending is None
+    finally:
+        tw.stop()

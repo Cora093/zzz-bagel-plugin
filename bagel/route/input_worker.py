@@ -105,13 +105,31 @@ TURN_CAP_TRUST_SAMPLES: int = 3
 """攒够这么多个样本才放宽到 STOP_TURN_CAP。"""
 
 CRUISE_TURN_CAP: float = 15.0
-"""边走边转的单次上限（度）：只做小幅修正，剩下的下一轮再补。"""
+"""边走边转的单次上限（度）：覆盖滞回带内修正（16 度修 15 度即回 2 度死区），不放大近点抖动。"""
 
 TURN_CRUISE_LIMIT: float = 10.0
-"""偏差在它以内是边走边转，对应主线束角；超过它才停车转。"""
+"""未显式指定边走边转时，偏差在它以内按边走边转限幅；超过它按停车转。"""
+
+TURN_CHUNK_MAX_DESIRED: float = 120.0
+"""单次鼠标相对移动的期望转角上限（度）：单段在约 120 度处开始截断，91~120 度拆 2 段反而偏高过冲，超过 120 度才拆段连发。"""
+
+TURN_CHUNK_INTERVAL: float = 0.035
+"""大角度拆段连发时相邻两段的间隔（秒）：跨过 60fps 约 2 帧，避免被游戏合并截断。"""
+
+TURN_PREEMPT_ANGLE: float = 45.0
+"""新目标与当前稳定朝向差达到此值时，宽限过后不再等 1 秒静止超时，直接放行大转向。"""
 
 TURN_RATIO_PEAK_BIN_WIDTH: float = 0.05
 """实时校准分箱宽度：箱以 1.0 为中心（如 0.975~1.025），每样本只做一次槽计数加一与峰值比较。"""
+
+TURN_RATIO_PRIOR_WEIGHT: int = 3
+"""跨局可信起步值在峰值箱中的先验票数：防止开局首样本或 2 个受击噪声样本直接劫持本局比例。"""
+
+TURN_RATIO_OUTLIER_FACTOR: float = 1.4
+"""已有可信基准时，单次样本相对当前校准值的正常倍率带（[ratio/它, ratio*它]）；超出视为受击或背景干扰。"""
+
+TURN_RATIO_OUTLIER_ACCEPT_STREAK: int = 3
+"""连续这么多笔落在离群带外才放行入箱：拦住偶发干扰，同时允许局内真实灵敏度变化收敛。"""
 
 TURN_RATIO_CLAMP_WARN_STREAK: int = 5
 """校准值连续这么多个样本贴着可信区间的边界，就提示可能需要重做灵敏度检测。"""
@@ -123,8 +141,11 @@ TURN_SETTLE_GRACE: float = 0.4
 """下发转向后这么久内画面没变化不计数：实测转稳中位 0.24 秒、最大 0.31 秒。"""
 
 TURN_POST_TURN_QUIET: float = 0.3
-"""下发转向后这么久内不截图：宽限内的样本本来就直接丢掉，不采省截图开销。
+"""下发参与校准的转向后这么久内不截图：宽限内的样本本来就直接丢掉，不采省截图开销。
 转稳最大 0.31 秒，0.3 停采后补 3 帧判稳，首个样本约 0.39 秒落地，不丢精度。"""
+
+TURN_SMALL_POST_QUIET: float = 0.15
+"""不参与校准的小微调（下发角小于 8 度）后这么久内不截图：避开同帧叠发，又不等满 0.3 秒。"""
 
 TURN_STILL_TIMEOUT: float = 1.0
 """宽限过后，画面持续没变化超过这么久就放行下一笔，不重置校准。
@@ -258,6 +279,7 @@ class _TurnWorker:
         self, handler: Callable[[float], None],
         sampler: Callable[[], float | None],
         initial_ratio: float = 1.0,
+        trust_initial_ratio: bool = False,
     ) -> None:
         """
         Args:
@@ -265,9 +287,13 @@ class _TurnWorker:
             sampler: 采一帧当前镜头朝向；读不到返回 None。
             initial_ratio: 起步校准值，取上一局学到的比例；1.0 表示没有可用的起步值。
                 只决定第一个有效样本之前怎么换算，之后照常按本局样本学习。
+            trust_initial_ratio: 起步校准值是否来自上一局的有效记忆；为 True 时开局即放开
+                45 度热身上限，不必等本局攒满 3 个样本。
         """
         self._handler: Callable[[float], None] = handler
         self._sampler: Callable[[], float | None] = sampler
+        self._trust_initial_ratio: bool = trust_initial_ratio
+        """起步值是否来自跨局有效记忆。"""
         self._target: float | None = None
         """主线给的最新目标方向；None 表示暂停转向。"""
         self._target_at: float = 0.0
@@ -282,12 +308,14 @@ class _TurnWorker:
         """上次转向前的稳定朝向，用来和转稳后的朝向求实际转角。"""
         self._pending: float | None = None
         """上次真正下发的转角，等转稳后用来算校准样本。"""
+        self._pending_chunks: int = 1
+        """上次转向实际拆成的段数，用于校准日志区分单段与分段样本。"""
         self._pending_at: float = 0.0
         """上次下发的时刻；宽限内画面没变化不计数。"""
         self._still_since: float | None = None
         """宽限过后首次看到画面没动的时刻；超时只放行下一笔，不碰校准。"""
         self.turn_ratio: float = initial_ratio
-        """转向校准值：名义转角乘它就是实际转角。从起步值开始，第一个有效样本起按本局峰值箱更新，局内不重置。"""
+        """转向校准值：名义转角乘它就是实际转角。从起步值开始，按本局峰值箱更新，局内不重置。"""
         self.turn_samples: int = 0
         """已累积的校准样本数，用于日志观察。"""
         self._peak_bins: dict[int, int] = {}
@@ -296,6 +324,13 @@ class _TurnWorker:
         """当前最高的槽号；不如它就保持不变。"""
         self._peak_count: int = 0
         """最高槽的样本数。"""
+        if trust_initial_ratio and TURN_RATIO_MIN <= initial_ratio <= TURN_RATIO_MAX:
+            prior_key = math.floor((initial_ratio - 1.0) / TURN_RATIO_PEAK_BIN_WIDTH + 0.5 + 1e-9)
+            self._peak_bins[prior_key] = TURN_RATIO_PRIOR_WEIGHT
+            self._peak_key = prior_key
+            self._peak_count = TURN_RATIO_PRIOR_WEIGHT
+        self._outlier_streak: int = 0
+        """连续落出当前可信校准值倍率带的样本计数。"""
         self._clamp_streak: int = 0
         """校准值连续几次贴到夹取边界的计数，用于提示重做灵敏度检测。"""
         self._lock: threading.Lock = threading.Lock()
@@ -335,6 +370,7 @@ class _TurnWorker:
         with self._lock:
             self._stopping = True
             self._pending = None
+            self._pending_chunks = 1
             self._anchor = None
             self._history.clear()
             self._target = None
@@ -342,6 +378,7 @@ class _TurnWorker:
             self._peak_bins.clear()
             self._peak_key = None
             self._peak_count = 0
+            self._outlier_streak = 0
             self._clamp_streak = 0
         self._wake.set()
         self._thread.join(timeout=1.0)
@@ -365,9 +402,14 @@ class _TurnWorker:
             with self._lock:
                 if self._stopping:
                     return
+                quiet = (
+                    TURN_SMALL_POST_QUIET
+                    if self._pending is not None and abs(self._pending) < TURN_SCALE_SAMPLE_MIN_COMMAND
+                    else TURN_POST_TURN_QUIET
+                )
                 in_quiet = (
                     self._pending is not None
-                    and time.monotonic() - self._pending_at < TURN_POST_TURN_QUIET
+                    and time.monotonic() - self._pending_at < quiet
                 )
             if in_quiet:
                 # 下发后静默期内不截图：这段的样本本来就丢掉，采了也是浪费。
@@ -429,7 +471,7 @@ class _TurnWorker:
                 magnitude = abs(deviation)
                 if cruise_only or magnitude <= TURN_CRUISE_LIMIT:
                     cap = CRUISE_TURN_CAP
-                elif self.turn_samples >= TURN_CAP_TRUST_SAMPLES:
+                elif self._trust_initial_ratio or self.turn_samples >= TURN_CAP_TRUST_SAMPLES:
                     cap = STOP_TURN_CAP
                 else:
                     cap = STOP_TURN_CAP_WARMUP
@@ -439,14 +481,46 @@ class _TurnWorker:
                 actual = signed / ratio if ratio else signed
                 # 上限按真正拖拽的角度算：比例小于 1 时下发角会被放大，只夹名义角等于没夹。
                 actual = max(-cap, min(actual, cap))
+                chunks = max(1, math.ceil(abs(signed) / TURN_CHUNK_MAX_DESIRED))
                 self._pending = actual
+                self._pending_chunks = chunks
                 self._pending_at = time.monotonic()
                 self._anchor = stable_angle
                 self._history.clear()
+            self._dispatch_turn(actual, chunks)
+
+    def _dispatch_turn(self, actual: float, chunks: int) -> None:
+        """执行单笔转向；大角度按 ``chunks`` 均分连发，避开推断的单次鼠标移动约 120 度截断。
+
+        段间检查停止与目标取消，末段发完后刷新 ``_pending_at``，保证静默期从最后一段算起。
+
+        Args:
+            actual: 换算后的总下发角（度）。
+            chunks: 分段数，大于 1 时每段间隔 ``TURN_CHUNK_INTERVAL`` 秒。
+        """
+        part = actual / chunks
+        sent = 0.0
+        sent_chunks = 0
+        for idx in range(chunks):
+            if idx > 0:
+                time.sleep(TURN_CHUNK_INTERVAL)
+                with self._lock:
+                    if self._stopping or self._target is None:
+                        self._pending = sent if sent else None
+                        self._pending_chunks = sent_chunks if sent else 1
+                        self._pending_at = time.monotonic()
+                        return
             try:
-                self._handler(actual)
+                self._handler(part)
+                sent += part
+                sent_chunks += 1
             except Exception:
                 log.error('贝果转向执行失败', exc_info=True)
+                break
+        with self._lock:
+            self._pending = sent if sent else None
+            self._pending_chunks = sent_chunks if sent else 1
+            self._pending_at = time.monotonic()
 
     def _learn(self, anchor: float, pending: float, stable: float) -> bool:
         """用转稳后的角度反推上一笔的真实比例；画面还没跟上时返回 False 等下一轮。
@@ -460,12 +534,37 @@ class _TurnWorker:
             样本已消费（不管有效无效）时返回 True，还要继续等时返回 False。
         """
         delta = cal_utils.angle_delta(anchor, stable)
+        if abs(pending) < TURN_SCALE_SAMPLE_MIN_COMMAND:
+            # 小幅度微调不参与校准：画面已有变化（>=0.5 度）或已满 0.4 秒宽限才放行，
+            # 既避免在转稳前提前补转，也不再进入 1.4 秒静止等待。
+            if (
+                abs(delta) < TURN_RATIO_MIN_DELTA
+                and time.monotonic() - self._pending_at < TURN_SETTLE_GRACE
+            ):
+                return False
+            with self._lock:
+                self._pending = None
+                self._pending_chunks = 1
+                self._anchor = None
+                self._still_since = None
+            return True
         if abs(delta) < TURN_RATIO_MIN_DELTA:
             now = time.monotonic()
             if now - self._pending_at < TURN_SETTLE_GRACE:
                 # 画面还在路上，等，不计时。
                 return False
             with self._lock:
+                big_new_target = (
+                    self._target is not None
+                    and abs(cal_utils.angle_delta(stable, self._target)) >= TURN_PREEMPT_ANGLE
+                )
+                if big_new_target:
+                    # 宽限已过且换点了大角度新目标，不再白等 1 秒静止超时。
+                    self._pending = None
+                    self._pending_chunks = 1
+                    self._anchor = None
+                    self._still_since = None
+                    return True
                 if self._still_since is None:
                     # 宽限过后第一次看到没动，开始计时。
                     self._still_since = now
@@ -474,6 +573,7 @@ class _TurnWorker:
                     return False
                 # 超时只放行下一笔，不碰校准值：任何时候都不重置。
                 self._pending = None
+                self._pending_chunks = 1
                 self._anchor = None
                 self._still_since = None
             log.info(
@@ -482,7 +582,9 @@ class _TurnWorker:
             )
             return True
         with self._lock:
+            chunks = self._pending_chunks
             self._pending = None
+            self._pending_chunks = 1
             self._anchor = None
             self._still_since = None
         if abs(delta) < TURN_RATIO_MIN_ANGLE:
@@ -490,10 +592,14 @@ class _TurnWorker:
             return True
         if delta * pending <= 0:
             return True
-        if abs(pending) < TURN_SCALE_SAMPLE_MIN_COMMAND:
-            # 小幅度微调不参与校准：余摆与量化误差会把倍数抬到 2~15 倍。
-            return True
         sample = abs(delta) / abs(pending)
+        if chunks > 1:
+            # 拆段连发的等效倍率高于单段，不写入单段峰值箱，避免把单段校准值拉高导致中等角度欠转。
+            log.info(
+                '贝果转向校准分段样本，不更新比例：%.2f（名义 %.1f 实际 %.1f，分 %s 段，当前校准 %.3f）',
+                sample, pending, delta, chunks, self.turn_ratio,
+            )
+            return True
         with self._lock:
             if not (TURN_RATIO_MIN <= sample <= TURN_RATIO_MAX):
                 log.info(
@@ -501,6 +607,20 @@ class _TurnWorker:
                     sample, pending, delta,
                 )
                 return True
+            trusted_ref = self._trust_initial_ratio or self.turn_samples >= TURN_CAP_TRUST_SAMPLES
+            ref = self.turn_ratio
+            if trusted_ref and ref > 0 and not (
+                ref / TURN_RATIO_OUTLIER_FACTOR <= sample <= ref * TURN_RATIO_OUTLIER_FACTOR
+            ):
+                self._outlier_streak += 1
+                if self._outlier_streak < TURN_RATIO_OUTLIER_ACCEPT_STREAK:
+                    log.info(
+                        '贝果转向校准离群样本，忽略：%.2f（当前 %.3f，名义 %.1f 实际 %.1f，连续 %s 次）',
+                        sample, ref, pending, delta, self._outlier_streak,
+                    )
+                    return True
+            else:
+                self._outlier_streak = 0
             key = math.floor((sample - 1.0) / TURN_RATIO_PEAK_BIN_WIDTH + 0.5 + 1e-9)
             slot_count = self._peak_bins.get(key, 0) + 1
             self._peak_bins[key] = slot_count
@@ -540,6 +660,8 @@ class TurnRatioMemory:
     def __init__(self) -> None:
         self.hint: float = 1.0
         """下一局的起步校准值；1.0 表示还没有可用的值。"""
+        self.trusted: bool = False
+        """是否已吸收过有效局；为 True 时下一局开局即放开 45 度热身上限。"""
         self._off_rounds: int = 0
         """连续明显偏离 1.0 的局数。"""
 
@@ -554,6 +676,7 @@ class TurnRatioMemory:
         if samples < TURN_HINT_MIN_SAMPLES or ratio <= 0:
             return
         self.hint = ratio
+        self.trusted = True
         if 1.0 / TURN_DX_WARN_RATIO <= ratio <= TURN_DX_WARN_RATIO:
             self._off_rounds = 0
             return
@@ -569,11 +692,15 @@ class TurnRatioMemory:
 class BagelInputWorker:
     """路线执行的全部按键都经由这里下发，主线只投递不等待。"""
 
-    def __init__(self, ctx: ZContext, initial_turn_ratio: float = 1.0) -> None:
+    def __init__(
+        self, ctx: ZContext, initial_turn_ratio: float = 1.0,
+        trust_initial_ratio: bool = False,
+    ) -> None:
         """
         Args:
             ctx: 运行上下文，提供控制器。
             initial_turn_ratio: 转向线程的起步校准值，取上一局学到的比例。
+            trust_initial_ratio: 起步校准值是否来自跨局有效记忆；为 True 时开局放开 45 度限幅。
         """
         self.ctx: ZContext = ctx
         self._forward_want: bool = False
@@ -602,7 +729,9 @@ class BagelInputWorker:
         self._turn_enabled: bool = False
 
         self._turn_worker: _TurnWorker = _TurnWorker(
-            self._run_turn, self._sample_angle, initial_ratio=initial_turn_ratio,
+            self._run_turn, self._sample_angle,
+            initial_ratio=initial_turn_ratio,
+            trust_initial_ratio=trust_initial_ratio,
         )
         self._instant_channel: _InstantChannel = _InstantChannel(
             'bagel-instant', self._run_instant,
