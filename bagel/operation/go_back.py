@@ -6,7 +6,7 @@ from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
 from zzz_od.operation.back_to_normal_world import BackToNormalWorld
 
-from .operation import BagelOperation
+from .operation import BagelOperation, execute_foreign_operation
 
 if TYPE_CHECKING:
     from one_dragon.base.operation.operation_round_result import OperationRoundResult
@@ -37,7 +37,7 @@ class BagelReturn(BagelOperation):
         self.world_recovery_attempted = True
         operation = BackToNormalWorld(self.ctx, ensure_normal_world=True)
         operation.timeout_seconds = min(20, max(0, self.timeout_seconds - self.operation_usage_time))
-        result = operation.execute()
+        result = execute_foreign_operation(operation)
         if not result.success:
             return self.round_by_op_result(result)
         return self.round_success('已返回大世界')

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import time
 from typing import TYPE_CHECKING
 
 from one_dragon.base.config.notify_config import NotifyDetailMode
@@ -42,6 +44,7 @@ from .route.route_walker import BagelRouteWalker
 from .screens import ensure_screens
 from .stats import BagelRunStats, BagelSafeLedger
 from .vision import screen
+from .vision.map_locator import MapLocator, load_map_locators
 from .vision.slots import safe_occupied_indices
 from .vision.template import template_exists
 
@@ -54,6 +57,18 @@ if TYPE_CHECKING:
     from .route.route_model import BagelRoute, BagelSpawnPoint
     from .run_record import BagelRunRecord
     from .stats import BagelRound
+
+
+def collect_round_garbage() -> None:
+    """局间做一次完整垃圾回收，释放上一局留在循环引用里的截图和操作。
+
+    框架的操作对象普遍自引用（如「检测游戏窗口」节点的闭包），引用计数归不了零，
+    只能等完整垃圾回收。完整回收按对象数量触发，不看内存，长时间运行时
+    每个操作留下的 1080p 截图会持续累积。这里放在局与局之间，不在路线执行循环内。
+    """
+    started = time.perf_counter()
+    collected = gc.collect()
+    log.info('贝果局间垃圾回收：回收 %s 个对象，用时 %.0f ms', collected, (time.perf_counter() - started) * 1000)
 
 
 class BagelApp(ZApplication):
@@ -101,6 +116,8 @@ class BagelApp(ZApplication):
         """跨局转向校准记忆：上一局学到的校准值作下一局起步值，只放内存，不写 turn_dx。"""
         self._round_survey: int = 0
         """本局调查收益的最后一次读数；零携带入场后为 0，路线执行器读到后更新。"""
+        self._map_layers: list[MapLocator] | None = None
+        """本次运行共用的只读地图层；首次执行路线时加载，运行结束时释放。"""
         self._route_recorder: BagelRouteRecorder = BagelRouteRecorder(self.ctx)
         """路线数据记录：每局写一行，任务结束输出按出生点的汇总表。"""
         self._round_map_id: str | None = None
@@ -176,6 +193,7 @@ class BagelApp(ZApplication):
                 log.info(usage.stop_guidance(result.status))
                 usage.log_feedback()
             self._finish_stats(result)
+            self._map_layers = None
             super().after_operation_done(result)
 
     def _finish_stats(self, result: OperationResult) -> None:
@@ -598,12 +616,16 @@ class BagelApp(ZApplication):
     @operation_node(name='执行局内流程', screenshot_before_round=False)
     def run_flow(self) -> OperationRoundResult:
         """按出生点开启的路线执行；出生点识别与推进由路线执行器负责。"""
+        collect_round_garbage()
         try:
+            if self._map_layers is None:
+                self._map_layers = load_map_locators()
             walker = BagelRouteWalker(
                 self.ctx, blueprint_priority=self.config.blueprint_priority,
                 keycard_room=self.config.keycard_room if self.config.is_keycard else None,
                 turn_memory=self._turn_memory,
                 organize_backpack=True,
+                map_layers=self._map_layers,
             )
         except ValueError as error:
             return self.round_fail(f'路线执行器初始化失败：{error}')

@@ -926,7 +926,9 @@ class BagelInputWorker:
         return not self._stopping and epoch == self._action_epoch
 
     def shutdown(self) -> None:
-        """停止全部通道并松开全部按键；退出路径必须调用。"""
+        """停止全部通道并松开全部按键；退出路径必须调用，重复调用时直接返回。"""
+        if self._stopping:
+            return
         self._stopping = True
         self.stop_forward()
         self._forward_thread.join(timeout=1.0)
