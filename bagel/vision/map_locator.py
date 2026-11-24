@@ -22,6 +22,9 @@ from ..defs import PLUGIN_DIR
 MINIMAP_INNER_RADIUS = 88
 """小地图圆形有效区半径。圆外只可能是 UI 装饰，不参与匹配。"""
 
+MINIMAP_SIZE = 201
+"""局内定位小地图裁图的边长。"""
+
 TEXTURE_PAD = 110
 """底图四周补齐量。贴边位置也要能容纳完整的 200×200 搜索窗口。"""
 
@@ -94,8 +97,25 @@ def base_texture(rgba: MatLike) -> MatLike:
     return high_pass(gray)
 
 
+def _valid_windows(texture: MatLike, height: int, width: int) -> MatLike:
+    """通过积分图计算各窗口的纹理能量，按窗口左上角保存有效性。"""
+    sums, squares = cv2.integral2(texture, sdepth=cv2.CV_64F, sqdepth=cv2.CV_64F)
+    rows, cols = texture.shape
+    valid = np.empty((rows - height + 1, cols - width + 1), dtype=bool)
+    # 分批计算，避免临时浮点数组占满整层底图。
+    batch_rows = 64
+    for start in range(0, valid.shape[0], batch_rows):
+        stop = min(start + batch_rows, valid.shape[0])
+        top, bottom = slice(start, stop), slice(start + height, stop + height)
+        window_sum = sums[bottom, width:] - sums[top, width:] - sums[bottom, :-width] + sums[top, :-width]
+        energy = squares[bottom, width:] - squares[top, width:] - squares[bottom, :-width] + squares[top, :-width]
+        energy -= window_sum * window_sum / (height * width)
+        valid[top] = energy > MIN_WINDOW_ENERGY
+    return valid
+
+
 class MapLocator:
-    """单层底图；纹理与积分图只计算一次，搜索结果加偏移返回全局坐标。
+    """单层底图。常驻纹理和标准尺寸窗口的有效性表，搜索结果加偏移返回全局坐标。
 
     构造后只读，可以在多局之间共用；每局的定位状态放在 ``MultiMapLocator``。
     """
@@ -125,11 +145,8 @@ class MapLocator:
         self._texture: MatLike = np.pad(
             base_texture(rgba), ((self._pad, self._pad), (self._pad, self._pad)),
         )
-        self._sum: MatLike
-        self._squared_sum: MatLike
-        self._sum, self._squared_sum = cv2.integral2(
-            self._texture, sdepth=cv2.CV_64F, sqdepth=cv2.CV_64F,
-        )
+        del rgba
+        self._valid: MatLike = _valid_windows(self._texture, MINIMAP_SIZE, MINIMAP_SIZE)
 
     def intersects(self, center: tuple[int, int], radius: int) -> bool:
         """判断圆形视窗是否与本层画布相交，坐标均为地图全局坐标。
@@ -196,23 +213,14 @@ class MapLocator:
         if x2 - x1 < width or y2 - y1 < height:
             return None
 
-        sums = self._sum[y1:y2 + 1, x1:x2 + 1]
-        squares = self._squared_sum[y1:y2 + 1, x1:x2 + 1]
-        window_sum = (
-            sums[height:, width:] - sums[:-height, width:]
-            - sums[height:, :-width] + sums[:-height, :-width]
-        )
-        energy = (
-            squares[height:, width:] - squares[:-height, width:]
-            - squares[height:, :-width] + squares[:-height, :-width]
-            - window_sum * window_sum / (height * width)
-        )
-        valid = energy > MIN_WINDOW_ENERGY
+        region = self._texture[y1:y2, x1:x2]
+        if (height, width) == (MINIMAP_SIZE, MINIMAP_SIZE):
+            valid = self._valid[y1:y2 - height + 1, x1:x2 - width + 1]
+        else:
+            valid = _valid_windows(region, height, width)
         if not valid.any():
             return None
-        response = cv2.matchTemplate(
-            self._texture[y1:y2, x1:x2], texture, cv2.TM_CCOEFF_NORMED,
-        )
+        response = cv2.matchTemplate(region, texture, cv2.TM_CCOEFF_NORMED)
         response[~valid | ~np.isfinite(response)] = -np.inf
         _, score, _, point = cv2.minMaxLoc(response)
         if not np.isfinite(score):
