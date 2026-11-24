@@ -404,9 +404,17 @@ class _TurnWorker:
             with self._lock:
                 if self._stopping:
                     return
-                if self._target is not None and time.monotonic() - self._target_at > TURN_TARGET_FRESH_SECONDS:
+                now = time.monotonic()
+                if self._target is not None and now - self._target_at > TURN_TARGET_FRESH_SECONDS:
                     self._target = None
-                if self._target is None and self._pending is None:
+                if self._target is None and (
+                    self._pending is None or now - self._pending_at >= TURN_SETTLE_GRACE + TURN_STILL_TIMEOUT
+                ):
+                    # 面板可能一直挡住小地图。到期丢弃这笔校准，保留已学到的比例。
+                    self._pending = None
+                    self._pending_chunks = 1
+                    self._anchor = None
+                    self._still_since = None
                     self._history.clear()
                     timeout = None
                     continue
@@ -418,7 +426,7 @@ class _TurnWorker:
                 )
                 in_quiet = (
                     self._pending is not None
-                    and time.monotonic() - self._pending_at < quiet
+                    and now - self._pending_at < quiet
                 )
             if in_quiet:
                 # 下发后静默期内不截图：这段的样本本来就丢掉，采了也是浪费。

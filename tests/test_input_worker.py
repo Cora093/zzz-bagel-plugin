@@ -142,6 +142,31 @@ def test_idle_turn_worker_finishes_calibration_and_wakes_with_fresh_frames(
     assert not worker._thread.is_alive()
 
 
+def test_cancelled_turn_stops_sampling_when_minimap_is_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """下发后面板挡住小地图，撤销目标后只等到校准期限。"""
+    monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.004)
+    monkeypatch.setattr(input_worker, 'TURN_POST_TURN_QUIET', 0.0)
+    monkeypatch.setattr(input_worker, 'TURN_SETTLE_GRACE', 0.04)
+    monkeypatch.setattr(input_worker, 'TURN_STILL_TIMEOUT', 0.06)
+    sampler = Mock(return_value=0.0)
+
+    def open_panel(_: float) -> None:
+        sampler.return_value = None
+        worker.submit(None)
+
+    worker = input_worker._TurnWorker(open_panel, sampler)
+    try:
+        worker.submit(30.0)
+        _wait(lambda: sampler.return_value is None)
+        time.sleep(0.15)
+        count = sampler.call_count
+        time.sleep(0.06)
+        assert sampler.call_count == count
+        assert worker._pending is None and worker.turn_samples == 0
+    finally:
+        worker.stop()
+
+
 def test_expired_turn_target_sleeps_even_without_heading(monkeypatch: pytest.MonkeyPatch) -> None:
     """朝向一直读不到时也应回收过期目标，并可从休眠直接停止。"""
     monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.004)
