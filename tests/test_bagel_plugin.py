@@ -25,6 +25,7 @@ from one_dragon.base.operation.application.plugin_import_service import (
 )
 from one_dragon.base.operation.application.plugin_info import PluginSource
 from one_dragon.utils import os_utils
+from PIL import Image
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 """插件仓库根，也是导入根：放进 sys.path 后，插件目录以 ``bagel`` 这个包名被加载。"""
@@ -150,20 +151,16 @@ def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
 
 def test_load_only_requested_map(tmp_path: Path) -> None:
     """未选地图的图片即使不存在，也不应尝试解码。"""
-    from bagel.vision.map_locator import default_layer_dir, load_map_locators
+    from bagel.vision.map_locator import load_map_locators
 
-    directory = default_layer_dir()
-    manifest = json.loads((directory / 'layers.json').read_text(encoding='utf-8'))
-    expected = []
-    for layer in manifest['layers']:
-        if layer['map_id'] == '城郊幻境':
-            expected.append(f"城郊幻境/{layer['name']}")
-            layer['image'] = str(directory / layer['image'])
-        else:
-            layer['image'] = '缺失.png'
-    (tmp_path / 'layers.json').write_text(json.dumps(manifest), encoding='utf-8')
-    assert expected
-    assert [layer.name for layer in load_map_locators(tmp_path, map_id='城郊幻境')] == expected
+    Image.new('RGBA', (16, 16)).save(tmp_path / 'layer.png')
+    layers = [
+        {'map_id': '雅努斯幻境', 'name': 'A', 'image': '缺失.png', 'origin': [0, 0]},
+        {'map_id': '城郊幻境', 'name': 'B', 'image': 'layer.png', 'origin': [3, 7]},
+    ]
+    (tmp_path / 'layers.json').write_text(json.dumps({'layers': layers}), encoding='utf-8')
+    layer, = load_map_locators(tmp_path, map_id='城郊幻境')
+    assert (layer.name, layer.origin) == ('城郊幻境/B', (3, 7))
     with pytest.raises(ValueError, match='未知地图'):
         load_map_locators(tmp_path, map_id='未知地图')
 
