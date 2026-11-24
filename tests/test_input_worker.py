@@ -111,6 +111,54 @@ def test_trusted_initial_ratio_lifts_warmup_cap_and_chunks_large_turn(
         warm.stop()
 
 
+def test_idle_turn_worker_finishes_calibration_and_wakes_with_fresh_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """取消目标后采完上一笔，空闲时停采，新目标重新取三帧。"""
+    monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.004)
+    monkeypatch.setattr(input_worker, 'TURN_POST_TURN_QUIET', 0.02)
+    sampler = Mock(return_value=0.0)
+    sent = Mock()
+    worker = input_worker._TurnWorker(sent, sampler)
+    try:
+        time.sleep(0.04)
+        sampler.assert_not_called()
+        worker.submit(30.0)
+        _wait(lambda: sent.called)
+        worker.submit(None)
+        sampler.return_value = 30.0
+        _wait(lambda: worker.turn_samples == 1 and not worker._history)
+        before = sampler.call_count
+        for _ in range(4):
+            worker.submit(None)
+            time.sleep(0.01)
+        assert sampler.call_count == before
+        sent.side_effect = lambda _: worker.submit(None)
+        worker.submit(60.0)
+        _wait(lambda: sent.call_count == 2)
+        assert sampler.call_count - before >= input_worker.TURN_STABLE_FRAMES
+    finally:
+        worker.stop()
+    assert not worker._thread.is_alive()
+
+
+def test_expired_turn_target_sleeps_even_without_heading(monkeypatch: pytest.MonkeyPatch) -> None:
+    """朝向一直读不到时也应回收过期目标，并可从休眠直接停止。"""
+    monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.004)
+    monkeypatch.setattr(input_worker, 'TURN_TARGET_FRESH_SECONDS', 0.04)
+    sampler = Mock(return_value=None)
+    worker = input_worker._TurnWorker(Mock(), sampler)
+    try:
+        worker.submit(45.0)
+        _wait(lambda: worker._target is None)
+        count = sampler.call_count
+        time.sleep(0.04)
+        assert count > 0 and sampler.call_count == count
+    finally:
+        worker.stop()
+    assert not worker._thread.is_alive()
+
+
 def test_chunked_sample_isolated_and_prior_plus_outlier_guard_protect_ratio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -345,8 +345,7 @@ class _TurnWorker:
         """提交最新目标方向；只存不定夺，转不转由线程自己采样再看。
 
         只写内存，不记输入、不碰截图，调完立刻返回，不会限速主循环。
-        朝向由线程自己按固定间隔采样，暂停时目标置空，历史不清，
-        恢复提交后不用重数 3 帧。
+        没有目标时只采完待校准的转向。线程空闲后再次收到目标时重新判稳。
 
         Args:
             target: 目标方向（度），None 表示暂停转向。
@@ -357,6 +356,8 @@ class _TurnWorker:
             if self._stopping:
                 return
             if target is None:
+                if self._target is None:
+                    return
                 self._target = None
             else:
                 self._target = target % 360
@@ -395,13 +396,21 @@ class _TurnWorker:
         )
 
     def _loop(self) -> None:
-        """按固定间隔自己采样：稳了、有偏差、上一笔已校准，才转。"""
+        """空闲时等目标，有目标或上一笔待校准时才采样。"""
+        timeout: float | None = None
         while True:
-            self._wake.wait(TURN_SAMPLE_INTERVAL)
+            self._wake.wait(timeout)
             self._wake.clear()
             with self._lock:
                 if self._stopping:
                     return
+                if self._target is not None and time.monotonic() - self._target_at > TURN_TARGET_FRESH_SECONDS:
+                    self._target = None
+                if self._target is None and self._pending is None:
+                    self._history.clear()
+                    timeout = None
+                    continue
+                timeout = TURN_SAMPLE_INTERVAL
                 quiet = (
                     TURN_SMALL_POST_QUIET
                     if self._pending is not None and abs(self._pending) < TURN_SCALE_SAMPLE_MIN_COMMAND
@@ -433,14 +442,6 @@ class _TurnWorker:
                 anchor = self._anchor
             if not history:
                 continue
-            # 目标过期先处理：即使上一笔卡住没学完，暂停/开箱后也不留旧目标。
-            # 否则学样本返回等待会跳过后边的过期分支，旧目标一直留着。
-            with self._lock:
-                if (
-                    self._target is not None
-                    and time.monotonic() - self._target_at > TURN_TARGET_FRESH_SECONDS
-                ):
-                    self._target = None
             if not self._stable(history):
                 # 画面在动：不是静止，计时清掉重来。
                 with self._lock:
@@ -459,8 +460,7 @@ class _TurnWorker:
                 if self._target is None:
                     continue
                 if time.monotonic() - self._target_at > TURN_TARGET_FRESH_SECONDS:
-                    # 主线超过 1 秒没提交（开箱、等提示、暂停），目标过期不清历史：
-                    # 画面朝向帧还接着用，恢复提交后不用重数 3 帧。
+                    # 截图和判稳期间目标也可能过期，下发前再核对。
                     self._target = None
                     continue
                 deviation = cal_utils.angle_delta(stable_angle, self._target)
