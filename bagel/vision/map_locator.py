@@ -352,18 +352,19 @@ def default_layer_dir() -> Path:
     return PLUGIN_DIR / 'assets' / 'game_data' / 'map_locator'
 
 
-def load_map_locators(map_dir: Path | None = None) -> list[MapLocator]:
+def load_map_locators(map_dir: Path | None = None, *, map_id: str | None = None) -> list[MapLocator]:
     """按独立层清单加载图像及其在所属地图上的偏移。
 
     Args:
-        map_dir: 分层底图目录，缺省用主仓资源目录。
+        map_dir: 分层底图目录，缺省用插件自带的资源目录。
+        map_id: 只加载该地图的分层，缺省时加载全部。
 
     Returns:
         按清单顺序排列的层列表。
     """
     directory = default_layer_dir() if map_dir is None else map_dir
     data = json.loads((directory / 'layers.json').read_text(encoding='utf-8'))
-    return [
+    locators = [
         MapLocator(
             name=f"{layer['map_id']}/{layer['name']}",
             image_path=directory / layer['image'],
@@ -371,4 +372,8 @@ def load_map_locators(map_dir: Path | None = None) -> list[MapLocator]:
             map_id=layer['map_id'],
         )
         for layer in data['layers']
+        if map_id is None or layer['map_id'] == map_id
     ]
+    if map_id is not None and not locators:
+        raise ValueError(f'没有属于地图 {map_id} 的分层')
+    return locators

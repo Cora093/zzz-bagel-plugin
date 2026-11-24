@@ -148,6 +148,26 @@ def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
     assert slots._safe_lock_template() is not None
 
 
+def test_load_only_requested_map(tmp_path: Path) -> None:
+    """未选地图的图片即使不存在，也不应尝试解码。"""
+    from bagel.vision.map_locator import default_layer_dir, load_map_locators
+
+    directory = default_layer_dir()
+    manifest = json.loads((directory / 'layers.json').read_text(encoding='utf-8'))
+    expected = []
+    for layer in manifest['layers']:
+        if layer['map_id'] == '城郊幻境':
+            expected.append(f"城郊幻境/{layer['name']}")
+            layer['image'] = str(directory / layer['image'])
+        else:
+            layer['image'] = '缺失.png'
+    (tmp_path / 'layers.json').write_text(json.dumps(manifest), encoding='utf-8')
+    assert expected
+    assert [layer.name for layer in load_map_locators(tmp_path, map_id='城郊幻境')] == expected
+    with pytest.raises(ValueError, match='未知地图'):
+        load_map_locators(tmp_path, map_id='未知地图')
+
+
 def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:
     """默认路线随插件分发：空工作目录下也能按出生点清单初始化出开启选择。
 
