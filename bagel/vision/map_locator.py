@@ -213,15 +213,14 @@ class MapLocator:
         if x2 - x1 < width or y2 - y1 < height:
             return None
 
-        windows = self._valid
-        if (height, width) != (MINIMAP_SIZE, MINIMAP_SIZE):
-            windows = _valid_windows(self._texture, height, width)
-        valid = windows[y1:y2 - height + 1, x1:x2 - width + 1]
+        region = self._texture[y1:y2, x1:x2]
+        if (height, width) == (MINIMAP_SIZE, MINIMAP_SIZE):
+            valid = self._valid[y1:y2 - height + 1, x1:x2 - width + 1]
+        else:
+            valid = _valid_windows(region, height, width)
         if not valid.any():
             return None
-        response = cv2.matchTemplate(
-            self._texture[y1:y2, x1:x2], texture, cv2.TM_CCOEFF_NORMED,
-        )
+        response = cv2.matchTemplate(region, texture, cv2.TM_CCOEFF_NORMED)
         response[~valid | ~np.isfinite(response)] = -np.inf
         _, score, _, point = cv2.minMaxLoc(response)
         if not np.isfinite(score):
