@@ -1,7 +1,8 @@
 """前进线程的短按节拍：用真实线程和记录按键时刻的假控制器检查停顿下限。"""
 
 import time
-from unittest.mock import Mock
+from collections.abc import Iterator
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -167,7 +168,8 @@ def test_cancelled_turn_stops_sampling_when_minimap_is_hidden(monkeypatch: pytes
 def test_expired_turn_target_sleeps_even_without_heading(monkeypatch: pytest.MonkeyPatch) -> None:
     """朝向一直读不到时也应回收过期目标，并可从休眠直接停止。"""
     monkeypatch.setattr(input_worker, 'TURN_SAMPLE_INTERVAL', 0.004)
-    monkeypatch.setattr(input_worker, 'TURN_TARGET_FRESH_SECONDS', 0.04)
+    # 留出首次等待主线样本的 50 毫秒，让此用例仍能覆盖补采失败后回收目标。
+    monkeypatch.setattr(input_worker, 'TURN_TARGET_FRESH_SECONDS', 0.15)
     sampler = Mock(return_value=None)
     worker = input_worker._TurnWorker(Mock(), sampler)
     try:
@@ -278,3 +280,161 @@ def test_small_turn_releases_without_still_timeout_and_big_target_preempts(
         assert tw._pending is None
     finally:
         tw.stop()
+
+
+def test_heading_feed_packet_order_and_threshold() -> None:
+    feed = input_worker._HeadingFeed()
+    sample = input_worker.HeadingSample
+    assert feed.remaining(1.01, 1.0) == pytest.approx(0.04)
+    feed.publish(sample(2.0, 7))
+    assert feed.take(2.001) == (None, '拒收静默期')
+    feed.publish(sample(2.04, 8))
+    assert feed.take(2.04) == (sample(2.04, 8), None)
+    feed.publish(sample(2.04, 8))
+    assert feed.take(0) == (None, '拒收重复')
+    assert feed.threshold == pytest.approx(0.08)
+    for index in range(21):
+        feed.publish(sample(3 + index * 0.2, 0))
+    assert feed.threshold == 0.15
+    for index in range(21):
+        feed.publish(sample(8 + index * 0.01, 0))
+    assert feed.threshold == 0.05
+
+
+def test_idle_preserves_slow_main_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """70 毫秒节拍在空闲后仍等 140 毫秒。旧图和空闲时长均不参与新一段判稳或测速。"""
+    monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
+    now = [100.0]
+    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    draw = Mock(return_value=0.0)
+    worker = input_worker._TurnWorker(Mock(), draw)
+    worker._wake = Mock()
+
+    def steps() -> Iterator[None]:
+        for stamp in (100.0, 100.07, 100.14):
+            now[0] = stamp
+            worker.submit(0.0, sample=input_worker.HeadingSample(stamp, 0.0))
+            yield
+        now[0] = 100.15
+        worker.submit(None)
+        yield
+        assert not worker._history
+        now[0] = 105.0
+        worker.submit(0.0, sample=input_worker.HeadingSample(100.14, 90.0))
+        yield
+        assert not worker._history
+        now[0] = 105.055
+        worker.submit(0.0)
+        yield
+        now[0] = 105.07
+        worker.submit(0.0, sample=input_worker.HeadingSample(now[0], 0.0))
+        yield
+        assert list(worker._history) == [0.0]
+        assert list(worker._feed.intervals) == pytest.approx([0.07, 0.07])
+        now[0] = 105.209
+        yield
+        draw.assert_not_called()
+        now[0] = 105.211
+        yield
+        draw.assert_called_once()
+        worker._stopping = True
+        yield
+
+    schedule = steps()
+    worker._wake.wait.side_effect = lambda _: next(schedule)
+    worker._loop()
+
+
+def test_worker_uses_shared_samples_then_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模拟事件唤醒。补采期间送到的旧帧，以及静默期开始采集的帧，都不能用于校准。"""
+    monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
+    now = [100.0]
+    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    draw = Mock()
+    sent = Mock()
+    stats = Mock()
+    worker = input_worker._TurnWorker(sent, draw, stats=stats)
+    wake = Mock()
+    worker._wake = wake
+
+    def submit(stamp: float) -> None:
+        worker.submit(45.0, sample=input_worker.HeadingSample(stamp, 0.0))
+
+    def draw_frame() -> float | None:
+        if draw.call_count == 1:
+            submit(100.025)
+            now[0] = 100.08
+            return 0.0
+        if draw.call_count == 2:
+            submit(100.37)
+            now[0] = 100.40
+        return None
+
+    draw.side_effect = draw_frame
+
+    def steps() -> Iterator[None]:
+        submit(100.0)
+        yield
+        assert list(worker._history) == [0.0]
+        now[0] = 100.01
+        submit(100.0)
+        yield
+        assert list(worker._history) == [0.0]
+        now[0] = 100.02
+        submit(100.02)
+        yield
+        draw.assert_not_called()
+        now[0] = 100.071
+        yield
+        draw.assert_called_once()
+        sent.assert_called_once()
+        now[0] = 100.39
+        yield
+        assert stats.record.call_args_list.count(call('拒收旧样本')) == 1
+        # 第二次补采开始时，送来一份静默期内开始的主线截图。
+        assert draw.call_count == 2
+        now[0] = 100.401
+        yield
+        assert call('拒收静默期') in stats.record.call_args_list
+        assert not worker._history
+        worker._stopping = True
+        yield
+
+    script = steps()
+    wake.wait.side_effect = lambda _: next(script)
+    worker._loop()
+
+
+@pytest.mark.parametrize('stop', [False, True], ids=['暂停恢复', '停止'])
+def test_inflight_capture_invalidated_on_pause_or_stop(stop: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """第三次读数即将判稳时暂停或停止，即使截图随后成功也不能下发。"""
+    monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
+    now = [100.0]
+    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    sent = Mock()
+    sampler = Mock()
+    worker = input_worker._TurnWorker(sent, sampler)
+    monkeypatch.setattr(worker._thread, 'join', lambda timeout: None)
+    worker.submit(90.0)
+    worker._history.extend([0.0, 0.0])
+    now[0] += 0.06
+
+    def capture() -> float:
+        if stop:
+            worker.stop()
+        else:
+            worker.set_paused(True)
+            worker.submit(90.0)
+            assert worker._target is None
+            worker.set_paused(False)
+            worker.submit(90.0, sample=input_worker.HeadingSample(100.0, 0.0))
+            assert worker._target is None
+        return 0.0
+
+    sampler.side_effect = capture
+    worker._wake = Mock()
+    worker._wake.wait.side_effect = (lambda _: worker.stop() if sampler.called else None)
+    worker._loop()
+    sampler.assert_called_once()
+    sent.assert_not_called()
+    assert not worker._history

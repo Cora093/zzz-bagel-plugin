@@ -61,6 +61,7 @@ from .input_worker import (
     TURN_DEADBAND,
     TURN_DEADBAND_FAST,
     BagelInputWorker,
+    HeadingSample,
     TurnRatioMemory,
 )
 from .round_perf import RepeatMerger, RoundPerf
@@ -700,6 +701,7 @@ class BagelRouteWalker(BagelOperation):
         self.capture_stats: CaptureStats = CaptureStats(ctx.controller.game_win.get_hwnd)
         self._captured_frame: MatLike | None = None
         self._capture_start: float = 0.0
+        self._turn_resume_at: float = float('-inf')
         self.input_worker: BagelInputWorker = BagelInputWorker(
             ctx, initial_turn_ratio=initial_ratio, trust_initial_ratio=trust_initial, stats=self.capture_stats,
         )
@@ -869,10 +871,7 @@ class BagelRouteWalker(BagelOperation):
     def player_angle(self) -> float | None:
         """识别镜头朝向角，正右为 0、逆时针增加。
 
-        必须取 ``analyze`` 的第二个返回值（扇形方向 = 镜头朝向），
-        不能用第一个（菱形尖端 = 角色朝向）。角色站着不动时，
-        鼠标转动只改变镜头，角色朝向几乎不变，取错就会出现
-        「不管怎么转，角度完全没更新」。
+        使用 ``analyze`` 返回的扇形方向，与独立补采使用的角度一致。
         """
         with self.perf.measure('朝向'):
             _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
@@ -1142,7 +1141,7 @@ class BagelRouteWalker(BagelOperation):
             if angle is not None:
                 target_angle = self._target_angle(position, point)
                 angle_diff = cal_utils.angle_delta(angle % 360, target_angle)
-                self._submit_turn(target_angle, deadband=TURN_DEADBAND_FAST)
+                self._submit_turn(target_angle, angle, deadband=TURN_DEADBAND_FAST)
                 if abs(angle_diff) > WALK_TURN_ANGLE:
                     # 方向偏太多先停下等转，不然会走到旁边去。
                     self._release_forward()
@@ -2312,7 +2311,7 @@ class BagelRouteWalker(BagelOperation):
     def _cruise(
         self, point: BagelRoutePoint, position: tuple[float, float],
     ) -> OperationRoundResult:
-        """远距离移动：只提交目标方向，前进键自己管。
+        """远距离移动：提交目标与本帧朝向，前进键由主线管理。
 
         转向全由转向线程负责（稳 3 帧、2 度以上才转）。这里按滞回束角管前进：
         行进中偏差超过 16 度松键停车等转，停车后转回 10 度以内恢复前进；
@@ -2333,7 +2332,7 @@ class BagelRouteWalker(BagelOperation):
         self._diag_cruise(point, position, angle_diff, distance)
         stop_limit = WALK_TURN_ANGLE if self.turning_in_place else WALK_STOP_TURN_ANGLE
         stop_turn = abs(angle_diff) > stop_limit and not near
-        self._submit_turn(target_angle, cruise_only=not stop_turn, deadband=TURN_DEADBAND_FAST)
+        self._submit_turn(target_angle, angle, cruise_only=not stop_turn, deadband=TURN_DEADBAND_FAST)
         if stop_turn:
             # 大偏差：松键停车等转向线程转到位再走。
             self.turning_in_place = True
@@ -2373,10 +2372,12 @@ class BagelRouteWalker(BagelOperation):
         foot = _closest_on_segment(origin, point, position)
         return hypot(position[0] - foot[0], position[1] - foot[1])
 
-    def _submit_turn(self, target: float, cruise_only: bool = False, deadband: float = TURN_DEADBAND) -> None:
+    def _submit_turn(
+        self, target: float, angle: float, cruise_only: bool = False, deadband: float = TURN_DEADBAND,
+    ) -> None:
         """提交目标方向给转向线程；只存不定夺，不记输入。
 
-        转不转、转多少、校准，全由转向线程自己采样、稳 3 帧后定。
+        转向线程使用本帧朝向判稳，主线没有新样本时才自行补采。
         这里不调 _record_input：提交只是写内存，不是输入，
         记了会逼主线每轮多等一张新截图，把主循环限速。
 
@@ -2385,9 +2386,13 @@ class BagelRouteWalker(BagelOperation):
             cruise_only: 近距离只做边走边转，线程内限幅 15 度。
             deadband: 本次目标的对准死区；快速移动传 2 度，其余用默认 5 度。
         """
+        if self._capture_start < self._turn_resume_at:
+            return
+        sample = None
         if self.last_screenshot is not None and self.last_screenshot is self._captured_frame:
             self.capture_stats.main_sample(self._capture_start)
-        self.input_worker.submit_turn(target, cruise_only=cruise_only, deadband=deadband)
+            sample = HeadingSample(self._capture_start, angle)
+        self.input_worker.submit_turn(target, cruise_only=cruise_only, deadband=deadband, sample=sample)
 
     def remember_turn_ratio(self) -> None:
         """把本局学到的转向校准值记进跨局记忆，作下一局的起步值；不写 turn_dx。"""
@@ -2525,7 +2530,7 @@ class BagelRouteWalker(BagelOperation):
     ) -> OperationRoundResult:
         """按目标方向步进，电子箱短步阶段使用更短的按压时间。
 
-        只提交目标方向给转向线程；偏差超过 10 度时停车等转，
+        提交目标方向和本帧朝向；偏差超过 10 度时停车等转，
         其余情况短按前进。每步结束后使用新截图重新判断，
         避免多次短按相互覆盖；短按按住中仅在小偏差内微调，松键停顿期按正常逻辑提交转向。
 
@@ -2552,7 +2557,7 @@ class BagelRouteWalker(BagelOperation):
         angle_diff = cal_utils.angle_delta(angle % 360, target_angle)
         near = distance <= NEAR_STEP_TURN_RADIUS
         stop_turn = abs(angle_diff) > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
-        self._submit_turn(target_angle, cruise_only=near and not stop_turn)
+        self._submit_turn(target_angle, angle, cruise_only=near and not stop_turn)
         if stop_turn:
             # 大偏差：松键停车等转向线程转到位，不短按前进。
             self._release_forward()
@@ -2592,12 +2597,12 @@ class BagelRouteWalker(BagelOperation):
             or self.input_worker.forward_released_at is None
         ):
             if not near and diff <= WALK_STOP_TURN_ANGLE:
-                self._submit_turn(target_angle, cruise_only=True)
+                self._submit_turn(target_angle, angle, cruise_only=True)
             return
         stop_turn = diff > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
         if near and not stop_turn:
             return
-        self._submit_turn(target_angle, cruise_only=False)
+        self._submit_turn(target_angle, angle, cruise_only=False)
 
     @staticmethod
     def _target_angle(
@@ -2967,6 +2972,7 @@ class BagelRouteWalker(BagelOperation):
         这里主动清一次，不等那 1 秒，避免暂停瞬间按旧目标转镜头。
         排队中的侧移、长按 F 等即时动作随 ``release_all`` 作废，暂停期间不会再按下。
         """
+        self.input_worker.set_turn_paused(True)
         self._release_forward()
         self.turning_in_place = False
         self.selection.reset(self.last_screenshot_time)
@@ -2982,6 +2988,12 @@ class BagelRouteWalker(BagelOperation):
         self.input_worker.release_all()
         self.input_worker.submit_turn(None)
         super().handle_pause()
+
+    def handle_resume(self) -> None:
+        """恢复后等主线拍到新图再接受转向目标。"""
+        self._turn_resume_at = time.monotonic()
+        self.input_worker.set_turn_paused(False)
+        super().handle_resume()
 
     def is_failure_scene(self, result: OperationResult) -> bool:
         """出生点没有可执行路线是正常的退出重开，不存图也不报错。"""
