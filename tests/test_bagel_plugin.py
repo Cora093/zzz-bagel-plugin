@@ -25,6 +25,7 @@ from one_dragon.base.operation.application.plugin_import_service import (
 )
 from one_dragon.base.operation.application.plugin_info import PluginSource
 from one_dragon.utils import os_utils
+from PIL import Image
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 """插件仓库根，也是导入根：放进 sys.path 后，插件目录以 ``bagel`` 这个包名被加载。"""
@@ -146,6 +147,22 @@ def test_resources_survive_work_dir_change(empty_work_dir: Path) -> None:
 
     slots = importlib.import_module('bagel.vision.slots')
     assert slots._safe_lock_template() is not None
+
+
+def test_load_only_requested_map(tmp_path: Path) -> None:
+    """未选地图的图片即使不存在，也不应尝试解码。"""
+    from bagel.vision.map_locator import load_map_locators
+
+    Image.new('RGBA', (16, 16)).save(tmp_path / 'layer.png')
+    layers = [
+        {'map_id': '雅努斯幻境', 'name': 'A', 'image': '缺失.png', 'origin': [0, 0]},
+        {'map_id': '城郊幻境', 'name': 'B', 'image': 'layer.png', 'origin': [3, 7]},
+    ]
+    (tmp_path / 'layers.json').write_text(json.dumps({'layers': layers}), encoding='utf-8')
+    layer, = load_map_locators(tmp_path, map_id='城郊幻境')
+    assert (layer.name, layer.origin) == ('城郊幻境/B', (3, 7))
+    with pytest.raises(ValueError, match='未知地图'):
+        load_map_locators(tmp_path, map_id='未知地图')
 
 
 def test_default_routes_inside_plugin(empty_work_dir: Path) -> None:

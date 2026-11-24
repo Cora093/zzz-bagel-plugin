@@ -118,6 +118,8 @@ class BagelApp(ZApplication):
         """本局调查收益的最后一次读数；零携带入场后为 0，路线执行器读到后更新。"""
         self._map_layers: list[MapLocator] | None = None
         """本次运行共用的只读地图层；首次执行路线时加载，运行结束时释放。"""
+        self._entry_map: str | None = None
+        """本次入场核对的地图，与复用的分层对应。"""
         self._route_recorder: BagelRouteRecorder = BagelRouteRecorder(self.ctx)
         """路线数据记录：每局写一行，任务结束输出按出生点的汇总表。"""
         self._round_map_id: str | None = None
@@ -480,18 +482,22 @@ class BagelApp(ZApplication):
         self._round_survey = 0
         self._reset_round_route()
         keycard = self.config.is_keycard
+        map_name = self.config.map_name
         result = BagelEnter(
             self.ctx, allow_clear_loadout=allow_clear_loadout, allow_world_recovery=True,
             prepare_shortcut_entry=allow_clear_loadout,
             recovery_auto_clean=self.config.auto_clean_warehouse,
             recovery_filter_groups=self.config.clean_filter_groups(),
             difficulty=self.config.run_difficulty,
-            map_name=self.config.map_name,
+            map_name=map_name,
             carry_card=keycard,
             card_room_name=self._keycard_room_name if keycard else None,
             card_template=self.config.keycard_template if keycard else None,
             card_reserve=self.config.keycard_reserve if keycard else 0,
         ).execute()
+        if result.success and self._entry_map != map_name:
+            self._map_layers = None
+            self._entry_map = map_name
         if keycard and not result.success and result.status in BagelPickKeycard.STOP_STATUSES:
             self._warehouse_capacity = result.data
             return self.round_success(self.STATUS_CARDS_OUT)
@@ -619,7 +625,7 @@ class BagelApp(ZApplication):
         collect_round_garbage()
         try:
             if self._map_layers is None:
-                self._map_layers = load_map_locators()
+                self._map_layers = load_map_locators(map_id=self._entry_map)
             walker = BagelRouteWalker(
                 self.ctx, blueprint_priority=self.config.blueprint_priority,
                 keycard_room=self.config.keycard_room if self.config.is_keycard else None,
