@@ -158,11 +158,12 @@ def test_cancelled_turn_stops_sampling_when_minimap_is_hidden(monkeypatch: pytes
     try:
         worker.submit(30.0)
         _wait(lambda: sampler.return_value is None)
-        time.sleep(0.15)
+        # 下发前已写入 _pending，转为 None 只能来自到期丢弃。
+        _wait(lambda: worker._pending is None)
         count = sampler.call_count
         time.sleep(0.06)
         assert sampler.call_count == count
-        assert worker._pending is None and worker.turn_samples == 0
+        assert worker.turn_samples == 0
     finally:
         worker.stop()
 
