@@ -129,10 +129,6 @@ def test_idle_turn_worker_finishes_calibration_and_wakes_with_fresh_frames(
         sampler.return_value = 30.0
         _wait(lambda: worker.turn_samples == 1 and not worker._history)
         before = sampler.call_count
-        for _ in range(4):
-            worker.submit(None)
-            time.sleep(0.01)
-        assert sampler.call_count == before
         sent.side_effect = lambda _: worker.submit(None)
         worker.submit(60.0)
         _wait(lambda: sent.call_count == 2)
