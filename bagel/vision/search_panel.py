@@ -19,18 +19,14 @@ _TITLE_REGION: tuple[slice, slice] = (slice(156, 168), slice(1520, 1740))
 _STABLE_MAX_DIFF: float = 6.0
 
 
-def _region(gray: MatLike, region: tuple[slice, slice]) -> MatLike:
-    """按预设区域裁出灰度取样带。"""
-    rows, cols = region
-    return gray[rows, cols].copy()
-
-
 def search_panel_pixels(screen: MatLike) -> tuple[MatLike, MatLike] | None:
     """提取结果区与标题空白带，供连续截图比对。"""
     if screen is None or screen.shape != (1080, 1920, 3):
         return None
-    gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
-    return _region(gray, _RESULT_REGION), _region(gray, _TITLE_REGION)
+    return (
+        cv2.cvtColor(screen[_RESULT_REGION], cv2.COLOR_RGB2GRAY),
+        cv2.cvtColor(screen[_TITLE_REGION], cv2.COLOR_RGB2GRAY),
+    )
 
 
 def _regions_stable(
