@@ -55,6 +55,7 @@ from ..vision.minimap_angle import analyze
 from ..vision.prompt_list import PromptFrame, PromptSelection
 from ..vision.slots import slot_occupied
 from ..vision.template import load_template
+from .capture_stats import CaptureStats, movement_stage
 from .input_worker import (
     STEP_REST_SECONDS,
     TURN_DEADBAND,
@@ -696,8 +697,11 @@ class BagelRouteWalker(BagelOperation):
         """当前电梯阶段的起始时刻，用于计时。"""
         self.elevator_last_tap: float = 0.0
         """上次为推进对话而点按的时刻，控制每秒一次。"""
+        self.capture_stats: CaptureStats = CaptureStats(ctx.controller.game_win.get_hwnd)
+        self._captured_frame: MatLike | None = None
+        self._capture_start: float = 0.0
         self.input_worker: BagelInputWorker = BagelInputWorker(
-            ctx, initial_turn_ratio=initial_ratio, trust_initial_ratio=trust_initial,
+            ctx, initial_turn_ratio=initial_ratio, trust_initial_ratio=trust_initial, stats=self.capture_stats,
         )
         """按键单独线程：主线投递即返回；同种操作不打断自己，不同操作打断旧的。"""
         self.ledger: BagelSafeLedger = BagelSafeLedger()
@@ -752,6 +756,7 @@ class BagelRouteWalker(BagelOperation):
         用户切出游戏时，按键会打进别的窗口，必须先松键并停下，
         否则会在后台一直空转。
         """
+        self.capture_stats.start()
         self.perf.start()
         if not self._game_in_foreground():
             self._release_forward()
@@ -762,6 +767,7 @@ class BagelRouteWalker(BagelOperation):
         status = result.status or result.status_display or ''
         self.decision = f'{node_name} · {status}' if status else node_name
         mergeable = node_name in MERGED_LOG_NODES and result.result == OperationRoundResultEnum.WAIT
+        self.capture_stats.finish_round(movement_stage(node_name, status))
         self._log_decision(node_name, status, mergeable=mergeable)
         return result
 
@@ -804,7 +810,12 @@ class BagelRouteWalker(BagelOperation):
     def screenshot(self) -> MatLike:
         """框架每轮开头的截图，计入本轮耗时。"""
         with self.perf.measure('截图'):
-            return super().screenshot()
+            start = time.monotonic()
+            frame = super().screenshot()
+            self._capture_start = start
+            self._captured_frame = frame
+            self.capture_stats.record('主线截图', time.monotonic() - start)
+            return frame
 
     def _after_round_wait(self, wait: float | None = None, wait_round_time: float | None = None) -> None:
         """轮末睡眠，计入本轮耗时。
@@ -2374,6 +2385,8 @@ class BagelRouteWalker(BagelOperation):
             cruise_only: 近距离只做边走边转，线程内限幅 15 度。
             deadband: 本次目标的对准死区；快速移动传 2 度，其余用默认 5 度。
         """
+        if self.last_screenshot is not None and self.last_screenshot is self._captured_frame:
+            self.capture_stats.main_sample(self._capture_start)
         self.input_worker.submit_turn(target, cruise_only=cruise_only, deadband=deadband)
 
     def remember_turn_ratio(self) -> None:
@@ -2965,6 +2978,7 @@ class BagelRouteWalker(BagelOperation):
         self.mechanical_hold_until = None
         self.pickup_fast_since = None
         self._flush_decision_log()
+        self.capture_stats.finish_round('其他', close=True)
         self.input_worker.release_all()
         self.input_worker.submit_turn(None)
         super().handle_pause()
@@ -2979,6 +2993,7 @@ class BagelRouteWalker(BagelOperation):
             return super().execute()
         finally:
             self.input_worker.shutdown()
+            self.capture_stats.finish_route()
 
     def after_operation_done(self, result: OperationResult) -> None:
         """退出路径统一松键，含冲刺键，并停掉输入线程。"""

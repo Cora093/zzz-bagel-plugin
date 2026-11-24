@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
     from zzz_od.context.zzz_context import ZContext
 
+    from .capture_stats import CaptureStats
+
 TAP_INTERACT: str = 'tap_interact'
 """点按交互键（F），按满 duration 后松开。"""
 
@@ -280,6 +282,7 @@ class _TurnWorker:
         sampler: Callable[[], float | None],
         initial_ratio: float = 1.0,
         trust_initial_ratio: bool = False,
+        stats: CaptureStats | None = None,
     ) -> None:
         """
         Args:
@@ -290,6 +293,9 @@ class _TurnWorker:
             trust_initial_ratio: 起步校准值是否来自上一局的有效记忆；为 True 时开局即放开
                 45 度热身上限，不必等本局攒满 3 个样本。
         """
+        self._stats: CaptureStats | None = stats
+        self._first_target_at: float | None = None
+        self._active_since: float = 0.0
         self._handler: Callable[[float], None] = handler
         self._sampler: Callable[[], float | None] = sampler
         self._trust_initial_ratio: bool = trust_initial_ratio
@@ -359,9 +365,15 @@ class _TurnWorker:
                 if self._target is None:
                     return
                 self._target = None
+                self._first_target_at = None
             else:
+                now = time.monotonic()
+                if self._target is None and self._pending is None:
+                    self._active_since = now
+                if self._target is None or self._first_target_at is None:
+                    self._first_target_at = now
                 self._target = target % 360
-                self._target_at = time.monotonic()
+                self._target_at = now
                 self._target_cruise_only = cruise_only
                 self._target_deadband = deadband
         self._wake.set()
@@ -398,6 +410,7 @@ class _TurnWorker:
     def _loop(self) -> None:
         """空闲时等目标，有目标或上一笔待校准时才采样。"""
         timeout: float | None = None
+        last_sample: float | None = None
         while True:
             self._wake.wait(timeout)
             self._wake.clear()
@@ -417,7 +430,10 @@ class _TurnWorker:
                     self._still_since = None
                     self._history.clear()
                     timeout = None
+                    last_sample = None
                     continue
+                if last_sample is None:
+                    last_sample = self._active_since
                 timeout = TURN_SAMPLE_INTERVAL
                 quiet = (
                     TURN_SMALL_POST_QUIET
@@ -431,6 +447,7 @@ class _TurnWorker:
             if in_quiet:
                 # 下发后静默期内不截图：这段的样本本来就丢掉，采了也是浪费。
                 continue
+            sample_start = time.monotonic()
             try:
                 current = self._sampler()
             except Exception:
@@ -439,6 +456,14 @@ class _TurnWorker:
             with self._lock:
                 if self._stopping:
                     return
+                observed = time.monotonic()
+                if self._stats is not None:
+                    self._stats.record('无样本间隔', observed - last_sample)
+                    if current is not None:
+                        self._stats.record('独立有效', observed - sample_start)
+                        self._stats.record('样本帧龄', observed - sample_start)
+                if current is not None:
+                    last_sample = observed
                 if current is None:
                     self._history.clear()
                     # 读不到时不计时：重现后重新计时，避免缺数据也算静止。
@@ -474,6 +499,7 @@ class _TurnWorker:
                 deviation = cal_utils.angle_delta(stable_angle, self._target)
                 deadband = self._target_deadband
                 if abs(deviation) <= deadband:
+                    self._first_target_at = None
                     continue
                 cruise_only = self._target_cruise_only
                 magnitude = abs(deviation)
@@ -493,11 +519,13 @@ class _TurnWorker:
                 self._pending = actual
                 self._pending_chunks = chunks
                 self._pending_at = time.monotonic()
+                first_target_at = self._first_target_at
+                self._first_target_at = None
                 self._anchor = stable_angle
                 self._history.clear()
-            self._dispatch_turn(actual, chunks)
+            self._dispatch_turn(actual, chunks, first_target_at)
 
-    def _dispatch_turn(self, actual: float, chunks: int) -> None:
+    def _dispatch_turn(self, actual: float, chunks: int, first_target_at: float | None) -> None:
         """执行单笔转向；大角度按 ``chunks`` 均分连发，避开推断的单次鼠标移动约 120 度截断。
 
         段间检查停止与目标取消，末段发完后刷新 ``_pending_at``，保证静默期从最后一段算起。
@@ -519,7 +547,12 @@ class _TurnWorker:
                         self._pending_at = time.monotonic()
                         return
             try:
+                dispatch_at = time.monotonic()
                 self._handler(part)
+                if self._stats is not None and idx == 0:
+                    self._stats.record('下发笔数')
+                    if first_target_at is not None:
+                        self._stats.record('首转延迟', dispatch_at - first_target_at)
                 sent += part
                 sent_chunks += 1
             except Exception:
@@ -703,6 +736,7 @@ class BagelInputWorker:
     def __init__(
         self, ctx: ZContext, initial_turn_ratio: float = 1.0,
         trust_initial_ratio: bool = False,
+        stats: CaptureStats | None = None,
     ) -> None:
         """
         Args:
@@ -711,6 +745,7 @@ class BagelInputWorker:
             trust_initial_ratio: 起步校准值是否来自跨局有效记忆；为 True 时开局放开 45 度限幅。
         """
         self.ctx: ZContext = ctx
+        self._stats: CaptureStats | None = stats
         self._forward_want: bool = False
         """主线意图：是否该一直按住前进。"""
         self._forward_down: bool = False
@@ -739,7 +774,7 @@ class BagelInputWorker:
         self._turn_worker: _TurnWorker = _TurnWorker(
             self._run_turn, self._sample_angle,
             initial_ratio=initial_turn_ratio,
-            trust_initial_ratio=trust_initial_ratio,
+            trust_initial_ratio=trust_initial_ratio, stats=stats,
         )
         self._instant_channel: _InstantChannel = _InstantChannel(
             'bagel-instant', self._run_instant,
@@ -1030,10 +1065,13 @@ class BagelInputWorker:
         用独立截图，不干扰主线截图策略；裁剪与识别与主线同区域同函数。
         异常只返回 None，由调用方清空历史，不抛出去杀线程。
         """
+        started = time.monotonic()
         try:
             screen = self.ctx.controller.get_screenshot(independent=True)
         except Exception:
-            return None
+            screen = None
+        if self._stats is not None:
+            self._stats.record('转向截图' if screen is not None else '转向截图失败', time.monotonic() - started)
         if screen is None:
             return None
         try:
