@@ -58,6 +58,7 @@ from ..route.route_store import (
     BagelRouteConfigError,
     BagelRouteStore,
 )
+from .local_web_server import LocalWebServer, is_network_path
 from .light_theme import (
     apply_light_palette,
     enter_light_theme,
@@ -176,6 +177,8 @@ class BagelRouteEditor(QDialog):
         """正在定位替换的点序号；-1 表示没有进行中的定位。"""
         self.run_overlay: BagelRunOverlay | None = None
         self._page_ready: bool = False
+        self._web_server: LocalWebServer | None = None
+        """插件在网络路径时给网页提供文件的本机服务。"""
         self._close_confirmed: bool = False
         """网页已确认没有未保存修改，可以真正关闭。"""
         self._closing: bool = False
@@ -280,10 +283,26 @@ class BagelRouteEditor(QDialog):
         self._load_page()
 
     def _load_page(self) -> None:
-        """把页面载入并指定 baseUrl，让页面读到插件自带的底图。"""
-        html = (WEB_DIR / 'index.html').read_text(encoding='utf-8')
+        """载入页面；插件在 SMB 网络路径时改走本机 HTTP，避开 file:// 访问网络路径。"""
+        if is_network_path(PLUGIN_DIR):
+            try:
+                self._web_server = LocalWebServer(PLUGIN_DIR)
+            except OSError:
+                log.error('启动路线编辑器本机服务失败', exc_info=True)
+                self.status_label.setText('页面载入失败')
+                return
+            self.finished.connect(self._stop_web_server)
+            self.view.setUrl(QUrl(self._web_server.index_url))
+            return
+        html =(WEB_DIR / 'index.html').read_text(encoding='utf-8')
         base = QUrl.fromLocalFile(str(WEB_DIR.parent) + '/')
         self.view.setHtml(html, base)
+
+    def _stop_web_server(self) -> None:
+        """关闭编辑器时停掉本机服务。"""
+        if self._web_server is not None:
+            self._web_server.close()
+            self._web_server = None
 
     def _on_page_loaded(self, ok: bool) -> None:
         """页面载入完成后推一次数据。"""
