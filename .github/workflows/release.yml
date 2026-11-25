@@ -10,13 +10,11 @@ permissions:
 
 jobs:
   release:
-    # 模板仓库自身的 v1/v2 等 tag 是可复用工作流的版本号，不发布示例插件
-    if: github.repository != 'OneDragon-Anyone/plugin-template'
-    uses: OneDragon-Anyone/plugin-template/.github/workflows/reusable-release.yml@v1
+    # 官方 plugin-tools 的可复用工作流：校验、打包并创建 Release
+    uses: OneDragon-Anyone/plugin-tools/.github/workflows/reusable-release.yml@v1
 
   update-release-notes:
     # 等打包上传完成后，从 CHANGELOG.md 提取对应版本说明覆写默认 Release 正文
-    if: github.repository != 'OneDragon-Anyone/plugin-template'
     needs: release
     runs-on: ubuntu-latest
     steps:
