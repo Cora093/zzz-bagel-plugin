@@ -59,12 +59,12 @@ from ..route.route_store import (
     BagelRouteConfigError,
     BagelRouteStore,
 )
-from .local_web_server import LocalWebServer, is_network_path
 from .light_theme import (
     apply_light_palette,
     enter_light_theme,
     restore_theme,
 )
+from .local_web_server import LocalWebServer, is_network_path
 from .record_overlay import BagelRecordOverlay
 from .run_overlay import BagelRunOverlay
 
@@ -1029,6 +1029,7 @@ def _fmt_angle(value: float | None) -> str:
     return '--' if value is None else f'{value:.0f}°'
 
 
+def _layer_origins() -> dict[str, tuple[int, int]]:
     """读出各层的画布偏移，用于把全局坐标换算成层内坐标。
 
     Returns:
