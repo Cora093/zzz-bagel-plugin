@@ -94,7 +94,7 @@ class CaptureStats:
     def start(self) -> None:
         with self._lock:
             if self._start is None:
-                self._start = self._round_start = time.monotonic()
+                self._start = self._round_start = time.perf_counter()
                 self._cpu = self._cpu_times() if log.isEnabledFor(logging.DEBUG) else (None, None)
 
     def record(self, name: str, seconds: float | None = None) -> None:
@@ -118,7 +118,7 @@ class CaptureStats:
         with self._lock:
             if self._start is None:
                 return
-            now = time.monotonic()
+            now = time.perf_counter()
             self._round.seconds = now - self._round_start
             self._window[stage].merge(self._round)
             self._round = _Bucket()

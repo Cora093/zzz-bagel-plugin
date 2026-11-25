@@ -5,7 +5,7 @@
 
 三条独立通道，各自有线程，互不打断、可并发：
 - 前进（状态）：只记「该不该按着」，线程把真实键位对齐到意图，重复调用无副作用。
-- 转向（独立判稳）：主线只提交目标方向，这里自己采样朝向、数连续 3 帧稳定、
+- 转向（独立判稳）：主线提交目标和本帧朝向，样本断档时独立补采。这里检查连续 3 次采样、
   1 度防抖、偏离 5 度才转一次，转稳后自己算校准样本。转向是相对位移，
   不排队不叠加，上一笔没校准完不开下一笔。
 - 即时动作（队列）：点按 F、长按 F、松开 F、闪避、侧移，按顺序执行。
@@ -21,7 +21,8 @@ import math
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING
+from statistics import median
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 from one_dragon.base.geometry.point import Point
@@ -267,14 +268,72 @@ class _InstantChannel:
                         self._running = False
 
 
-class _TurnWorker:
-    """转向独立线程：主线只给目标方向，这里自己采样、自己判稳、自己转、自己校准。
+class HeadingSample(NamedTuple):
+    """同一次截图的单调时钟起点和识别到的镜头朝向。"""
 
-    主线只提交目标角，不提交朝向；这里按固定间隔自己截小地图读朝向，
-    不等主线循环。连续 3 帧朝向差都在 1 度内才算稳，稳了且与目标差
+    started: float
+    angle: float
+
+
+class _HeadingFeed:
+    """仅保留最新主线样本。由转向线程的状态锁保护。"""
+
+    def __init__(self) -> None:
+        self.latest: HeadingSample | None = None
+        self.last_main: float | None = None
+        self.consumed: float = float('-inf')
+        self.intervals: deque[float] = deque(maxlen=20)
+        self.threshold: float = 0.050
+
+    def publish(self, sample: HeadingSample) -> None:
+        if self.last_main is None:
+            # 空闲前开始的截图可能迟到，不能用它给新一段的间隔计时。
+            if sample.started > self.consumed:
+                self.last_main = sample.started
+        elif sample.started > self.last_main:
+            self.intervals.append(sample.started - self.last_main)
+            self.threshold = min(0.150, max(0.050, 2 * median(self.intervals)))
+            self.last_main = sample.started
+        if self.latest is None or sample.started >= self.latest.started:
+            self.latest = sample
+
+    def enter_idle(self, now: float) -> None:
+        """截断两段之间的采样间隔，保留活动期间测得的节拍及补采阈值。"""
+        self.latest = None
+        self.last_main = None
+        self.consumed = now
+
+    def take(self, quiet_until: float) -> tuple[HeadingSample | None, str | None]:
+        sample, self.latest = self.latest, None
+        if sample is None:
+            return None, None
+        if sample.started == self.consumed:
+            return None, '拒收重复'
+        if sample.started < self.consumed:
+            return None, '拒收旧样本'
+        if sample.started < quiet_until:
+            return None, '拒收静默期'
+        self.consumed = sample.started
+        return sample, None
+
+    def remaining(self, now: float, active_since: float) -> float:
+        """主线尚未给出第一份样本时，从本次激活开始等。"""
+        since = self.last_main if self.last_main is not None else active_since
+        return max(0.0, since + self.threshold - now)
+
+
+class _TurnWorker:
+    """转向独立线程：主线给目标和朝向样本，这里判稳、下发并校准。
+
+    优先用随目标送来的主线朝向，主线断档才独立采样。
+    连续 3 次采集的朝向差都在 1 度内才算稳，稳了且与目标差
     超过 5 度才转一次。转完清空历史，等新的 3 帧稳了再算校准样本，
     样本干净了才更新比例。被敌人打转方向时画面一直不稳，这里就一直
     不动手，等稳了再一次性转回去。
+
+    本类所有时刻都用 ``time.perf_counter()``，与主线截图起点同一时钟。
+    Windows 上 ``time.monotonic()`` 精度约 15.6 毫秒，同一刻度内的补采和主线截图
+    会得到相同起点，较新的主线样本会被当作重复拒收。
     """
 
     def __init__(
@@ -295,7 +354,12 @@ class _TurnWorker:
         """
         self._stats: CaptureStats | None = stats
         self._first_target_at: float | None = None
+        self._feed: _HeadingFeed = _HeadingFeed()
         self._active_since: float = 0.0
+        self._paused: bool = False
+        self._epoch: int = 0
+        self._resume_at: float = float('-inf')
+        self._dispatch_lock: threading.Lock = threading.Lock()
         self._handler: Callable[[float], None] = handler
         self._sampler: Callable[[], float | None] = sampler
         self._trust_initial_ratio: bool = trust_initial_ratio
@@ -339,7 +403,7 @@ class _TurnWorker:
         """连续落出当前可信校准值倍率带的样本计数。"""
         self._clamp_streak: int = 0
         """校准值连续几次贴到夹取边界的计数，用于提示重做灵敏度检测。"""
-        self._lock: threading.Lock = threading.Lock()
+        self._lock: threading.RLock = threading.RLock()
         self._wake: threading.Event = threading.Event()
         self._stopping: bool = False
         self._thread: threading.Thread = threading.Thread(
@@ -347,8 +411,11 @@ class _TurnWorker:
         )
         self._thread.start()
 
-    def submit(self, target: float | None, cruise_only: bool = False, deadband: float = TURN_DEADBAND) -> None:
-        """提交最新目标方向；只存不定夺，转不转由线程自己采样再看。
+    def submit(
+        self, target: float | None, cruise_only: bool = False, deadband: float = TURN_DEADBAND,
+        sample: HeadingSample | None = None,
+    ) -> None:
+        """提交目标与本轮朝向，唤醒转向线程检查样本。
 
         只写内存，不记输入、不碰截图，调完立刻返回，不会限速主循环。
         没有目标时只采完待校准的转向。线程空闲后再次收到目标时重新判稳。
@@ -359,7 +426,7 @@ class _TurnWorker:
             deadband: 本次目标的对准死区；快速移动传 2 度，其余用默认 5 度。
         """
         with self._lock:
-            if self._stopping:
+            if self._stopping or self._paused or (sample is not None and sample.started < self._resume_at):
                 return
             if target is None:
                 if self._target is None:
@@ -367,9 +434,11 @@ class _TurnWorker:
                 self._target = None
                 self._first_target_at = None
             else:
-                now = time.monotonic()
+                now = time.perf_counter()
                 if self._target is None and self._pending is None:
                     self._active_since = now
+                if sample is not None:
+                    self._feed.publish(sample)
                 if self._target is None or self._first_target_at is None:
                     self._first_target_at = now
                 self._target = target % 360
@@ -378,10 +447,24 @@ class _TurnWorker:
                 self._target_deadband = deadband
         self._wake.set()
 
+    def set_paused(self, paused: bool) -> None:
+        """暂停与恢复均作废旧目标、在途采样与分段输入，保留已学到的校准比例。"""
+        with self._dispatch_lock, self._lock:
+            self._paused = paused
+            self._epoch += 1
+            self._resume_at = time.perf_counter()
+            self._feed = _HeadingFeed()
+            self._history.clear()
+            self._target = self._pending = self._anchor = None
+            self._first_target_at = self._still_since = None
+            self._pending_chunks = 1
+        self._wake.set()
+
     def stop(self) -> None:
         """停止线程。"""
-        with self._lock:
+        with self._dispatch_lock, self._lock:
             self._stopping = True
+            self._feed = _HeadingFeed()
             self._pending = None
             self._pending_chunks = 1
             self._anchor = None
@@ -411,13 +494,14 @@ class _TurnWorker:
         """空闲时等目标，有目标或上一笔待校准时才采样。"""
         timeout: float | None = None
         last_sample: float | None = None
+        last_epoch = self._epoch
         while True:
             self._wake.wait(timeout)
             self._wake.clear()
             with self._lock:
                 if self._stopping:
                     return
-                now = time.monotonic()
+                now = time.perf_counter()
                 if self._target is not None and now - self._target_at > TURN_TARGET_FRESH_SECONDS:
                     self._target = None
                 if self._target is None and (
@@ -429,40 +513,63 @@ class _TurnWorker:
                     self._anchor = None
                     self._still_since = None
                     self._history.clear()
+                    self._feed.enter_idle(now)
                     timeout = None
                     last_sample = None
                     continue
-                if last_sample is None:
-                    last_sample = self._active_since
                 timeout = TURN_SAMPLE_INTERVAL
                 quiet = (
                     TURN_SMALL_POST_QUIET
                     if self._pending is not None and abs(self._pending) < TURN_SCALE_SAMPLE_MIN_COMMAND
                     else TURN_POST_TURN_QUIET
                 )
-                in_quiet = (
-                    self._pending is not None
-                    and now - self._pending_at < quiet
-                )
-            if in_quiet:
-                # 下发后静默期内不截图：这段的样本本来就丢掉，采了也是浪费。
-                continue
-            sample_start = time.monotonic()
-            try:
-                current = self._sampler()
-            except Exception:
-                log.error('贝果转向采样朝向失败', exc_info=True)
-                current = None
+                epoch = self._epoch
+                if epoch != last_epoch:
+                    last_sample = None
+                    last_epoch = epoch
+                if last_sample is None:
+                    last_sample = self._active_since
+                quiet_until = self._pending_at + quiet if self._pending is not None else float('-inf')
+                if now < quiet_until:
+                    if self._feed.latest is not None:
+                        self._feed.latest = None
+                        if self._stats is not None:
+                            self._stats.record('拒收静默期')
+                    timeout = quiet_until - now
+                    continue
+                sample, rejected = self._feed.take(quiet_until)
+                if rejected is not None and self._stats is not None:
+                    self._stats.record(rejected)
+                if sample is None:
+                    remaining = self._feed.remaining(now, self._active_since)
+                    if remaining > 0:
+                        if self._stats is not None:
+                            self._stats.record('等待主线')
+                        timeout = remaining
+                        continue
+            if sample is None:
+                sample_start = time.perf_counter()
+                try:
+                    current = self._sampler()
+                except Exception:
+                    log.error('贝果转向采样朝向失败', exc_info=True)
+                    current = None
+            else:
+                sample_start, current = sample
             with self._lock:
                 if self._stopping:
                     return
-                observed = time.monotonic()
+                if epoch != self._epoch:
+                    last_sample = None
+                    continue
+                observed = time.perf_counter()
                 if self._stats is not None:
                     self._stats.record('无样本间隔', observed - last_sample)
                     if current is not None:
-                        self._stats.record('独立有效', observed - sample_start)
+                        self._stats.record('独立有效' if sample is None else '复用主线', observed - sample_start)
                         self._stats.record('样本帧龄', observed - sample_start)
                 if current is not None:
+                    self._feed.consumed = sample_start
                     last_sample = observed
                 if current is None:
                     self._history.clear()
@@ -473,26 +580,19 @@ class _TurnWorker:
                 history = list(self._history)
                 pending = self._pending
                 anchor = self._anchor
-            if not history:
-                continue
-            if not self._stable(history):
-                # 画面在动：不是静止，计时清掉重来。
-                with self._lock:
-                    self._still_since = None
-                continue
-            stable_angle = history[-1]
-            if pending is not None and anchor is not None:
-                # 上一笔转完又有 3 帧稳了，拿稳态差算样本，不拿转一半的中间帧。
-                if not self._learn(anchor, pending, stable_angle):
+                if not history:
                     continue
-            with self._lock:
-                if self._stopping:
-                    return
+                if not self._stable(history):
+                    self._still_since = None
+                    continue
+                stable_angle = history[-1]
+                if pending is not None and anchor is not None and not self._learn(anchor, pending, stable_angle):
+                    continue
                 if self._pending is not None:
                     continue
                 if self._target is None:
                     continue
-                if time.monotonic() - self._target_at > TURN_TARGET_FRESH_SECONDS:
+                if time.perf_counter() - self._target_at > TURN_TARGET_FRESH_SECONDS:
                     # 截图和判稳期间目标也可能过期，下发前再核对。
                     self._target = None
                     continue
@@ -518,14 +618,14 @@ class _TurnWorker:
                 chunks = max(1, math.ceil(abs(signed) / TURN_CHUNK_MAX_DESIRED))
                 self._pending = actual
                 self._pending_chunks = chunks
-                self._pending_at = time.monotonic()
+                self._pending_at = time.perf_counter()
                 first_target_at = self._first_target_at
                 self._first_target_at = None
                 self._anchor = stable_angle
                 self._history.clear()
-            self._dispatch_turn(actual, chunks, first_target_at)
+            self._dispatch_turn(actual, chunks, first_target_at, epoch)
 
-    def _dispatch_turn(self, actual: float, chunks: int, first_target_at: float | None) -> None:
+    def _dispatch_turn(self, actual: float, chunks: int, first_target_at: float | None, epoch: int) -> None:
         """执行单笔转向；大角度按 ``chunks`` 均分连发，避开推断的单次鼠标移动约 120 度截断。
 
         段间检查停止与目标取消，末段发完后刷新 ``_pending_at``，保证静默期从最后一段算起。
@@ -540,15 +640,15 @@ class _TurnWorker:
         for idx in range(chunks):
             if idx > 0:
                 time.sleep(TURN_CHUNK_INTERVAL)
-                with self._lock:
-                    if self._stopping or self._target is None:
-                        self._pending = sent if sent else None
-                        self._pending_chunks = sent_chunks if sent else 1
-                        self._pending_at = time.monotonic()
-                        return
             try:
-                dispatch_at = time.monotonic()
-                self._handler(part)
+                with self._dispatch_lock:
+                    with self._lock:
+                        if self._stopping or self._epoch != epoch:
+                            return
+                        if self._target is None:
+                            break
+                    dispatch_at = time.perf_counter()
+                    self._handler(part)
                 if self._stats is not None and idx == 0:
                     self._stats.record('下发笔数')
                     if first_target_at is not None:
@@ -559,9 +659,11 @@ class _TurnWorker:
                 log.error('贝果转向执行失败', exc_info=True)
                 break
         with self._lock:
+            if self._epoch != epoch or self._stopping:
+                return
             self._pending = sent if sent else None
             self._pending_chunks = sent_chunks if sent else 1
-            self._pending_at = time.monotonic()
+            self._pending_at = time.perf_counter()
 
     def _learn(self, anchor: float, pending: float, stable: float) -> bool:
         """用转稳后的角度反推上一笔的真实比例；画面还没跟上时返回 False 等下一轮。
@@ -580,7 +682,7 @@ class _TurnWorker:
             # 既避免在转稳前提前补转，也不再进入 1.4 秒静止等待。
             if (
                 abs(delta) < TURN_RATIO_MIN_DELTA
-                and time.monotonic() - self._pending_at < TURN_SETTLE_GRACE
+                and time.perf_counter() - self._pending_at < TURN_SETTLE_GRACE
             ):
                 return False
             with self._lock:
@@ -590,7 +692,7 @@ class _TurnWorker:
                 self._still_since = None
             return True
         if abs(delta) < TURN_RATIO_MIN_DELTA:
-            now = time.monotonic()
+            now = time.perf_counter()
             if now - self._pending_at < TURN_SETTLE_GRACE:
                 # 画面还在路上，等，不计时。
                 return False
@@ -862,8 +964,11 @@ class BagelInputWorker:
         with self._backward_lock:
             self._backward_want = False
 
-    def submit_turn(self, target: float | None, cruise_only: bool = False, deadband: float = TURN_DEADBAND) -> None:
-        """提交最新目标方向；只存不定夺，朝向由转向线程自己采样。
+    def submit_turn(
+        self, target: float | None, cruise_only: bool = False, deadband: float = TURN_DEADBAND,
+        sample: HeadingSample | None = None,
+    ) -> None:
+        """提交最新目标方向；只存不定夺，优先使用随目标提供的朝向。
 
         只写内存，不记输入，调完立刻返回，不会限速主循环。
 
@@ -876,7 +981,11 @@ class BagelInputWorker:
         if enabled != self._turn_enabled:
             with self._mouse_lock:
                 self._turn_enabled = enabled
-        self._turn_worker.submit(target, cruise_only=cruise_only, deadband=deadband)
+        self._turn_worker.submit(target, cruise_only=cruise_only, deadband=deadband, sample=sample)
+
+    def set_turn_paused(self, paused: bool) -> None:
+        """作废暂停边界前的朝向、目标和在途输入。"""
+        self._turn_worker.set_paused(paused)
 
     @property
     def turn_ratio(self) -> float:
@@ -973,10 +1082,10 @@ class BagelInputWorker:
         if self._stopping:
             return
         self._stopping = True
+        self._turn_worker.stop()
         self.stop_forward()
         self._forward_thread.join(timeout=1.0)
         self._backward_thread.join(timeout=1.0)
-        self._turn_worker.stop()
         self._instant_channel.stop()
         self._release_all_keys()
 
@@ -1065,13 +1174,13 @@ class BagelInputWorker:
         用独立截图，不干扰主线截图策略；裁剪与识别与主线同区域同函数。
         异常只返回 None，由调用方清空历史，不抛出去杀线程。
         """
-        started = time.monotonic()
+        started = time.perf_counter()
         try:
             screen = self.ctx.controller.get_screenshot(independent=True)
         except Exception:
             screen = None
         if self._stats is not None:
-            self._stats.record('转向截图' if screen is not None else '转向截图失败', time.monotonic() - started)
+            self._stats.record('转向截图' if screen is not None else '转向截图失败', time.perf_counter() - started)
         if screen is None:
             return None
         try:

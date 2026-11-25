@@ -44,6 +44,9 @@ class Scene:
     def monotonic(self) -> float:
         return self.now
 
+    def perf_counter(self) -> float:
+        return self.now
+
     def show(self, stamp: float, selected: PromptRow | None, *others: PromptRow) -> None:
         """时间由用例指定。同一时间戳代表同一张截图。"""
         self.now = stamp
@@ -512,7 +515,7 @@ def test_slow_step_turn_dispatch_during_step_wait(
     # 8px 外 + 短按进行中 + 小偏差（10 度 <=16）：提交边走边转
     scene.worker.forward_step_active.return_value = True
     assert walker._slow_step(pt_far, (0.0, 0.0)).status == '等待本次前进短按结束'
-    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=True, deadband=route_walker.TURN_DEADBAND)
+    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=True, deadband=route_walker.TURN_DEADBAND, sample=None)
 
     # 8px 外 + 短按进行中 + 大偏差（136 度 >16）：不抢发 15 度碎转
     scene.worker.submit_turn.reset_mock()
@@ -525,7 +528,7 @@ def test_slow_step_turn_dispatch_during_step_wait(
     scene.worker.forward_released_at = 100.0
     walker.last_screenshot_time = 100.05
     assert walker._slow_step(pt_far, (0.0, 0.0)).status == '前进停顿中'
-    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND)
+    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND, sample=None)
 
     # 8px 内 + 短按进行中 + 小偏差（10 度）：不抢发微调占坑
     scene.worker.submit_turn.reset_mock()
@@ -543,4 +546,22 @@ def test_slow_step_turn_dispatch_during_step_wait(
     # 8px 内 + 已松键停顿期 + >60 度大偏差（95 度）：提前全速停车转
     angle[0] = 95.0
     assert walker._slow_step(pt_near, (0.0, 0.0)).status == '前进停顿中'
-    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND)
+    scene.worker.submit_turn.assert_called_once_with(0.0, cruise_only=False, deadband=route_walker.TURN_DEADBAND, sample=None)
+
+def test_turn_sample_uses_original_capture_start_and_frame(scene: Scene) -> None:
+    walker = scene.walker
+    frame = np.zeros((1, 1, 3), np.uint8)
+    walker.ctx.controller.screenshot.return_value = (12345, frame)
+    scene.now = 100.0
+    assert walker.screenshot() is frame
+    scene.now = 100.1
+    walker._submit_turn(90.0, 40.0)
+    assert scene.worker.submit_turn.call_args.kwargs['sample'] == route_walker.HeadingSample(100.0, 40.0)
+    # 子操作接管或恢复失败截图时，内容即使相同也不能沿用原图的采集时间。
+    walker.last_screenshot = frame.copy()
+    walker._submit_turn(90.0, 40.0)
+    assert scene.worker.submit_turn.call_args.kwargs['sample'] is None
+    walker.handle_resume()
+    scene.worker.submit_turn.reset_mock()
+    walker._submit_turn(90.0, 40.0)
+    scene.worker.submit_turn.assert_not_called()
