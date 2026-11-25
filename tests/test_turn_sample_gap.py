@@ -10,7 +10,7 @@ from bagel.route import input_worker
 
 def test_sample_gap_starts_at_activation_then_last_valid_sample(monkeypatch: pytest.MonkeyPatch) -> None:
     now = [10.0]
-    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    monkeypatch.setattr(input_worker, 'time', Mock(perf_counter=lambda: now[0]))
     monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
     captures = iter([(10.10, None), (10.16, 0.0), (10.20, 0.0), (20.12, 0.0)])
 

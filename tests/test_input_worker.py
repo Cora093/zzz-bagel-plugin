@@ -246,7 +246,7 @@ def test_small_turn_releases_without_still_timeout_and_big_target_preempts(
     """<8 度微调需有 >=0.5 度变化或满 0.4 秒宽限才放行；>=8 度转向宽限后遇 >=45 度新目标抢先放行。"""
     monkeypatch.setattr(input_worker._TurnWorker, '_loop', lambda self: None)
     now = [100.0]
-    monkeypatch.setattr(input_worker.time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(input_worker.time, 'perf_counter', lambda: now[0])
     tw = input_worker._TurnWorker(lambda _: None, lambda: 0.0)
     try:
         # <8 度小微调：宽限内画面未动仍等待，避免转稳前提前补转；满 0.4 秒宽限或已有变化即放行
@@ -305,7 +305,7 @@ def test_idle_preserves_slow_main_cadence(monkeypatch: pytest.MonkeyPatch) -> No
     """70 毫秒节拍在空闲后仍等 140 毫秒。旧图和空闲时长均不参与新一段判稳或测速。"""
     monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
     now = [100.0]
-    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    monkeypatch.setattr(input_worker, 'time', Mock(perf_counter=lambda: now[0]))
     draw = Mock(return_value=0.0)
     worker = input_worker._TurnWorker(Mock(), draw)
     worker._wake = Mock()
@@ -349,7 +349,7 @@ def test_worker_uses_shared_samples_then_falls_back(monkeypatch: pytest.MonkeyPa
     """模拟事件唤醒。补采期间送到的旧帧，以及静默期开始采集的帧，都不能用于校准。"""
     monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
     now = [100.0]
-    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    monkeypatch.setattr(input_worker, 'time', Mock(perf_counter=lambda: now[0]))
     draw = Mock()
     sent = Mock()
     stats = Mock()
@@ -410,7 +410,7 @@ def test_inflight_capture_invalidated_on_pause_or_stop(stop: bool, monkeypatch: 
     """第三次读数即将判稳时暂停或停止，即使截图随后成功也不能下发。"""
     monkeypatch.setattr(input_worker.threading.Thread, 'start', lambda self: None)
     now = [100.0]
-    monkeypatch.setattr(input_worker, 'time', Mock(monotonic=lambda: now[0]))
+    monkeypatch.setattr(input_worker, 'time', Mock(perf_counter=lambda: now[0]))
     sent = Mock()
     sampler = Mock()
     worker = input_worker._TurnWorker(sent, sampler)

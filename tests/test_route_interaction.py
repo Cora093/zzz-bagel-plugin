@@ -44,6 +44,9 @@ class Scene:
     def monotonic(self) -> float:
         return self.now
 
+    def perf_counter(self) -> float:
+        return self.now
+
     def show(self, stamp: float, selected: PromptRow | None, *others: PromptRow) -> None:
         """时间由用例指定。同一时间戳代表同一张截图。"""
         self.now = stamp

@@ -12,7 +12,7 @@ from bagel.route import capture_stats
 @pytest.mark.parametrize('level', [logging.INFO, logging.DEBUG])
 def test_segment_totals_exclude_pause(monkeypatch: pytest.MonkeyPatch, level: int) -> None:
     clock = Mock()
-    clock.monotonic.return_value = 10.0
+    clock.perf_counter.return_value = 10.0
     monkeypatch.setattr(capture_stats, 'time', clock)
     stats = capture_stats.CaptureStats(lambda: None)
     cpu_times = Mock(return_value=(0.0, None))
@@ -24,20 +24,20 @@ def test_segment_totals_exclude_pause(monkeypatch: pytest.MonkeyPatch, level: in
     monkeypatch.setattr(capture_stats.log, 'debug', debug)
     stats.start()
     stats.record('主线截图', 0.015)
-    clock.monotonic.return_value = 10.2
+    clock.perf_counter.return_value = 10.2
     stats.finish_round('停车转向')
     stats.record('转向截图', 0.025)
-    clock.monotonic.return_value = 11.2
+    clock.perf_counter.return_value = 11.2
     stats.finish_round('直线冲刺')
     info.assert_not_called()
     if level == logging.DEBUG:
         assert debug.call_args.args[0] == '贝果截图统计 窗口 %s'
         assert json.loads(debug.call_args.args[-1])['游戏核'] is None
     stats.finish_round('其他', close=True)
-    clock.monotonic.return_value = 20.0
+    clock.perf_counter.return_value = 20.0
     stats.start()
     stats.record('主线截图', 0.035)
-    clock.monotonic.return_value = 20.3
+    clock.perf_counter.return_value = 20.3
     stats.finish_round('停车转向')
     stats.finish_route()
     if level == logging.INFO:

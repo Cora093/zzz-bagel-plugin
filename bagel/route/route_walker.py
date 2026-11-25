@@ -812,11 +812,11 @@ class BagelRouteWalker(BagelOperation):
     def screenshot(self) -> MatLike:
         """框架每轮开头的截图，计入本轮耗时。"""
         with self.perf.measure('截图'):
-            start = time.monotonic()
+            start = time.perf_counter()
             frame = super().screenshot()
             self._capture_start = start
             self._captured_frame = frame
-            self.capture_stats.record('主线截图', time.monotonic() - start)
+            self.capture_stats.record('主线截图', time.perf_counter() - start)
             return frame
 
     def _after_round_wait(self, wait: float | None = None, wait_round_time: float | None = None) -> None:
@@ -2991,7 +2991,7 @@ class BagelRouteWalker(BagelOperation):
 
     def handle_resume(self) -> None:
         """恢复后等主线拍到新图再接受转向目标。"""
-        self._turn_resume_at = time.monotonic()
+        self._turn_resume_at = time.perf_counter()
         self.input_worker.set_turn_paused(False)
         super().handle_resume()
 

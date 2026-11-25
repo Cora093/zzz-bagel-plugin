@@ -330,6 +330,10 @@ class _TurnWorker:
     超过 5 度才转一次。转完清空历史，等新的 3 帧稳了再算校准样本，
     样本干净了才更新比例。被敌人打转方向时画面一直不稳，这里就一直
     不动手，等稳了再一次性转回去。
+
+    本类所有时刻都用 ``time.perf_counter()``，与主线截图起点同一时钟。
+    Windows 上 ``time.monotonic()`` 精度约 15.6 毫秒，同一刻度内的补采和主线截图
+    会得到相同起点，较新的主线样本会被当作重复拒收。
     """
 
     def __init__(
@@ -430,7 +434,7 @@ class _TurnWorker:
                 self._target = None
                 self._first_target_at = None
             else:
-                now = time.monotonic()
+                now = time.perf_counter()
                 if self._target is None and self._pending is None:
                     self._active_since = now
                 if sample is not None:
@@ -448,7 +452,7 @@ class _TurnWorker:
         with self._dispatch_lock, self._lock:
             self._paused = paused
             self._epoch += 1
-            self._resume_at = time.monotonic()
+            self._resume_at = time.perf_counter()
             self._feed = _HeadingFeed()
             self._history.clear()
             self._target = self._pending = self._anchor = None
@@ -497,7 +501,7 @@ class _TurnWorker:
             with self._lock:
                 if self._stopping:
                     return
-                now = time.monotonic()
+                now = time.perf_counter()
                 if self._target is not None and now - self._target_at > TURN_TARGET_FRESH_SECONDS:
                     self._target = None
                 if self._target is None and (
@@ -544,7 +548,7 @@ class _TurnWorker:
                         timeout = remaining
                         continue
             if sample is None:
-                sample_start = time.monotonic()
+                sample_start = time.perf_counter()
                 try:
                     current = self._sampler()
                 except Exception:
@@ -558,7 +562,7 @@ class _TurnWorker:
                 if epoch != self._epoch:
                     last_sample = None
                     continue
-                observed = time.monotonic()
+                observed = time.perf_counter()
                 if self._stats is not None:
                     self._stats.record('无样本间隔', observed - last_sample)
                     if current is not None:
@@ -588,7 +592,7 @@ class _TurnWorker:
                     continue
                 if self._target is None:
                     continue
-                if time.monotonic() - self._target_at > TURN_TARGET_FRESH_SECONDS:
+                if time.perf_counter() - self._target_at > TURN_TARGET_FRESH_SECONDS:
                     # 截图和判稳期间目标也可能过期，下发前再核对。
                     self._target = None
                     continue
@@ -614,7 +618,7 @@ class _TurnWorker:
                 chunks = max(1, math.ceil(abs(signed) / TURN_CHUNK_MAX_DESIRED))
                 self._pending = actual
                 self._pending_chunks = chunks
-                self._pending_at = time.monotonic()
+                self._pending_at = time.perf_counter()
                 first_target_at = self._first_target_at
                 self._first_target_at = None
                 self._anchor = stable_angle
@@ -643,7 +647,7 @@ class _TurnWorker:
                             return
                         if self._target is None:
                             break
-                    dispatch_at = time.monotonic()
+                    dispatch_at = time.perf_counter()
                     self._handler(part)
                 if self._stats is not None and idx == 0:
                     self._stats.record('下发笔数')
@@ -659,7 +663,7 @@ class _TurnWorker:
                 return
             self._pending = sent if sent else None
             self._pending_chunks = sent_chunks if sent else 1
-            self._pending_at = time.monotonic()
+            self._pending_at = time.perf_counter()
 
     def _learn(self, anchor: float, pending: float, stable: float) -> bool:
         """用转稳后的角度反推上一笔的真实比例；画面还没跟上时返回 False 等下一轮。
@@ -678,7 +682,7 @@ class _TurnWorker:
             # 既避免在转稳前提前补转，也不再进入 1.4 秒静止等待。
             if (
                 abs(delta) < TURN_RATIO_MIN_DELTA
-                and time.monotonic() - self._pending_at < TURN_SETTLE_GRACE
+                and time.perf_counter() - self._pending_at < TURN_SETTLE_GRACE
             ):
                 return False
             with self._lock:
@@ -688,7 +692,7 @@ class _TurnWorker:
                 self._still_since = None
             return True
         if abs(delta) < TURN_RATIO_MIN_DELTA:
-            now = time.monotonic()
+            now = time.perf_counter()
             if now - self._pending_at < TURN_SETTLE_GRACE:
                 # 画面还在路上，等，不计时。
                 return False
@@ -1170,13 +1174,13 @@ class BagelInputWorker:
         用独立截图，不干扰主线截图策略；裁剪与识别与主线同区域同函数。
         异常只返回 None，由调用方清空历史，不抛出去杀线程。
         """
-        started = time.monotonic()
+        started = time.perf_counter()
         try:
             screen = self.ctx.controller.get_screenshot(independent=True)
         except Exception:
             screen = None
         if self._stats is not None:
-            self._stats.record('转向截图' if screen is not None else '转向截图失败', time.monotonic() - started)
+            self._stats.record('转向截图' if screen is not None else '转向截图失败', time.perf_counter() - started)
         if screen is None:
             return None
         try:
