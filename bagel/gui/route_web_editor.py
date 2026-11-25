@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -78,9 +77,6 @@ WEB_DIR = PLUGIN_DIR / 'web'
 
 SANDBOX_ENV = 'QTWEBENGINE_DISABLE_SANDBOX'
 """Qt 网页引擎读取的关闭沙箱环境变量。"""
-
-FLAGS_ENV = 'QTWEBENGINE_CHROMIUM_FLAGS'
-"""Qt 网页引擎读取的 Chromium 命令行参数环境变量。"""
 
 OVERLAY_INTERVAL_MS = 150
 """悬浮窗跟随游戏窗口位置与显隐的刷新间隔。"""
@@ -1050,11 +1046,6 @@ def _disable_sandbox_on_network_runtime() -> None:
     ):
         os.environ[SANDBOX_ENV] = '1'
         log.info('PySide6 位于网络路径，已关闭网页引擎沙箱以便路线编辑器渲染')
-    if is_network_path(Path(QtWebEngineCore.__file__)) and not os.environ.get(FLAGS_ENV):
-        # 网络路径下渲染进程仍可能异常退出，把 Chromium 自己的日志落到本机临时目录供排查。
-        engine_log = Path(tempfile.gettempdir()) / 'bagel_webengine.log'
-        os.environ[FLAGS_ENV] = f'--enable-logging --v=1 --log-file="{engine_log}"'
-        log.info('网页引擎日志：%s', engine_log)
 
 
 def _layer_origins() -> dict[str, tuple[int, int]]:
