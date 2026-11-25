@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 import sys
 import threading
 from http import HTTPStatus
@@ -116,3 +117,31 @@ class LocalWebServer:
         """停止服务并释放端口。"""
         self._server.shutdown()
         self._server.server_close()
+
+
+SANDBOX_ENV = 'QTWEBENGINE_DISABLE_SANDBOX'
+"""Qt 网页引擎读取的关闭沙箱环境变量。"""
+
+
+def disable_webengine_sandbox_on_network_runtime() -> bool:
+    """PySide6 或 python 在 SMB 网络路径时，关闭网页引擎沙箱。
+
+    渲染进程 ``QtWebEngineProcess.exe`` 随 PySide6 放在网络路径上时，Chromium
+    沙箱起不来，渲染进程异常退出。变量只在网页引擎首次初始化时读取，
+    所以要尽早调用，且不能为此导入 QtWebEngine 模块。
+
+    Returns:
+        本次调用设置了变量时为 True。
+    """
+    if os.environ.get(SANDBOX_ENV):
+        return False
+    try:
+        import PySide6
+
+        pyside_dir = Path(PySide6.__file__).resolve().parent
+    except (ImportError, OSError):
+        return False
+    if is_network_path(pyside_dir) or is_network_path(Path(sys.executable)):
+        os.environ[SANDBOX_ENV] = '1'
+        return True
+    return False
