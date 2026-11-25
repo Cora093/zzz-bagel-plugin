@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -73,7 +75,10 @@ if TYPE_CHECKING:
 WEB_DIR = PLUGIN_DIR / 'web'
 """网页资源目录。"""
 
-OVERLAY_INTERVAL_MS = 150
+SANDBOX_ENV = 'QTWEBENGINE_DISABLE_SANDBOX'
+"""Qt 网页引擎读取的关闭沙箱环境变量。"""
+
+OVERLAY_INTERVAL_MS =150
 """悬浮窗跟随游戏窗口位置与显隐的刷新间隔。"""
 
 UNDO_KEY_LABEL = '退格'
@@ -272,6 +277,7 @@ class BagelRouteEditor(QDialog):
         bar_layout.addWidget(self._build_key_hint(bar))
         layout.addWidget(bar)
 
+        _disable_sandbox_on_network_runtime()
         self.view: QtWebEngineWidgets.QWebEngineView = QtWebEngineWidgets.QWebEngineView(self)
         settings = self.view.settings()
         settings.setAttribute(
@@ -1025,6 +1031,21 @@ def _fmt_angle(value: float | None) -> str:
         带度数符号的文本。
     """
     return '--' if value is None else f'{value:.0f}°'
+
+
+def _disable_sandbox_on_network_runtime() -> None:
+    """主程序从 SMB 网络路径运行时关闭网页引擎沙箱。
+
+    网页渲染进程 ``QtWebEngineProcess.exe`` 随 PySide6 放在网络路径上时，
+    Chromium 沙箱起不来，渲染进程异常退出，页面载入失败。沙箱在网页引擎
+    首次创建时读取该环境变量，之后再设置不生效；编辑器页面只读本机服务
+    与插件自带资源，不浏览外部网站。
+    """
+    if os.environ.get(SANDBOX_ENV):
+        return
+    if is_network_path(Path(QtWebEngineCore.__file__)) or is_network_path(Path(sys.executable)):
+        os.environ[SANDBOX_ENV] = '1'
+        log.info('PySide6 位于网络路径，已关闭网页引擎沙箱以便路线编辑器渲染')
 
 
 def _layer_origins() -> dict[str, tuple[int, int]]:
