@@ -1045,9 +1045,9 @@ def _disable_sandbox_on_network_runtime() -> None:
     首次创建时读取该环境变量，之后再设置不生效；编辑器页面只读本机服务
     与插件自带资源，不浏览外部网站。
     """
-    if os.environ.get(SANDBOX_ENV):
-        return
-    if is_network_path(Path(QtWebEngineCore.__file__)) or is_network_path(Path(sys.executable)):
+    if not os.environ.get(SANDBOX_ENV) and (
+        is_network_path(Path(QtWebEngineCore.__file__)) or is_network_path(Path(sys.executable))
+    ):
         os.environ[SANDBOX_ENV] = '1'
         log.info('PySide6 位于网络路径，已关闭网页引擎沙箱以便路线编辑器渲染')
     if is_network_path(Path(QtWebEngineCore.__file__)) and not os.environ.get(FLAGS_ENV):
