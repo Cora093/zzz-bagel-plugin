@@ -7,9 +7,6 @@ line-length = 88
 indent-width = 4
 target-version = "py311"
 
-# scripts/ 是官方 plugin-template 的原样拷贝，保持与上游一致，不套用本仓库的检查规则。
-extend-exclude = ["scripts"]
-
 [lint]
 select = [
     "E",      # pycodestyle errors

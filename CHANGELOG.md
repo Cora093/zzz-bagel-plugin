@@ -1,6 +1,6 @@
 # 更新日志
 
-记录贝果计划插件的版本变更。版本号与 `bagel/const.py` 里的 `PLUGIN_VERSION` 保持一致。
+记录贝果计划插件的版本变更。版本号与 `bagel/plugin.json` 里的 `version` 保持一致。
 
 ## 未发布
 

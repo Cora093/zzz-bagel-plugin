@@ -1,10 +1,5 @@
-# Generated from plugin.json. Run scripts/generate_const.py after editing manifest.
+# 插件身份与运行行为，手写维护。版本、作者、主页、简介只写在 plugin.json。
 APP_ID = "bagel"
 APP_NAME = "贝果计划"
 DEFAULT_GROUP = True
 NEED_NOTIFY = True
-
-PLUGIN_AUTHOR = "Cora、kawayiYokami、ShadowLemoon、PoorKid1112、RRRR623、wusaqi、Ada、A-nony-mous、kinggod899"
-PLUGIN_HOMEPAGE = "https://github.com/Cora093/zzz-bagel-plugin"
-PLUGIN_VERSION = "0.6.3"
-PLUGIN_DESCRIPTION = "贝果计划自动跑刀：按自录路线跑图、收集物品、清理仓库并结算的完整自动化流程。"

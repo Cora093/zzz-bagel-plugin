@@ -29,13 +29,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # 用模板仓的校验 / 打包脚本，不信任 PR 分支里的同名脚本
-      - name: Checkout template tools
+      # 用官方 plugin-tools 的校验 / 打包脚本，本仓库不放脚本拷贝
+      - name: Checkout plugin tools
         uses: actions/checkout@v6
         with:
-          repository: OneDragon-Anyone/plugin-template
+          repository: OneDragon-Anyone/plugin-tools
           ref: v1
-          path: .plugin-template
+          path: .plugin-tools
           persist-credentials: false
 
       - uses: actions/setup-python@v6
@@ -44,15 +44,15 @@ jobs:
 
       # PR 没有 tag，所以这里不能带 --expect-tag
       - name: Validate repository
-        run: python .plugin-template/scripts/validate_plugin.py --repo . --strict
+        run: python .plugin-tools/scripts/validate_plugin.py --repo . --strict
 
       - name: Build package
         id: build
-        run: python .plugin-template/scripts/build_zip.py --repo . --out "$RUNNER_TEMP/dist"
+        run: python .plugin-tools/scripts/build_zip.py --repo . --out "$RUNNER_TEMP/dist"
 
       - name: Validate package
         run: >
-          python .plugin-template/scripts/validate_plugin.py
+          python .plugin-tools/scripts/validate_plugin.py
           --zip "${{ steps.build.outputs.zip }}"
           --expect-id "${{ steps.build.outputs.id }}"
 

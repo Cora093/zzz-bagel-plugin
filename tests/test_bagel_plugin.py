@@ -1,7 +1,7 @@
 """贝果计划插件的基础测试：插件能加载、能读到自己的资源、打包不丢文件。
 
 本文件检查插件结构与接入。提示识别和路线交互分别在同目录的专项测试中检查。
-manifest、const 与封面由 ``scripts/validate_plugin.py --strict`` 校验，这里不重复。
+manifest、const 与封面由官方 plugin-tools 的 ``validate_plugin.py --strict`` 校验，这里不重复。
 
 运行：`PYTHONPATH=<主仓>/src uv run pytest <本仓库>/tests/`。
 """

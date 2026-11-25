@@ -1,7 +1,7 @@
 """贝果插件的路径基准与业务常量。
 
-插件元数据（``APP_ID``、``APP_NAME``、``PLUGIN_*``）在 ``const``，
-那份文件由 ``scripts/generate_const.py`` 从 ``plugin.json`` 生成，不要手改。
+插件身份（``APP_ID``、``APP_NAME``）在 ``const``；
+版本、作者等展示元数据只在 ``plugin.json``。
 """
 
 from __future__ import annotations
