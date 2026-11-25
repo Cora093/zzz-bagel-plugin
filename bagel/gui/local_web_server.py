@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import mimetypes
+import sys
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,7 +32,15 @@ def is_network_path(path: Path) -> bool:
         以两个反斜杠或两个正斜杠开头时为 True。
     """
     text = str(path)
-    return text.startswith('\\\\') or text.startswith('//')
+    if text.startswith('\\\\') or text.startswith('//'):
+        return True
+    # 映射成盘符的 SMB 共享不是 UNC 写法，要按盘符类型判断。
+    if sys.platform == 'win32' and len(text) >= 2 and text[1] == ':':
+        import ctypes
+
+        drive_remote = 4
+        return ctypes.windll.kernel32.GetDriveTypeW(text[:2] + '\\') == drive_remote
+    return False
 
 
 def resolve_request(root: Path, request_path: str) -> Path | None:

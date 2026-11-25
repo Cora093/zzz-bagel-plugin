@@ -177,6 +177,9 @@ class BagelRouteEditor(QDialog):
         """正在定位替换的点序号；-1 表示没有进行中的定位。"""
         self.run_overlay: BagelRunOverlay | None = None
         self._page_ready: bool = False
+        self._load_error: str = ''
+        """网页引擎报告的最近一次载入失败原因。"""
+        self._theme_restored: bool = False
         self._web_server: LocalWebServer | None = None
         """插件在网络路径时给网页提供文件的本机服务。"""
         self._close_confirmed: bool = False
@@ -197,7 +200,13 @@ class BagelRouteEditor(QDialog):
         apply_light_palette(self)
         self.setWindowTitle('贝果路线编辑器')
         self.resize(1360, 820)
-        self._build_ui()
+        try:
+            self._build_ui()
+        except BaseException:
+            # 构造失败时不会走关闭流程，这里先把全局主题还原，免得主程序停在浅色。
+            self._restore_theme_once()
+            self._stop_web_server()
+            raise
 
     def _build_key_hint(self, bar: QWidget) -> QWidget:
         """把打点键位做成键帽加名字的一行，供顶部栏右侧显示。
@@ -272,6 +281,8 @@ class BagelRouteEditor(QDialog):
             QtWebEngineCore.QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False,
         )
         self.view.loadFinished.connect(self._on_page_loaded)
+        self.view.page().loadingChanged.connect(self._on_loading_changed)
+        self.view.page().renderProcessTerminated.connect(self._on_render_terminated)
         layout.addWidget(self.view, 1)
 
         self.bridge: BagelEditorBridge = BagelEditorBridge(self)
@@ -291,12 +302,34 @@ class BagelRouteEditor(QDialog):
                 log.error('启动路线编辑器本机服务失败', exc_info=True)
                 self.status_label.setText('页面载入失败')
                 return
-            self.finished.connect(self._stop_web_server)
             self.view.setUrl(QUrl(self._web_server.index_url))
             return
-        html =(WEB_DIR / 'index.html').read_text(encoding='utf-8')
+        html = (WEB_DIR / 'index.html').read_text(encoding='utf-8')
         base = QUrl.fromLocalFile(str(WEB_DIR.parent) + '/')
         self.view.setHtml(html, base)
+
+    def _on_loading_changed(self, info: Any) -> None:
+        """记下网页引擎给出的载入失败原因，供 loadFinished(False) 时显示。"""
+        if info.status() == QtWebEngineCore.QWebEngineLoadingInfo.LoadStatus.LoadFailedStatus:
+            self._load_error = f'{info.errorString()}（{info.errorCode()}）{info.url().toString()}'
+
+    def _on_render_terminated(self, status: Any, code: int) -> None:
+        """网页渲染进程退出时记日志并提示，避免界面空白却没有任何线索。"""
+        log.error('贝果路线编辑器网页进程退出：%s，退出码 %s', status, code)
+        self._page_ready = False
+        self.status_label.setText(f'网页进程已退出（{code}），请关闭编辑器后重试')
+
+    def _restore_theme_once(self) -> None:
+        """还原进入编辑器前的主题，只执行一次。"""
+        if not self._theme_restored:
+            self._theme_restored = True
+            restore_theme(self._previous_theme)
+
+    def done(self, result: int) -> None:
+        """无论从哪条路径关闭对话框，都还原主题并停掉本机服务。"""
+        self._restore_theme_once()
+        self._stop_web_server()
+        super().done(result)
 
     def _stop_web_server(self) -> None:
         """关闭编辑器时停掉本机服务。"""
@@ -307,7 +340,9 @@ class BagelRouteEditor(QDialog):
     def _on_page_loaded(self, ok: bool) -> None:
         """页面载入完成后推一次数据。"""
         if not ok:
-            self.status_label.setText('页面载入失败')
+            reason = self._load_error or '未知原因'
+            log.error('贝果路线编辑器页面载入失败：%s', reason)
+            self.status_label.setText(f'页面载入失败：{reason}')
             return
         self._page_ready = True
         self._push_data()
@@ -931,7 +966,7 @@ class BagelRouteEditor(QDialog):
             self.run_overlay.close()
             self.run_overlay.deleteLater()
             self.run_overlay = None
-        restore_theme(self._previous_theme)
+        self._restore_theme_once()
         super().closeEvent(event)
 
     def keyPressEvent(self, event: Any) -> None:
