@@ -201,10 +201,11 @@ def log_start(config: BagelConfig, room_name: str | None = None) -> None:
                 '不多于 %s 张就不再挑卡，任务结束。',
                 config.keycard_reserve, config.keycard_reserve,
             )
-        if config.keycard_carry_count > 1:
+        if len(config.keycard_rooms) > 1:
             log.info(
-                '一次携带：%s 张门禁卡。安全箱共 5 格，不够就一次次回仓库挑，凑够 %s 张才入场。',
-                config.keycard_carry_count, config.keycard_carry_count,
+                '一次携带：%s 个房间的门禁卡，每个房间各一张（共 %s 张）。安全箱共 5 格，'
+                '不够就一次次回仓库挑，凑够才入场。',
+                len(config.keycard_rooms), config.keycard_carry_count,
             )
     else:
         log.info(
