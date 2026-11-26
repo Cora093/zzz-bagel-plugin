@@ -101,22 +101,52 @@ class BagelConfig(ApplicationConfig):
         return None
 
     @property
-    def keycard_room(self) -> str:
-        """开房卡模式的目标房间标识，对应 ``keycard_rooms.yml`` 的 ``id``；未选为空串。"""
-        value = self.get('keycard_room', '')
-        return value if type(value) is str else ''
+    def keycard_rooms(self) -> list[str]:
+        """开房卡模式要带的房间标识列表，每个房间各带一张门禁卡；未选为空列表。
+
+        对应 ``keycard_rooms.yml`` 的 ``id``；一局只开识别到的出生点对应的那一个房间，
+        但安全箱里每个选中的房间各放一张卡。
+        """
+        value = self.get('keycard_rooms', None)
+        rooms: list[str] = []
+        if type(value) is list:
+            rooms = [item for item in value if type(item) is str and item]
+        primary = self.get('keycard_room', '')
+        if type(primary) is str and primary and primary not in rooms:
+            rooms.insert(0, primary)
+        return rooms
+
+    @keycard_rooms.setter
+    def keycard_rooms(self, value: list[str]) -> None:
+        """保存房间列表；第一个同时写成 ``keycard_room``，兼容只认单房间的旧配置。"""
+        if type(value) is not list:
+            raise ValueError('keycard_rooms 必须是文本列表')
+        rooms = [item for item in value if type(item) is str and item]
+        self.update('keycard_rooms', rooms)
+        self.update('keycard_room', rooms[0] if rooms else '')
 
     @property
-    def keycard_template(self) -> str:
-        """目标房间门禁卡的图标模板 id。"""
-        return f'keycard_{self.keycard_room}'
+    def keycard_room(self) -> str:
+        """主房间标识（列表第一个）；未选为空串。"""
+        rooms = self.keycard_rooms
+        return rooms[0] if rooms else ''
 
     @keycard_room.setter
     def keycard_room(self, value: str) -> None:
-        """保存目标房间；是否已登记由启动检查对照房间清单确认。"""
+        """保存主房间；已选的其它房间保持原顺序跟在后面。"""
         if type(value) is not str:
             raise ValueError('keycard_room 必须是文本')
-        self.update('keycard_room', value)
+        others = [room for room in self.keycard_rooms if room != value]
+        self.keycard_rooms = ([value] if value else []) + others
+
+    def keycard_template_for(self, room_id: str) -> str:
+        """指定房间门禁卡的图标模板 id。"""
+        return f'keycard_{room_id}'
+
+    @property
+    def keycard_template(self) -> str:
+        """主房间门禁卡的图标模板 id。"""
+        return self.keycard_template_for(self.keycard_room)
 
     @property
     def keycard_reserve(self) -> int:
@@ -130,6 +160,14 @@ class BagelConfig(ApplicationConfig):
         if type(value) is not int or not 0 <= value <= 999:
             raise ValueError('keycard_reserve 必须是 0 至 999 的整数')
         self.update('keycard_reserve', value)
+
+    @property
+    def keycard_carry_count(self) -> int:
+        """开房卡一次要带进安全箱的门禁卡张数，等于选中的房间数（每个房间各一张）。
+
+        安全箱一共 5 格；1 至 5 张由选中的房间数决定，不能手动设成重复卡。
+        """
+        return max(1, len(self.keycard_rooms))
 
     @property
     def auto_buy_keycard(self) -> bool:
@@ -368,6 +406,9 @@ class BagelConfig(ApplicationConfig):
         reserve = self.get('keycard_reserve', 0)
         if type(reserve) is not int or not 0 <= reserve <= 999:
             raise ValueError('keycard_reserve 必须是 0 至 999 的整数')
+        rooms = self.get('keycard_rooms', [])
+        if type(rooms) is not list or any(type(item) is not str or not item for item in rooms):
+            raise ValueError('keycard_rooms 必须是房间标识的文本列表')
         if type(self.auto_buy_keycard) is not bool:
             raise ValueError('auto_buy_keycard 必须是布尔值')
         buy_count = self.get('buy_keycard_count', 1)
@@ -410,7 +451,7 @@ class BagelMode(Enum):
     """运行模式。"""
 
     RUN = ConfigItem('跑刀', MODE_RUN, '零携带、零投资入场')
-    KEYCARD = ConfigItem('开房卡', MODE_KEYCARD, '安全箱带 1 张门禁卡')
+    KEYCARD = ConfigItem('开房卡', MODE_KEYCARD, '安全箱带各房间门禁卡，一间一张')
 
 
 class BagelMap(Enum):

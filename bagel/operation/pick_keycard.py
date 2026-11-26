@@ -86,7 +86,7 @@ FINISH_MARGIN_SECONDS: float = 20
 
 
 class BagelPickKeycard(BagelOperation):
-    """在仓库挑 1 张指定房间的门禁卡放进安全箱。
+    """在仓库挑指定房间的门禁卡放进安全箱：一次挑一张，由调用方反复挑到目标张数。
 
     ``reserve`` 大于 0 时先清点：翻完全部页，按图标相似度数本房间的卡，不点开；
     不多于 ``reserve`` 张就以 ``STATUS_RESERVE`` 结束，不挑。
@@ -109,7 +109,7 @@ class BagelPickKeycard(BagelOperation):
 
     def __init__(
         self, ctx: ZContext, room_name: str, template_id: str | None, *, from_prepare: bool,
-        reserve: int = 0,
+        reserve: int = 0, carry_target: int = 1,
     ) -> None:
         """
         Args:
@@ -117,12 +117,16 @@ class BagelPickKeycard(BagelOperation):
             template_id: 该房间门禁卡的图标模板；None 时按格子顺序逐个核对。
             from_prepare: 是否从备战页进入仓库并在挑完后返回备战。
             reserve: 保留张数；大于 0 时先清点，必须有图标模板。
+            carry_target: 本次要带进安全箱的总张数；安全箱已经有这么多张就不再挑。
         """
         super().__init__(ctx, op_name='贝果-挑选门禁卡', timeout_seconds=300 if reserve == 0 else 480)
         self.room_name: str = room_name
         self.template_id: str | None = template_id
         self.from_prepare: bool = from_prepare
         self.reserve: int = reserve
+        self.carry_target: int = max(1, carry_target)
+        self.placed_before: int = 0
+        """点「放入安全箱」之前安全箱已经有的张数；点完要看到张数变多才算放进去。"""
         self.counting: bool = reserve > 0
         """当前是否在清点阶段；清点完转入挑卡。"""
         self.counted: int | None = None
@@ -248,12 +252,14 @@ class BagelPickKeycard(BagelOperation):
     @node_from(from_name='打开挑卡仓库')
     @operation_node(name='核对挑卡安全箱', timeout_seconds=10)
     def check_safe(self) -> OperationRoundResult:
-        """安全箱必须为空：挑卡只放这 1 张，放进去后靠第 1 格有物确认。"""
+        """安全箱里的张数必须少于本次携带目标：挑够目标张数就不再挑。"""
         occupied = safe_occupied_indices(self.last_screenshot)
         if occupied is None:
             return self.round_retry('仓库安全箱格子状态不明', wait=0.5)
-        if occupied:
-            return self.round_fail(f'安全箱已有物品（格 {occupied}），不挑卡')
+        if occupied and len(occupied) >= self.carry_target:
+            return self.round_fail(
+                f'安全箱已有 {len(occupied)} 件（格 {occupied}），已达本次携带目标 {self.carry_target} 张，不挑卡',
+            )
         if self.counting and (self.template_id is None or load_template(self.template_id) is None):
             return self.round_fail('没有该房间门禁卡的图标模板，无法按保留张数清点')
         return self.round_success()
@@ -667,17 +673,19 @@ class BagelPickKeycard(BagelOperation):
         if '安全箱' not in button:
             return self._fail(f'浮窗没有「放入安全箱」按钮（读到「{button}」）')
         self.ctx.controller.click(TOOLTIP_SAFE_BUTTON_RECT.center, press_time=0.05)
+        occupied = safe_occupied_indices(self.last_screenshot)
+        self.placed_before = len(occupied) if occupied else 0
         self.placing_checks = 0
         return self.round_wait('已点放入安全箱', wait=0.8)
 
     def _check_placed(self) -> OperationRoundResult:
         occupied = safe_occupied_indices(self.last_screenshot)
-        if occupied:
+        if occupied and len(occupied) > self.placed_before:
             log.info('贝果挑卡：「%s」的门禁卡已放入安全箱，共点开 %s 格', self.room_name, self.opened)
             return self._finish(self.round_success(self.STATUS_PICKED))
         self.placing_checks = (self.placing_checks or 0) + 1
         if self.placing_checks >= PLACE_CHECKS:
-            return self._fail('点了放入安全箱，安全箱仍为空')
+            return self._fail('点了放入安全箱，安全箱里的张数没有变多')
         return self.round_wait('等待门禁卡进入安全箱', wait=0.5)
 
     @node_from(from_name='查找门禁卡')

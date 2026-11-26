@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
-    ComboBox,
+    CheckBox,
     FluentIcon,
     FluentStyleSheet,
     IconWidget,
@@ -274,7 +274,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         return card
 
     def _make_keycard_card(self, parent: QWidget) -> QWidget:
-        """开房卡专属：房间、路线就绪情况、保留张数。只在开房卡模式显示。"""
+        """开房卡专属：房间多选、路线就绪情况、保留张数、购买张数。只在开房卡模式显示。"""
         card = SimpleCardWidget(parent)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -282,13 +282,19 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         room_row = QHBoxLayout()
         room_row.setSpacing(12)
         room_row.addWidget(BodyLabel('房间', card))
-        self.room_box: ComboBox = ComboBox(card)
-        self.room_box.setMinimumWidth(ChoiceSegment.WIDTH)
-        self.room_box.setAccessibleName('开房卡房间')
-        self.room_box.currentIndexChanged.connect(self._on_room_changed)
-        room_row.addWidget(self.room_box)
+        self.rooms_hint: CaptionLabel = CaptionLabel(
+            '勾选要开房卡的房间：勾几个就带几张，一个房间各一张；一局只开一个房间，先开第一个勾选的', card,
+        )
+        self.rooms_hint.setWordWrap(True)
+        room_row.addWidget(self.rooms_hint)
         room_row.addStretch(1)
         layout.addLayout(room_row)
+        self.rooms_box: QWidget = QWidget(card)
+        self.rooms_layout: QVBoxLayout = QVBoxLayout(self.rooms_box)
+        self.rooms_layout.setContentsMargins(0, 0, 0, 0)
+        self.rooms_layout.setSpacing(4)
+        self.room_checks: dict[str, CheckBox] = {}
+        layout.addWidget(self.rooms_box)
         self.keycard_status: CaptionLabel = CaptionLabel(card)
         self.keycard_status.setWordWrap(True)
         layout.addWidget(self.keycard_status)
@@ -415,25 +421,49 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         return previous
 
     def _fill_room_box(self) -> None:
-        """房间下拉框只列所选地图的房间；开房卡模式下所选房间不在其中时选第一个并保存。"""
+        """房间勾选框只列所选地图的房间；勾上的房间各带一张门禁卡，第一个勾选的是这局要开的房间。"""
         if self.config is None:
             return
         rooms = [room for room in self._rooms if room.map_id == self.config.map_name]
-        with QtCore.QSignalBlocker(self.room_box):
-            self.room_box.clear()
-            for room in rooms:
-                self.room_box.addItem(room.name, userData=room.room_id)
-            ids = [room.room_id for room in rooms]
-            if self.config.keycard_room not in ids and ids and self.config.is_keycard:
-                self.config.keycard_room = ids[0]
-            if self.config.keycard_room in ids:
-                self.room_box.setCurrentIndex(ids.index(self.config.keycard_room))
+        ids = [room.room_id for room in rooms]
+        if self.config.is_keycard and ids:
+            selected = [room_id for room_id in self.config.keycard_rooms if room_id in ids]
+            if not selected:
+                selected = [ids[0]]
+            self.config.keycard_rooms = selected
+        checked = set(self.config.keycard_rooms)
+        while self.rooms_layout.count():
+            item = self.rooms_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self.room_checks = {}
+        for room in rooms:
+            check = CheckBox(room.name, self.rooms_box)
+            check.setChecked(room.room_id in checked)
+            check.stateChanged.connect(self._on_room_toggled)
+            self.rooms_layout.addWidget(check)
+            self.room_checks[room.room_id] = check
+        self.rooms_box.setVisible(bool(self.room_checks))
+
+    def _on_room_toggled(self) -> None:
+        """勾选变化时按界面顺序写回房间列表；一个都不留时把第一间勾上，避免没有房间可开。"""
+        if not self._config_loaded or self.config is None:
+            return
+        checked = [room_id for room_id, check in self.room_checks.items() if check.isChecked()]
+        if not checked and self.room_checks:
+            first_id, first_check = next(iter(self.room_checks.items()))
+            with QtCore.QSignalBlocker(first_check):
+                first_check.setChecked(True)
+            checked = [first_id]
+        self.config.keycard_rooms = checked
+        self._refresh_keycard_status()
 
     def _refresh_keycard_status(self) -> None:
         """一行写清房间能不能跑：可用的出生点，或缺什么。"""
         if self.config is None:
             return
-        room_id = self.config.keycard_room
+        room_ids = self.config.keycard_rooms
         problems: list[str] = []
         spawns: list[str] = []
         try:
@@ -442,15 +472,17 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             catalog = None
             problems.append(str(error))
         if catalog is not None:
-            if catalog.room(room_id) is None:
+            if not room_ids or catalog.room(room_ids[0]) is None:
                 problems.append('未选择房间')
             else:
-                problem = catalog.keycard_problem(room_id)
-                if problem is not None:
-                    problems.append(problem)
-                selection = catalog.keycard_selection(room_id)
-                if selection.room is None or catalog.route(selection.room) is None:
-                    problems.append('未开启房间段')
+                for room_id in room_ids:
+                    problem = catalog.keycard_problem(room_id)
+                    if problem is not None:
+                        problems.append(problem)
+                    selection = catalog.keycard_selection(room_id)
+                    if selection.room is None or catalog.route(selection.room) is None:
+                        problems.append('未开启房间段')
+                selection = catalog.keycard_selection(room_ids[0])
                 spawns = [spawn.name for spawn in catalog.spawns if selection.entries.get(spawn.spawn_id) is not None]
                 if not spawns:
                     problems.append('没有出生点开启入口段')
@@ -479,15 +511,6 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         self.config.map_name = map_name
         self._fill_room_box()
         self._refresh_target()
-
-    def _on_room_changed(self, index: int) -> None:
-        """保存房间并刷新就绪情况。"""
-        if not self._config_loaded or self.config is None or index < 0:
-            return
-        room_id = self.room_box.itemData(index)
-        if isinstance(room_id, str):
-            self.config.keycard_room = room_id
-        self._refresh_keycard_status()
 
     def _make_end_conditions(self, parent: QWidget) -> QWidget:
         """两个计数输入组成一句话。"""

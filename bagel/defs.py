@@ -75,7 +75,7 @@ DEFAULT_CLEAN_FILTER_GROUPS: tuple[tuple[str, ...], ...] = tuple(
     for types, qualities in DEFAULT_CLEAN_STEPS
 )
 
-# 运行模式：跑刀零携带进雅努斯幻境；开房卡带 1 张门禁卡进城郊幻境高危，只搜一个房间。
+# 运行模式：跑刀零携带进雅努斯幻境；开房卡带门禁卡进城郊幻境高危，只搜一个房间，勾多个房间时每个房间各带一张。
 MODE_RUN: str = 'run'
 MODE_KEYCARD: str = 'keycard'
 MODES: tuple[str, ...] = (MODE_RUN, MODE_KEYCARD)

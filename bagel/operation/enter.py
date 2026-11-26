@@ -53,7 +53,8 @@ _ENTRY_DIALOG_TIMEOUT_SECONDS: float = 15
 class BagelEnter(BagelOperation):
     """从已知安全画面进入贝果，核实地图、难度、携带和零投资。
 
-    跑刀要求零携带；开房卡（``carry_card``）要求只在安全箱放 1 件物品，即门禁卡。
+    跑刀要求零携带；开房卡（``carry_card``）要求只在安全箱放门禁卡：每个选中房间各一张，
+    张数由 ``card_rooms`` 的房间数决定，默认 1 张。
     """
 
     STATUS_NEED_CARD: str = '需要挑选门禁卡'
@@ -65,22 +66,39 @@ class BagelEnter(BagelOperation):
         recovery_filter_groups: tuple[tuple[str, ...], ...] | None = None,
         difficulty: str = DEFAULT_DIFFICULTY, map_name: str = MAP_JANUS, carry_card: bool = False,
         card_room_name: str | None = None, card_template: str | None = None, card_reserve: int = 0,
+        card_rooms: list[tuple[str, str | None]] | None = None,
+        picked_rooms: list[str] | None = None,
     ) -> None:
         """正式应用首次入场允许清空并重建快捷手册入口；独立工具默认复用现有贝果页。
 
         Args:
             map_name: 进入的地图，雅努斯幻境或城郊幻境。
-            carry_card: 开房卡模式：安全箱必须正好有 1 件物品（门禁卡），背包与装备槽为空，
-                不自动清空战备。安全箱为空时从备战进仓库挑 1 张卡。
+            carry_card: 开房卡模式：安全箱只放门禁卡，每个选中房间各一张，背包与装备槽为空，
+                不自动清空战备。安全箱不够时从备战进仓库挑卡。
             card_room_name: 开房卡房间显示名称，挑卡时与门禁卡浮窗标题比对。
             card_template: 该房间门禁卡的图标模板，挑卡时给候选格排序。
             card_reserve: 保留张数，挑卡前清点仓库，不多于这个数就不挑。
+            card_rooms: 本轮要挑的各房间 (显示名, 图标模板)，按顺序各挑一张；给出时忽略
+                ``card_room_name`` / ``card_template``。
+            picked_rooms: 调用方持有的「已经挑进安全箱的房间」记账，按挑卡顺序；入场重试会
+                新建本操作，靠它接着挑下一个房间，避免安全箱里出现两张同房间的卡。
         """
         timeout = 660 if allow_clear_loadout else 240
-        super().__init__(ctx, op_name='贝果-入场', timeout_seconds=timeout + (300 if carry_card else 0))
+        rooms = [(room, template) for room, template in card_rooms] if card_rooms else (
+            [(card_room_name, card_template)] if card_room_name else []
+        )
+        # 每个房间都要单独跑一次挑卡流程，超时按房间数留余量。
+        pick_budget = 300 * max(1, len(rooms)) if carry_card else 0
+        super().__init__(ctx, op_name='贝果-入场', timeout_seconds=timeout + pick_budget)
         self.card_room_name: str | None = card_room_name
         self.card_template: str | None = card_template
         self.card_reserve: int = card_reserve
+        self.card_rooms: list[tuple[str, str | None]] = rooms
+        """本轮要挑的各房间 (显示名, 图标模板)；按顺序各挑一张门禁卡。"""
+        self.picked_rooms: list[str] = picked_rooms if picked_rooms is not None else []
+        """安全箱里已经挑好的房间，按挑卡先后排列；由调用方跨多次入场沿用。"""
+        self.card_carry_count: int = max(1, len(self.card_rooms))
+        """一次带入安全箱的门禁卡张数，等于本轮房间数；安全箱共 5 格。"""
         self.card_picked: bool = False
         """本次入场是否已经挑过卡；只挑一次，挑完仍不对就停止。"""
         self.difficulty: str = difficulty
@@ -112,6 +130,11 @@ class BagelEnter(BagelOperation):
         self._warning_reclicked: bool = False
         self._resume_check: bool = False
 
+    @property
+    def cards_picked(self) -> int:
+        """安全箱里已挑好的门禁卡张数；记账在调用方，重跑本操作不会清零重挑。"""
+        return len(self.picked_rooms)
+
     def handle_init(self) -> None:
         """重复运行时清除上一局的确认状态。"""
         super().handle_init()
@@ -130,6 +153,7 @@ class BagelEnter(BagelOperation):
         self._warning_reclicked = False
         self._resume_check = False
         self.card_picked = False
+        # picked_rooms 不清空：安全箱里的卡还在，重跑时不能当没挑过。
 
     def _map_state(self) -> str:
         """读选图页：``ok`` 地图与难度都对，``wrong`` 明确选错，``unknown`` 读数不明。"""
@@ -433,37 +457,79 @@ class BagelEnter(BagelOperation):
         return result
 
     def _card_loadout_problem(self, values: dict[str, str], states: list[bool | None]) -> str | None:
-        """开房卡携带核对：背包与装备槽为空，安全箱正好 1 件。不满足时返回停止原因。
+        """开房卡携带核对：背包与装备槽为空，安全箱凑够各房间的张数。不满足时返回停止原因。
 
-        只核对件数，不认卡的种类；带错卡由刷卡处的持卡计数发现。
+        只核对张数与挑卡记账，不逐格识别卡的种类；带错卡由刷卡处的持卡计数发现。
+        安全箱里张数不够就返回 ``STATUS_NEED_CARD`` 继续挑，挑够再核对通过。
         """
+        target = self.card_carry_count
         if any(states) or not empty_capacity(values.get('背包数量', '')):
-            return f'开房卡只允许在安全箱放 1 张门禁卡，请清空武备、装备、道具和背包；容器 {values}，槽位 {states}'
+            return (
+                f'开房卡只允许在安全箱放 {target} 张门禁卡，请清空武备、装备、道具和背包；'
+                f'容器 {values}，槽位 {states}'
+            )
         pair = parse_capacity_pair(values.get('安全箱数量', ''))
         if pair is None:
             return f'安全箱数量不明，停止并保留现场；容器 {values}'
         if pair[0] == 0:
-            if self.card_picked or self.card_room_name is None:
+            if self.picked_rooms:
+                # 安全箱明明空了却有挑卡记账：上一局的卡已刷门消耗或随结算入仓。
+                self.picked_rooms.clear()
+            if self.card_picked or not self.card_rooms:
                 return '挑卡后安全箱仍为空，停止并保留现场'
             return self.STATUS_NEED_CARD
-        if pair[0] != 1:
-            return f'开房卡只允许在安全箱放 1 张门禁卡，当前安全箱 {values.get("安全箱数量")}'
-        log.info('贝果开房卡：安全箱 %s，背包 %s，按带 1 张门禁卡入场', values.get('安全箱数量'), values.get('背包数量'))
+        if pair[0] > target:
+            return f'开房卡只允许在安全箱放 {target} 张门禁卡，当前安全箱 {values.get("安全箱数量")}'
+        if pair[0] < target:
+            if not self.picked_rooms:
+                # 安全箱里有卡但记账为空：卡不是本次流程挑的，房间不明；再按第一个房间挑
+                # 就会两张同房间，到房卡门才发现少了另一个房间的卡。
+                return (
+                    f'安全箱有 {pair[0]} 张门禁卡但无法确认房间，停止并保留现场；'
+                    '请先把安全箱里的卡放回仓库再运行'
+                )
+            if self.cards_picked < target:
+                return self.STATUS_NEED_CARD
+            return f'安全箱只有 {pair[0]} 张门禁卡，少于目标 {target} 张，停止并保留现场'
+        log.info('贝果开房卡：安全箱 %s，背包 %s，按带 %s 张门禁卡入场', values.get('安全箱数量'), values.get('背包数量'), target)
         return None
+
+    def _next_card_room(self) -> tuple[str, str | None]:
+        """取下一个该挑的房间与其图标模板：各房间先各挑一张，已经挑过的房间往后排。
+
+        记账在调用方，跨入场重试保留；这样「买卡后重新入场」不会又从第一个房间挑起，
+        也不会往安全箱里塞同一房间的第二张卡。
+        """
+        if not self.card_rooms:
+            return self.card_room_name or '', self.card_template
+        counts: dict[str, int] = {}
+        for room in self.picked_rooms:
+            counts[room] = counts.get(room, 0) + 1
+        fewest = min(counts.get(room_name, 0) for room_name, _template in self.card_rooms)
+        for room_name, template in self.card_rooms:
+            if counts.get(room_name, 0) == fewest:
+                return room_name, template
+        return self.card_rooms[0]
 
     @node_from(from_name='核对零携带', status=STATUS_NEED_CARD, ignore_status=False)
     @operation_node(name='挑选门禁卡', screenshot_before_round=False)
     def pick_card(self) -> OperationRoundResult:
-        """安全箱为空时从备战进仓库挑 1 张目标房间的卡，回到备战后重新核对携带。"""
+        """安全箱不够时从备战进仓库挑下一张卡，回到备战后重新核对携带。"""
         self.card_picked = True
+        room_name, template = self._next_card_room()
         operation = BagelPickKeycard(
-            self.ctx, self.card_room_name or '', self.card_template, from_prepare=True,
-            reserve=self.card_reserve,
+            self.ctx, room_name, template, from_prepare=True,
+            reserve=self.card_reserve, carry_target=self.card_carry_count,
         )
         result = operation.execute()
         self.screenshot()
         if not result.success:
             return self.round_fail(result.status, data=result.data)
+        self.picked_rooms.append(room_name)
+        log.info(
+            '贝果开房卡：已挑 %s/%s 张门禁卡（房间 %s）',
+            self.cards_picked, self.card_carry_count, room_name,
+        )
         return self.round_success(wait=0.5)
 
     @node_from(from_name='核对零携带', status='需要清空启动战备')
@@ -475,6 +541,9 @@ class BagelEnter(BagelOperation):
         self.clear_attempted = True
         result = BagelClearLoadout(self.ctx).execute()
         self.screenshot()
+        if result.success:
+            # 安全箱已随战备入仓，之前的挑卡记账作废，重新按房间顺序挑。
+            self.picked_rooms.clear()
         return self.round_by_op_result(result)
 
     @node_from(from_name='核对零携带')
