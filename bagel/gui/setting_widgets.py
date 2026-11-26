@@ -6,7 +6,7 @@ from one_dragon_qt.widgets.adapter_init_mixin import AdapterInitMixin
 from one_dragon_qt.widgets.multi_selection_combo_box import MultiSelectionComboBox
 from PySide6 import QtCore
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QWheelEvent
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -58,6 +58,10 @@ class CountSpinBox(SpinBox, AdapterInitMixin):
         self.setFixedWidth(140)
         self.setKeyboardTracking(False)
         self.valueChanged.connect(self._save_value)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """把滚轮事件交给页面滚动，防止误改并保存数值。"""
+        event.ignore()
 
     def _set_value_from_adapter(self, value: int) -> None:
         """阻断初始化信号，防止加载时写回。"""
