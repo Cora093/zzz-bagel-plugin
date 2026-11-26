@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 import time
 from pathlib import Path
 from threading import Event
@@ -80,6 +81,8 @@ def is_foreground(hwnd: int) -> bool:
     Returns:
         前台时为 True。
     """
+    if sys.platform != 'win32':
+        return False
     return int(ctypes.windll.user32.GetForegroundWindow()) == int(hwnd)
 
 

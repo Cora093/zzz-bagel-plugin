@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sys
 import threading
 import time
 from collections import Counter, defaultdict
@@ -12,9 +13,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import psutil
-import win32process
 from one_dragon.utils.log_utils import log
-from pywintypes import error as WinError
+
+if sys.platform == 'win32':
+    import win32process
+    from pywintypes import error as WinError
+else:
+    win32process = None
+    WinError = OSError
 
 
 def movement_stage(node: str, status: str) -> str:
@@ -78,7 +84,7 @@ class CaptureStats:
     def _cpu_times(self) -> tuple[float, float | None]:
         game_cpu = None
         try:
-            if self._game is None:
+            if self._game is None and win32process is not None:
                 hwnd = self._get_hwnd()
                 if hwnd:
                     _, pid = win32process.GetWindowThreadProcessId(hwnd)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import ctypes
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
 
 def scroll_interaction_row(down: bool) -> None:
     """发送一格垂直滚轮，保持光标和镜头原位。"""
-    ctypes.windll.user32.mouse_event(0x0800, 0, 0, -120 if down else 120, 0)
+    if sys.platform == 'win32':
+        ctypes.windll.user32.mouse_event(0x0800, 0, 0, -120 if down else 120, 0)
 
 
 def is_bagel_result(operation: Operation) -> bool:
@@ -58,7 +60,7 @@ def release_flow_inputs(ctx: ZContext, *, release_mouse: bool = True) -> None:
     if not release_mouse:
         return
     controller.keyboard_controller.mouse.release(mouse.Button.left)
-    if controller.background_mode:
+    if controller.background_mode and sys.platform == 'win32':
         hwnd = controller.game_win.get_hwnd()
         if hwnd is not None:
             ctypes.windll.user32.PostMessageW(hwnd, 0x0202, 0, 0)  # WM_LBUTTONUP
