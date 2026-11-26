@@ -6,7 +6,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from one_dragon.base.controller.pc_button import pc_button_utils
 from one_dragon.base.operation.operation import Operation
@@ -28,10 +28,15 @@ if TYPE_CHECKING:
     from zzz_od.context.zzz_context import ZContext
 
 
-def scroll_interaction_row(down: bool) -> None:
+def scroll_interaction_row(down: bool, controller: Any = None) -> None:
     """发送一格垂直滚轮，保持光标和镜头原位。"""
     if sys.platform == 'win32':
         ctypes.windll.user32.mouse_event(0x0800, 0, 0, -120 if down else 120, 0)
+        return
+    if sys.platform == 'darwin' and controller is not None and hasattr(controller, '_get_mac_virtual_hid_mouse'):
+        controller._get_mac_virtual_hid_mouse().scroll(-1 if down else 1)
+        return
+    mouse.Controller().scroll(0, -1 if down else 1)
 
 
 def is_bagel_result(operation: Operation) -> bool:

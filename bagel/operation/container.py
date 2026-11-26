@@ -110,7 +110,7 @@ class BagelContainerOperation(BagelOperation):
         if not self.selection.observe(frame):
             return self.round_wait('等待选中行稳定', wait=0.1)
         if step:
-            scroll_interaction_row(step > 0)
+            scroll_interaction_row(step > 0, self.ctx.controller)
             self.selection.reset(max(time.time(), frame.stamp))
             return self.round_wait('已滚动一格，复核高亮条目', wait=0.2)
         self.selection.reset(frame.stamp)
