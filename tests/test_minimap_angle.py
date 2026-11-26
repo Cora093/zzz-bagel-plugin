@@ -25,7 +25,7 @@ def _error(angle: float, reference: float) -> float:
 
 
 def test_fitted_references_keep_baseline() -> None:
-    """有拟合参考方向的 50 张图：yellowbg_234 换严门后误差约 6.9 度，其余与换严门前相同。"""
+    """有拟合参考方向的 50 张图与换严门前一致：yellowbg_234 越过污染线，但两门读数差不到 15 度，不换门。"""
     errors = []
     for record in FRAMES:
         if record['reference'] is None or 'fit' not in record:
@@ -34,7 +34,7 @@ def test_fitted_references_keep_baseline() -> None:
         assert angle is not None, record['file']
         errors.append(_error(angle, record['reference']))
     assert len(errors) == 50
-    assert float(np.mean(errors)) <= 1.35
+    assert float(np.mean(errors)) <= 1.25
     assert max(errors) <= 7.8
 
 

@@ -10,7 +10,8 @@
    黄底上门约等于直通，退化成纯 S；白天门把蓝底拦掉才不偏。
 2. 背景污染时换严门重读：已取各圈楔外得分占全圈的平均比例超过
    0.2，说明黄门放进了大片背景（例如仓储二层的黄色海报），
-   改用 H 21~34 的严门重算一遍，严门的楔外比例更低才采用。
+   改用 H 21~34 的严门重算一遍。严门的楔外比例更低、且与黄门读数相差
+   超过 15 度时才采用；差得少说明黄门本来就没被拉偏，保留黄门读数。
 
 角度约定：正右为 0，逆时针增加，取值 0~360。
 
@@ -53,8 +54,16 @@ SECTOR_STRICT_H_MIN: float = 21.0
 SECTOR_CLUTTER_RATIO: float = 0.2
 """背景污染线：已取各圈楔外得分占全圈的平均比例超过它才换严门。
 仓储二层海报帧多在 0.4 以上，宽门读错的最低 0.24；朝向基准 50 张中只有
-yellowbg_234 约 0.204 越线，换严门后它的误差从 0.9 度升到 6.9 度，
-用这点代价换海报帧不漏判。"""
+yellowbg_234 约 0.204 越线，由 ``SECTOR_STRICT_MIN_GAP`` 挡住不换门。"""
+
+SECTOR_STRICT_MIN_GAP: float = 15.0
+"""严门采用线（度）：越过污染线后，严门与黄门读数相差超过它才采用严门。
+
+5 张海报素材两者相差 31~162 度。图标或暖色背景让污染度越线时，两者多数只差
+几度，这时严门丢掉的扇区像素比拦掉的背景更多，读数反而更差，保留黄门读数；
+yellowbg_234 差 6 度。录屏帧上取 10~20 度时误差超过 16 度的帧数相同，25 度会漏掉一张
+黄门偏 30 度、两者差 21 度的帧，10 度会让一张图标帧从 1.5 度变成 12.8 度。
+海报只把黄门拉偏十几度的帧仍用黄门读数。"""
 
 SECTOR_TWO_DIFF: float = 3.0
 """两圈稳定线：差它以内直接平均收。人工误差红线 3 度。"""
@@ -180,7 +189,8 @@ def _sector_angle(
 
     仓储二层的黄色海报色相 16~19，整片落在黄门内，楔子会去罩海报，
     读数在几十到上百度之间跳。这时楔外得分占比高，换 H 21~34 严门
-    把海报拦掉；严门的楔外占比不比黄门低时，仍用黄门的读数。
+    把海报拦掉。严门的楔外占比更低、且读数与黄门相差超过 15 度才采用严门；
+    否则仍用黄门的读数。
 
     Args:
         rgb: 小地图 RGB 图，正方形。
@@ -205,7 +215,9 @@ def _sector_angle(
         if float(strict.max()) <= 0.0:
             return angle
         strict_angle, strict_clutter = _field_estimate(strict, center_x, center_y)
-        return strict_angle if strict_clutter < clutter else angle
+        if strict_clutter < clutter and abs(_angle_delta(strict_angle, angle)) > SECTOR_STRICT_MIN_GAP:
+            return strict_angle
+        return angle
     except Exception:
         return None
 
