@@ -8,6 +8,9 @@
    起点到中线加 (117 - 1) / 2 度。先取 23、28 两圈，
    差 3 度内直接平均收；否则按甜点区顺序加圈，出现 3 圈互差 4 度内即平均收。
    黄底上门约等于直通，退化成纯 S；白天门把蓝底拦掉才不偏。
+2. 背景污染时换严门重读：已取各圈楔外得分占全圈的平均比例超过
+   0.2，说明黄门放进了大片背景（例如仓储二层的黄色海报），
+   改用 H 21~34 的严门重算一遍，严门的楔外比例更低才采用。
 
 角度约定：正右为 0，逆时针增加，取值 0~360。
 
@@ -42,6 +45,17 @@ SECTOR_YELLOW_H_MIN: float = 14.0
 SECTOR_YELLOW_H_MAX: float = 34.0
 """黄门上限。同上。"""
 
+SECTOR_STRICT_H_MIN: float = 21.0
+"""严门下限。扇区（含叠在黄色海报上的部分）色相 20~25；仓储二层黄色海报 16~19，
+落在黄门内、严门外。只在背景污染时启用：部分背景上的扇区色相会降到 12~19，
+平时用严门会丢扇区。"""
+
+SECTOR_CLUTTER_RATIO: float = 0.2
+"""背景污染线：已取各圈楔外得分占全圈的平均比例超过它才换严门。
+仓储二层海报帧多在 0.4 以上，宽门读错的最低 0.24；朝向基准 50 张中只有
+yellowbg_234 约 0.204 越线，换严门后它的误差从 0.9 度升到 6.9 度，
+用这点代价换海报帧不漏判。"""
+
 SECTOR_TWO_DIFF: float = 3.0
 """两圈稳定线：差它以内直接平均收。人工误差红线 3 度。"""
 
@@ -63,7 +77,7 @@ def _circular_mean(angles: list[float]) -> float:
 
 def _ring_estimate(
     field: np.ndarray, center_x: float, center_y: float, radius: float,
-) -> float:
+) -> tuple[float, float | None]:
     """单圈估计：该圈黄门内 S 剖面上楔内和最大的中线。
 
     多个起点并列最高时，取包含第一个最大值的连续并列段的中点；
@@ -76,7 +90,7 @@ def _ring_estimate(
         radius: 采样半径。
 
     Returns:
-        该圈估计的朝向。
+        (该圈估计的朝向, 楔外得分占全圈的比例)。全圈得分为 0 时比例为 None。
     """
     height, width = field.shape[:2]
     count = int(round(360.0 / SECTOR_STEP_DEGREE))
@@ -105,19 +119,68 @@ def _ring_estimate(
             end += 1
     middle = (start + end) / 2
     # window 个点首尾只跨 window - 1 个步长，中线离起点 (window - 1) / 2 个步长。
-    return float(((middle + (window - 1) / 2) * SECTOR_STEP_DEGREE) % 360.0)
+    angle = float(((middle + (window - 1) / 2) * SECTOR_STEP_DEGREE) % 360.0)
+    total = float(profile.sum())
+    outside = (total - float(sums[index])) / total if total > 0.0 else None
+    return angle, outside
+
+
+def _field_estimate(
+    field: np.ndarray, center_x: float, center_y: float,
+) -> tuple[float, float]:
+    """在一张门内 S 图上按甜点区顺序取圈，两圈起步、差异大加圈到稳定组。
+
+    Args:
+        field: 门内 S（门外已置零），至少有一个正值。
+        center_x: 固定圆心 x。
+        center_y: 固定圆心 y。
+
+    Returns:
+        (镜头朝向, 已取各圈楔外比例的平均)。已取的圈全为 0 分时比例记 0。
+    """
+    values: list[float] = []
+    outsides: list[float] = []
+    angle: float | None = None
+    for radius in SECTOR_RING_ORDER:
+        value, outside = _ring_estimate(field, center_x, center_y, float(radius))
+        values.append(value)
+        if outside is not None:
+            outsides.append(outside)
+        if len(values) == 2:
+            if abs(_angle_delta(values[0], values[1])) <= SECTOR_TWO_DIFF:
+                angle = _circular_mean(values)
+                break
+        elif len(values) >= 3:
+            for cand in values:
+                members = [
+                    v for v in values
+                    if abs(_angle_delta(v, cand)) <= SECTOR_GROUP_DEGREE
+                ]
+                if len(members) >= 3:
+                    angle = _circular_mean(members)
+                    break
+            if angle is not None:
+                break
+    if angle is None:
+        angle = _circular_mean(values)
+    clutter = float(np.mean(outsides)) if outsides else 0.0
+    return angle, clutter
 
 
 def _sector_angle(
     rgb: MatLike, center_x: float, center_y: float,
 ) -> float | None:
-    """先 H 滤黄、再 S 滑窗求镜头朝向，两圈起步、差异大加圈到稳定组。
+    """先 H 滤黄、再 S 滑窗求镜头朝向；背景污染时换严门重读。
 
     白天蓝底 S 高（r28 圈 60~150 度均值约 154），纯 S 滑窗被宽蓝底淹掉，
     指到 84~119 度；先过 H 14~34 黄门，蓝底直接拦掉，r23 回到 2.5 度。
     黄底上门约等于直通（扇形 24、黄底 21~23），退化成纯 S，之前 5 张的
     1.3 度还在。门内只看 S，不看 V：黄底 5 张上 V 门版有张偏 12 度。
     r28 北半截常被墙切掉、单圈往南偏（299.5），靠多圈投票纠回 2.5。
+
+    仓储二层的黄色海报色相 16~19，整片落在黄门内，楔子会去罩海报，
+    读数在几十到上百度之间跳。这时楔外得分占比高，换 H 21~34 严门
+    把海报拦掉；严门的楔外占比不比黄门低时，仍用黄门的读数。
 
     Args:
         rgb: 小地图 RGB 图，正方形。
@@ -130,28 +193,19 @@ def _sector_angle(
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     hue = hsv[:, :, 0].astype(np.float64)
     sat = hsv[:, :, 1].astype(np.float64)
-    yellow = (hue >= SECTOR_YELLOW_H_MIN) & (hue <= SECTOR_YELLOW_H_MAX)
-    field = np.where(yellow, sat, 0.0)
+    in_gate = hue <= SECTOR_YELLOW_H_MAX
+    field = np.where(in_gate & (hue >= SECTOR_YELLOW_H_MIN), sat, 0.0)
     if float(field.max()) <= 0.0:
         return None
     try:
-        values: list[float] = []
-        for radius in SECTOR_RING_ORDER:
-            values.append(_ring_estimate(field, center_x, center_y, float(radius)))
-            if len(values) == 2:
-                if abs(_angle_delta(values[0], values[1])) <= SECTOR_TWO_DIFF:
-                    return _circular_mean(values)
-            elif len(values) >= 3:
-                for cand in values:
-                    members = [
-                        v for v in values
-                        if abs(_angle_delta(v, cand)) <= SECTOR_GROUP_DEGREE
-                    ]
-                    if len(members) >= 3:
-                        return _circular_mean(members)
-        if not values:
-            return None
-        return _circular_mean(values)
+        angle, clutter = _field_estimate(field, center_x, center_y)
+        if clutter <= SECTOR_CLUTTER_RATIO:
+            return angle
+        strict = np.where(in_gate & (hue >= SECTOR_STRICT_H_MIN), sat, 0.0)
+        if float(strict.max()) <= 0.0:
+            return angle
+        strict_angle, strict_clutter = _field_estimate(strict, center_x, center_y)
+        return strict_angle if strict_clutter < clutter else angle
     except Exception:
         return None
 
