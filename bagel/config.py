@@ -132,6 +132,22 @@ class BagelConfig(ApplicationConfig):
         self.update('keycard_reserve', value)
 
     @property
+    def keycard_carry_count(self) -> int:
+        """开房卡一次要带进安全箱的门禁卡张数，1 至 5 张；默认 1 张。
+
+        安全箱一共 5 格，带几张就挑几张：入场前按这个数核对安全箱，不足就继续从仓库挑。
+        """
+        value = self.get('keycard_carry_count', 1)
+        return value if type(value) is int and 1 <= value <= 5 else 1
+
+    @keycard_carry_count.setter
+    def keycard_carry_count(self, value: int) -> None:
+        """保存一次携带的门禁卡张数。"""
+        if type(value) is not int or not 1 <= value <= 5:
+            raise ValueError('keycard_carry_count 必须是 1 至 5 的整数')
+        self.update('keycard_carry_count', value)
+
+    @property
     def auto_buy_keycard(self) -> bool:
         """开房卡模式：仓库没有可用的门禁卡时是否自动在商店购买房卡。"""
         value = self.get('auto_buy_keycard', False)
@@ -368,6 +384,9 @@ class BagelConfig(ApplicationConfig):
         reserve = self.get('keycard_reserve', 0)
         if type(reserve) is not int or not 0 <= reserve <= 999:
             raise ValueError('keycard_reserve 必须是 0 至 999 的整数')
+        carry_count = self.get('keycard_carry_count', 1)
+        if type(carry_count) is not int or not 1 <= carry_count <= 5:
+            raise ValueError('keycard_carry_count 必须是 1 至 5 的整数')
         if type(self.auto_buy_keycard) is not bool:
             raise ValueError('auto_buy_keycard 必须是布尔值')
         buy_count = self.get('buy_keycard_count', 1)
@@ -410,7 +429,7 @@ class BagelMode(Enum):
     """运行模式。"""
 
     RUN = ConfigItem('跑刀', MODE_RUN, '零携带、零投资入场')
-    KEYCARD = ConfigItem('开房卡', MODE_KEYCARD, '安全箱带 1 张门禁卡')
+    KEYCARD = ConfigItem('开房卡', MODE_KEYCARD, '安全箱带门禁卡，张数可设')
 
 
 class BagelMap(Enum):

@@ -53,7 +53,8 @@ _ENTRY_DIALOG_TIMEOUT_SECONDS: float = 15
 class BagelEnter(BagelOperation):
     """从已知安全画面进入贝果，核实地图、难度、携带和零投资。
 
-    跑刀要求零携带；开房卡（``carry_card``）要求只在安全箱放 1 件物品，即门禁卡。
+    跑刀要求零携带；开房卡（``carry_card``）要求只在安全箱放门禁卡，件数由
+    ``card_carry_count`` 指定，默认 1 件。
     """
 
     STATUS_NEED_CARD: str = '需要挑选门禁卡'
@@ -65,22 +66,29 @@ class BagelEnter(BagelOperation):
         recovery_filter_groups: tuple[tuple[str, ...], ...] | None = None,
         difficulty: str = DEFAULT_DIFFICULTY, map_name: str = MAP_JANUS, carry_card: bool = False,
         card_room_name: str | None = None, card_template: str | None = None, card_reserve: int = 0,
+        card_carry_count: int = 1,
     ) -> None:
         """正式应用首次入场允许清空并重建快捷手册入口；独立工具默认复用现有贝果页。
 
         Args:
             map_name: 进入的地图，雅努斯幻境或城郊幻境。
-            carry_card: 开房卡模式：安全箱必须正好有 1 件物品（门禁卡），背包与装备槽为空，
-                不自动清空战备。安全箱为空时从备战进仓库挑 1 张卡。
+            carry_card: 开房卡模式：安全箱只放门禁卡，张数为 ``card_carry_count``，背包与装备槽为空，
+                不自动清空战备。安全箱不够时从备战进仓库挑卡。
             card_room_name: 开房卡房间显示名称，挑卡时与门禁卡浮窗标题比对。
             card_template: 该房间门禁卡的图标模板，挑卡时给候选格排序。
             card_reserve: 保留张数，挑卡前清点仓库，不多于这个数就不挑。
+            card_carry_count: 一次带入安全箱的门禁卡张数，1 至 5 张，默认 1 张。安全箱共 5 格；
+                不够就一次次回仓库挑，挑到目标张数才入场。
         """
         timeout = 660 if allow_clear_loadout else 240
-        super().__init__(ctx, op_name='贝果-入场', timeout_seconds=timeout + (300 if carry_card else 0))
+        # 每张卡都要单独跑一次挑卡流程，超时按张数留余量。
+        pick_budget = 300 * max(1, card_carry_count) if carry_card else 0
+        super().__init__(ctx, op_name='贝果-入场', timeout_seconds=timeout + pick_budget)
         self.card_room_name: str | None = card_room_name
         self.card_template: str | None = card_template
         self.card_reserve: int = card_reserve
+        self.card_carry_count: int = max(1, card_carry_count)
+        """一次带入安全箱的门禁卡张数；安全箱共 5 格，1 至 5。"""
         self.card_picked: bool = False
         """本次入场是否已经挑过卡；只挑一次，挑完仍不对就停止。"""
         self.difficulty: str = difficulty
@@ -433,12 +441,16 @@ class BagelEnter(BagelOperation):
         return result
 
     def _card_loadout_problem(self, values: dict[str, str], states: list[bool | None]) -> str | None:
-        """开房卡携带核对：背包与装备槽为空，安全箱正好 1 件。不满足时返回停止原因。
+        """开房卡携带核对：背包与装备槽为空，安全箱凑够目标张数。不满足时返回停止原因。
 
         只核对件数，不认卡的种类；带错卡由刷卡处的持卡计数发现。
         """
+        target = max(1, self.card_carry_count)
         if any(states) or not empty_capacity(values.get('背包数量', '')):
-            return f'开房卡只允许在安全箱放 1 张门禁卡，请清空武备、装备、道具和背包；容器 {values}，槽位 {states}'
+            return (
+                f'开房卡只允许在安全箱放 {target} 张门禁卡，请清空武备、装备、道具和背包；'
+                f'容器 {values}，槽位 {states}'
+            )
         pair = parse_capacity_pair(values.get('安全箱数量', ''))
         if pair is None:
             return f'安全箱数量不明，停止并保留现场；容器 {values}'
@@ -446,19 +458,22 @@ class BagelEnter(BagelOperation):
             if self.card_picked or self.card_room_name is None:
                 return '挑卡后安全箱仍为空，停止并保留现场'
             return self.STATUS_NEED_CARD
-        if pair[0] != 1:
-            return f'开房卡只允许在安全箱放 1 张门禁卡，当前安全箱 {values.get("安全箱数量")}'
-        log.info('贝果开房卡：安全箱 %s，背包 %s，按带 1 张门禁卡入场', values.get('安全箱数量'), values.get('背包数量'))
+        if pair[0] < target:
+            # 还没凑够：回「挑选门禁卡」再挑一张；仓库没卡时挑卡节点会失败终止，不会空转。
+            return self.STATUS_NEED_CARD
+        if pair[0] > target:
+            return f'开房卡只允许在安全箱放 {target} 张门禁卡，当前安全箱 {values.get("安全箱数量")}'
+        log.info('贝果开房卡：安全箱 %s，背包 %s，按带 %s 张门禁卡入场', values.get('安全箱数量'), values.get('背包数量'), target)
         return None
 
     @node_from(from_name='核对零携带', status=STATUS_NEED_CARD, ignore_status=False)
     @operation_node(name='挑选门禁卡', screenshot_before_round=False)
     def pick_card(self) -> OperationRoundResult:
-        """安全箱为空时从备战进仓库挑 1 张目标房间的卡，回到备战后重新核对携带。"""
+        """安全箱不够时从备战进仓库挑 1 张目标房间的卡，回到备战后重新核对携带。"""
         self.card_picked = True
         operation = BagelPickKeycard(
             self.ctx, self.card_room_name or '', self.card_template, from_prepare=True,
-            reserve=self.card_reserve,
+            reserve=self.card_reserve, carry_target=self.card_carry_count,
         )
         result = operation.execute()
         self.screenshot()

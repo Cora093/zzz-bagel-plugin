@@ -130,7 +130,7 @@ class BagelApp(ZApplication):
         """本次任务写入的路线数据记录局数；为 0 时不输出汇总表。"""
         self._route_reported: bool = False
         self._card_in_safe: bool = False
-        """开房卡模式：安全箱里是否还有没用掉的门禁卡。入场核对到 1 件时置真，刷开门或入仓后置假。"""
+        """开房卡模式：安全箱里是否还有没用掉的门禁卡。入场核对到卡时置真，刷开门或入仓后置假。"""
         self._round_card_swiped: bool = False
         """开房卡模式：本局是否已刷开房卡门。"""
         self._round_pickup_presses: int = 0
@@ -467,8 +467,8 @@ class BagelApp(ZApplication):
             occupied = safe_occupied_indices(self.last_screenshot)
             if occupied is None:
                 return self.round_fail('结算仓库安全箱格子状态不明，禁止开始新局')
-            # 开房卡留到下一局的门禁卡占安全箱 1 格。
-            allowed = 1 if self.config.is_keycard and self._card_in_safe else 0
+            # 开房卡留到下一局的门禁卡占安全箱若干格，最多是本次携带张数。
+            allowed = self.config.keycard_carry_count if self.config.is_keycard and self._card_in_safe else 0
             if len(occupied) > allowed:
                 return self.round_fail('结算仓库安全箱仍有物资，先核对去向，禁止开始新局')
         self._spawn_hud_misses = 0
@@ -494,6 +494,7 @@ class BagelApp(ZApplication):
             card_room_name=self._keycard_room_name if keycard else None,
             card_template=self.config.keycard_template if keycard else None,
             card_reserve=self.config.keycard_reserve if keycard else 0,
+            card_carry_count=self.config.keycard_carry_count if keycard else 1,
         ).execute()
         if result.success and self._entry_map != map_name:
             self._map_layers = None
@@ -502,7 +503,7 @@ class BagelApp(ZApplication):
             self._warehouse_capacity = result.data
             return self.round_success(self.STATUS_CARDS_OUT)
         if keycard and result.success:
-            # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
+            # 入场已核对过安全箱达到本次携带张数，按带着门禁卡处理。
             self._card_in_safe = True
             self._buy_card_attempted = False
         if retrying_failure and not result.success:

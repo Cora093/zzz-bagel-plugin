@@ -274,7 +274,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         return card
 
     def _make_keycard_card(self, parent: QWidget) -> QWidget:
-        """开房卡专属：房间、路线就绪情况、保留张数。只在开房卡模式显示。"""
+        """开房卡专属：房间、路线就绪情况、保留张数、一次携带张数。只在开房卡模式显示。"""
         card = SimpleCardWidget(parent)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -303,6 +303,17 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
         reserve_row.addWidget(BodyLabel('张门禁卡', card))
         reserve_row.addStretch(1)
         layout.addLayout(reserve_row)
+
+        carry_row = QHBoxLayout()
+        carry_row.setSpacing(8)
+        self.keycard_carry_count: CountSpinBox = CountSpinBox(1, 5, card)
+        self.keycard_carry_count.setAccessibleName('一次携带门禁卡张数')
+        self.keycard_carry_count.setToolTip('安全箱一共 5 格；带几张就挑几张，入场前按这个数核对安全箱')
+        carry_row.addWidget(BodyLabel('一次携带', card))
+        carry_row.addWidget(self.keycard_carry_count)
+        carry_row.addWidget(BodyLabel('张门禁卡', card))
+        carry_row.addStretch(1)
+        layout.addLayout(carry_row)
 
         buy_switch_row = QHBoxLayout()
         buy_switch_row.setSpacing(12)
@@ -823,6 +834,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
             (self.auto_clean_switch, 'auto_clean_warehouse'),
             (self.clean_mode, 'clean_mode'),
             (self.keycard_reserve, 'keycard_reserve'),
+            (self.keycard_carry_count, 'keycard_carry_count'),
             (self.auto_buy_keycard, 'auto_buy_keycard'),
             (self.buy_keycard_count, 'buy_keycard_count'),
         ):
