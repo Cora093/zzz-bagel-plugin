@@ -218,7 +218,10 @@ WALK_STOP_TURN_ANGLE: float = 16.0
 """行进中触发停车转向的偏差阈值（度）：与 ``WALK_TURN_ANGLE`` 组成滞回带。
 
 行进中偏差在 16 度以内继续边走边修，超过 16 度才松键停车，停车后转回 10 度内再走，
-避免 10 度边缘因朝向读数 ±2 度抖动反复松键停顿和打断冲刺。"""
+避免 10 度边缘因朝向读数 ±2 度抖动反复松键停顿和打断冲刺。
+
+行进中要连续两张不同截图都超过 16 度才停车：朝向识别偶有单帧跳变（扇区被图标、
+暖色背景短暂污染），单帧就停会白白松键一次。真实大偏差只晚一张截图停车。"""
 
 SMALL_STEP_PRESS: float = 0.10
 """碎步单次按压时长（秒）。两次短按之间的停顿由 ``STEP_REST_SECONDS`` 管。
@@ -682,6 +685,8 @@ class BagelRouteWalker(BagelOperation):
         """当前是否在冲刺。"""
         self.turning_in_place: bool = False
         """巡航中是否已进入停车等转向；用于 ``WALK_STOP_TURN_ANGLE`` 与 ``WALK_TURN_ANGLE`` 滞回判断。"""
+        self.cruise_over_frame: float | None = None
+        """巡航中偏差首次超过停车阈值的截图时间戳；下一张不同截图仍超过才停车，过滤单帧跳变。"""
         self.last_dodge_at: float | None = None
         """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
         self.turn_memory: TurnRatioMemory | None = turn_memory
@@ -2315,7 +2320,8 @@ class BagelRouteWalker(BagelOperation):
 
         转向全由转向线程负责（稳 3 帧、2 度以上才转）。这里按滞回束角管前进：
         行进中偏差超过 16 度松键停车等转，停车后转回 10 度以内恢复前进；
-        同时走和大角度转会互相干扰，表现为原地乱转。
+        同时走和大角度转会互相干扰，表现为原地乱转。超过 16 度要连续两张不同截图确认，
+        第一张照常边走边修，单帧朝向跳变不会触发停车。
 
         近距离不再按角度停车转：这个距离上的目标方位由定位抖动决定，
         停下车来按它转只会原地打摆，改成边走边转（线程内限幅 CRUISE_TURN_CAP）。
@@ -2331,11 +2337,22 @@ class BagelRouteWalker(BagelOperation):
         near = distance <= NEAR_STEP_TURN_RADIUS
         self._diag_cruise(point, position, angle_diff, distance)
         stop_limit = WALK_TURN_ANGLE if self.turning_in_place else WALK_STOP_TURN_ANGLE
-        stop_turn = abs(angle_diff) > stop_limit and not near
+        over = abs(angle_diff) > stop_limit and not near
+        if not over:
+            self.cruise_over_frame = None
+            stop_turn = False
+        elif self.turning_in_place:
+            stop_turn = True
+        else:
+            # 行进中首次超阈值：记下这张截图，同一张截图的后续轮次不算确认。
+            if self.cruise_over_frame is None:
+                self.cruise_over_frame = self.last_screenshot_time
+            stop_turn = self.last_screenshot_time > self.cruise_over_frame
         self._submit_turn(target_angle, angle, cruise_only=not stop_turn, deadband=TURN_DEADBAND_FAST)
         if stop_turn:
             # 大偏差：松键停车等转向线程转到位再走。
             self.turning_in_place = True
+            self.cruise_over_frame = None
             self._release_forward()
             return self.round_wait(f'停车等转向 {angle_diff:.0f}度')
         self.turning_in_place = False
@@ -2556,6 +2573,7 @@ class BagelRouteWalker(BagelOperation):
             return miss
         angle_diff = cal_utils.angle_delta(angle % 360, target_angle)
         near = distance <= NEAR_STEP_TURN_RADIUS
+        self.cruise_over_frame = None
         stop_turn = abs(angle_diff) > (NEAR_STOP_TURN_ANGLE if near else WALK_TURN_ANGLE)
         self._submit_turn(target_angle, angle, cruise_only=near and not stop_turn)
         if stop_turn:
@@ -2896,6 +2914,7 @@ class BagelRouteWalker(BagelOperation):
         self.small_step_since = None
         self.steps = 0
         self.turning_in_place = False
+        self.cruise_over_frame = None
         self.stuck_since = None
         self.stuck_steps = 0
         self.slow_stuck_since = None
@@ -2975,6 +2994,7 @@ class BagelRouteWalker(BagelOperation):
         self.input_worker.set_turn_paused(True)
         self._release_forward()
         self.turning_in_place = False
+        self.cruise_over_frame = None
         self.selection.reset(self.last_screenshot_time)
         self.select_since = None
         self.card_stable_since = None
