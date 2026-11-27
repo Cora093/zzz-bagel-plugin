@@ -244,19 +244,13 @@ def choose_store_action(
     传了 ``quantity`` 时，满箱且最好的候选与箱内最差的一格优先级相同，再比件数：
     见 `_swap_by_quantity`。只有走到这一步才读数量，平时不多做 OCR。
     """
-    candidates = [mark for mark in results if mark.item_type != ITEM_TYPE_CURRENCY]
-    if not candidates:
+    ordered = _ordered_candidates(results, blueprint_priority)
+    if not ordered:
         return None
-    ordered = sorted(
-        candidates,
-        key=lambda mark: (*mark.priority(blueprint_priority), -mark.index),
-        reverse=True,
-    )
     if stack_target is not None:
-        for mark in ordered:
-            destination = stack_target(mark)
-            if destination is not None:
-                return StoreChoice(ACTION_STACK, mark.index, destination, mark)
+        stack = choose_stack_action(ordered, blueprint_priority, stack_target)
+        if stack is not None:
+            return stack
     candidate = ordered[0]
     if safe_empty:
         return StoreChoice(ACTION_FILL, candidate.index, safe_empty[0], candidate)
@@ -272,6 +266,115 @@ def choose_store_action(
     return None
 
 
+def _ordered_candidates(results: Sequence[BagelSlotMark], blueprint_priority: bool) -> list[BagelSlotMark]:
+    """去掉金币，按优先级从高到低排；同优先级时下标小的在前。"""
+    return sorted(
+        (mark for mark in results if mark.item_type != ITEM_TYPE_CURRENCY),
+        key=lambda mark: (*mark.priority(blueprint_priority), -mark.index),
+        reverse=True,
+    )
+
+
+def choose_stack_action(
+    results: Sequence[BagelSlotMark],
+    blueprint_priority: bool,
+    stack_target: Callable[[BagelSlotMark], int | None],
+) -> StoreChoice | None:
+    """按优先级从高到低找第一件能叠到安全箱里的候选；没有返回 None。
+
+    Args:
+        results: 候选格。
+        blueprint_priority: 蓝图优先开关。
+        stack_target: 给一件候选找安全箱里可叠放的格子，找不到为 None。
+    """
+    for mark in _ordered_candidates(results, blueprint_priority):
+        destination = stack_target(mark)
+        if destination is not None:
+            return StoreChoice(ACTION_STACK, mark.index, destination, mark)
+    return None
+
+
+def _count_key(count: int | None) -> tuple[bool, int]:
+    """候选取最大用的件数键：读得出的比读不出的大，再按件数。"""
+    return count is not None, count or 0
+
+
+def _safe_count_key(count: int | None) -> tuple[bool, int]:
+    """箱内取最差用的件数键：读得出的比读不出的小，再按件数；读不出的最后才被挑中。"""
+    return count is None, count or 0
+
+
+def plan_store_moves(
+    backpack: Sequence[BagelSlotMark],
+    safes: Sequence[BagelSlotMark],
+    safe_empty: Sequence[int],
+    blueprint_priority: bool,
+    quantity: Callable[[BagelSlotMark], int | None],
+) -> list[StoreChoice]:
+    """整理背包用：一次算出全部填空和对换，执行时不再重读件数、不再重算。
+
+    候选按（优先级, 件数）从高到低依次处理：有空格就填；没空格就和箱内还没换过的
+    最差一格比，优先级严格更高，或同优先级、都是可叠放类型且件数严格更多才对换，
+    否则停止（后面的候选只会更差）。换进去的格子本次不再换出，所以每个安全箱格最多
+    拖一次，件数读错最多白换一次，不会来回换。
+
+    件数只读可叠放类型，其余按 1 件，每格最多读一次。读不出件数的格子不参与件数比较：
+    箱内的不按件数换出，背包里的不按件数换入（仍可填空，或按优先级换入）。
+
+    返回顺序即执行顺序：先对换，再按背包格从后往前填空。对换后源格换进箱里原来那件，
+    背包占用不变；填空从后往前取，背包即使前移补位，也不影响还没执行的源格。
+
+    Args:
+        backpack: 背包已占用、品质认得出的格子。
+        safes: 安全箱已占用格。
+        safe_empty: 安全箱空格下标。
+        blueprint_priority: 蓝图优先开关。
+        quantity: 读一格件数，读不出为 None。
+    """
+    counts: dict[tuple[bool, int], int | None] = {}
+
+    def count(mark: BagelSlotMark, in_safe: bool) -> int | None:
+        if mark.item_type not in STACKABLE_TYPES:
+            return 1
+        key = (in_safe, mark.index)
+        if key not in counts:
+            counts[key] = quantity(mark)
+        return counts[key]
+
+    candidates = sorted(
+        (mark for mark in backpack if mark.item_type != ITEM_TYPE_CURRENCY),
+        key=lambda mark: (mark.priority(blueprint_priority), _count_key(count(mark, False)), -mark.index),
+        reverse=True,
+    )
+    empty = sorted(safe_empty)
+    unlocked = list(safes)
+    fills: list[StoreChoice] = []
+    swaps: list[StoreChoice] = []
+    for mark in candidates:
+        if empty:
+            fills.append(StoreChoice(ACTION_FILL, mark.index, empty.pop(0), mark))
+            continue
+        if not unlocked:
+            break
+        worst = min(
+            unlocked,
+            key=lambda safe: (safe.priority(blueprint_priority), _safe_count_key(count(safe, True)), safe.index),
+        )
+        level = mark.priority(blueprint_priority)
+        worst_level = worst.priority(blueprint_priority)
+        if level > worst_level:
+            swaps.append(StoreChoice(ACTION_SWAP, mark.index, worst.index, mark))
+        elif level == worst_level and mark.item_type in STACKABLE_TYPES and worst.item_type in STACKABLE_TYPES:
+            mine, theirs = count(mark, False), count(worst, True)
+            if mine is None or theirs is None or mine <= theirs:
+                break
+            swaps.append(StoreChoice(ACTION_SWAP, mark.index, worst.index, mark, mine, theirs))
+        else:
+            break
+        unlocked = [safe for safe in unlocked if safe.index != worst.index]
+    return swaps + sorted(fills, key=lambda choice: choice.source_index, reverse=True)
+
+
 def _swap_by_quantity(
     ordered: Sequence[BagelSlotMark],
     safes: Sequence[BagelSlotMark],
@@ -284,7 +387,9 @@ def _swap_by_quantity(
     只在两边都是箱内最低的那一档优先级时比较；件数严格更多才换。只比 STACKABLE_TYPES：
     其他类型不叠放，件数总是 1，不读也就不会把「1」误读成「11」去白换一次。
     读不出件数的格子不参与：换掉一格已知件数更少的，总是让安全箱变好，不需要知道
-    未知格的件数。每次对换让这一档的总件数严格增加，所以不会来回换。
+    未知格的件数。件数读对时每次对换让这一档的总件数严格增加；但件数可能读错（#120 把
+    1 读成 11），所以不能靠它防回摆。开箱入箱由调用方保证：对换过的结果格不再参与挑选。
+    整理背包不走这里，改用 `plan_store_moves` 一次算出计划。
 
     Args:
         ordered: 候选，已按优先级从高到低排好。

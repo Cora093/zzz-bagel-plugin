@@ -1,8 +1,9 @@
 """正常退出前整理背包：把背包里比安全箱更值钱的物品换进安全箱。
 
 退出时游戏只保留安全箱物资，背包里的东西带不出去。路上直接拾取的物品都进背包，
-所以退出前按 B 打开局内背包页，按入箱同一套优先级逐件叠放、填空或对换。
+所以退出前按 B 打开局内背包页，按入箱同一套优先级把物品换进安全箱。
 安全箱里已有同一种材料时先叠上去，不占格子，也不把箱里别的物品换出来。
+叠放做完后只读一次画面，一次算出全部填空和对换再逐步执行，不在中途重算。
 
 背包页左栏（队伍、道具、背包）整体可以滚动，打开时的滚动位置不固定，背包格不能写死。
 每次先用 OCR 找「背包(n/20)」标题，按标题定各排格心；件数多于可见格时先往下滚。
@@ -29,9 +30,11 @@ from ..vision.item_vision import (
     ACTION_SWAP,
     QUALITY_UNKNOWN,
     BagelSlotMark,
-    choose_store_action,
+    StoreChoice,
+    choose_stack_action,
     find_stack_target,
     inspect_occupied,
+    plan_store_moves,
     stack_icon_unchanged,
 )
 from ..vision.quantity import read_quantity
@@ -102,7 +105,7 @@ class BagelOrganizeBackpack(BagelOperation):
     DRAG_REPEAT_LIMIT: int = 1
     """拖拽后画面没确认时的重拖次数；仍不行就跳过这一格。"""
     ACTION_LIMIT: int = 20
-    """本次最多发出的拖拽数；每次对换都让安全箱严格变好，正常远用不到。"""
+    """本次最多发出的拖拽数，只作兜底；计划每个安全箱格最多拖一次，正常远用不到。"""
     PANEL_WAIT_LIMIT: int = 10
     """背包页或安全箱格子认不清时的等待帧数上限（每帧约 0.3 秒）。"""
 
@@ -133,6 +136,8 @@ class BagelOrganizeBackpack(BagelOperation):
         self._skipped: set[int] = set()
         self._stack_blocked: set[tuple[int, int]] = set()
         """试过叠放却没成的（背包格, 安全箱格）；本次整理不再试这一对。"""
+        self._plan: list[StoreChoice] | None = None
+        """还没执行的填空和对换；None 表示还在计划前的叠放阶段。"""
         self._panel_wait: int = 0
         self._pending_before: MatLike | None = None
         self._pending_source: int | None = None
@@ -157,6 +162,7 @@ class BagelOrganizeBackpack(BagelOperation):
         self._actions = 0
         self._skipped = set()
         self._stack_blocked = set()
+        self._plan = None
         self._panel_wait = 0
         self._pressed_at = None
         self._esc_at = None
@@ -274,10 +280,11 @@ class BagelOrganizeBackpack(BagelOperation):
     @node_from(from_name='核对整理变化', status=_STATUS_NEXT)
     @operation_node(name='逐件换入安全箱')
     def store_next(self) -> OperationRoundResult:
-        """每次只拖一件：能叠放先叠放；有空格就填，满了只和箱内最差的一格严格更优才对换。
+        """每次只拖一件，分三段：先逐件叠放；叠不了时一次算出计划，逐步执行；最后再叠一轮。
 
-        同优先级时比件数，件数严格更多才对换，规则与开箱入箱相同。换出来的物品落回
-        背包，下一轮可能再参与比较；每次对换都让这一档的总件数严格增加，不会来回换。
+        计划见 `plan_store_moves`：每个安全箱格最多换一次，执行中不重读件数，
+        所以件数读错（如把 1 读成 11）也不会让同一对格子来回换。计划执行完再叠一轮，
+        处理刚换进箱的物品与背包里同种物品可以叠上去的情况。
         """
         if not self._backpack_open():
             return self._wait_panel('背包页不在画面内')
@@ -288,11 +295,20 @@ class BagelOrganizeBackpack(BagelOperation):
         self._panel_wait = 0
         backpack = self._backpack_marks()
         safes = inspect_occupied(screen, SAFE_SLOT_CENTERS, safe.occupied)
-        choice = choose_store_action(
-            backpack, safes, safe.empty, self.blueprint_priority,
-            stack_target=lambda mark: find_stack_target(screen, mark, safes, self._stack_blocked),
-            quantity=lambda mark: read_quantity(self.ctx, screen, mark.center),
-        )
+        choice: StoreChoice | None = None
+        if not self._plan:
+            choice = choose_stack_action(
+                backpack, self.blueprint_priority,
+                lambda mark: find_stack_target(screen, mark, safes, self._stack_blocked),
+            )
+            if choice is None and self._plan is None:
+                self._plan = plan_store_moves(
+                    backpack, safes, safe.empty, self.blueprint_priority,
+                    lambda mark: read_quantity(self.ctx, screen, mark.center),
+                )
+                self._log_plan(self._plan)
+        while choice is None and self._plan:
+            choice = self._take_planned(backpack, safe.empty)
         if choice is None:
             return self.round_success(self.STATUS_DONE)
         if self._actions >= self.ACTION_LIMIT:
@@ -454,6 +470,34 @@ class BagelOrganizeBackpack(BagelOperation):
             self._esc_at = now
             return self.round_wait('关闭背包页', wait=_PAGE_POLL_SECONDS)
         return self.round_retry('等待回到局内画面', wait=0.5)
+
+    def _log_plan(self, plan: list[StoreChoice]) -> None:
+        """把算出的计划整份写进日志，便于和后续逐步执行的日志对照。"""
+        if not plan:
+            log.info('贝果整理背包：叠放后无需填空或对换')
+            return
+        steps = '；'.join(
+            f'背包格 {step.source_index + 1} -> 安全箱格 {step.dest_index + 1}（{_KIND_LABEL[step.kind]}）'
+            for step in plan
+        )
+        log.info('贝果整理背包：一次算出 %s 步：%s', len(plan), steps)
+
+    def _take_planned(self, backpack: list[BagelSlotMark], safe_empty: tuple[int, ...]) -> StoreChoice | None:
+        """取出计划下一步；源格或目标格已与计划对不上时跳过这一步，返回 None。
+
+        源格要仍是计划时那件（品质和类型相同）；填空的目标格要仍空，对换的目标格要仍占用。
+        """
+        step = self._plan.pop(0)
+        source = next((mark for mark in backpack if mark.index == step.source_index), None)
+        dest_empty = step.dest_index in safe_empty
+        if (source is None or source.quality != step.mark.quality or source.item_type != step.mark.item_type
+                or dest_empty != (step.kind == ACTION_FILL)):
+            log.warning(
+                '贝果整理背包：计划的背包格 %s -> 安全箱格 %s（%s）已对不上画面，跳过这一步',
+                step.source_index + 1, step.dest_index + 1, _KIND_LABEL[step.kind],
+            )
+            return None
+        return step
 
     def _backpack_marks(self) -> list[BagelSlotMark]:
         """已定位的背包格里有物品、品质认得出、且没被跳过的格子。"""
