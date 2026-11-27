@@ -1051,7 +1051,7 @@ class BagelInputWorker:
     def scroll_prompt(self, down: bool) -> None:
         """在当前位置同步发送一格滚轮。返回时可开始等待输入后的新截图。"""
         with self._mouse_lock:
-            scroll_interaction_row(down)
+            scroll_interaction_row(down, self.ctx.controller)
 
     def release_all(self) -> None:
         """暂停时调用：作废排队中的即时动作，并立刻松开全部按键。"""

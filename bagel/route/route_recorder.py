@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 import time
 from pathlib import Path
 from threading import Event
@@ -80,7 +81,27 @@ def is_foreground(hwnd: int) -> bool:
     Returns:
         前台时为 True。
     """
-    return int(ctypes.windll.user32.GetForegroundWindow()) == int(hwnd)
+    if sys.platform == 'win32':
+        return int(ctypes.windll.user32.GetForegroundWindow()) == int(hwnd)
+    if sys.platform == 'darwin':
+        import Quartz
+        from AppKit import NSWorkspace
+
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionIncludingWindow,
+            int(hwnd),
+        )
+        owner_pid = None
+        for window in windows or ():
+            pid = window.get(Quartz.kCGWindowOwnerPID)
+            if pid is not None:
+                owner_pid = int(pid)
+                break
+        if owner_pid is None:
+            return False
+        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return front is not None and int(front.processIdentifier()) == owner_pid
+    return False
 
 
 def wait_foreground(hwnd: int, timeout: float, stop: Event | None = None) -> bool:

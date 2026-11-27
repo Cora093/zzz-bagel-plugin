@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sys
 import threading
 import time
 from collections import Counter, defaultdict
@@ -12,9 +13,35 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import psutil
-import win32process
 from one_dragon.utils.log_utils import log
-from pywintypes import error as WinError
+
+if sys.platform == 'win32':
+    import win32process
+    from pywintypes import error as WinError
+elif sys.platform == 'darwin':
+    import Quartz
+    win32process = None
+    WinError = OSError
+else:
+    win32process = None
+    WinError = OSError
+
+
+def _get_pid_by_hwnd(hwnd: int) -> int | None:
+    """根据窗口句柄获取所属进程 PID（支持 Windows 与 macOS）。"""
+    if sys.platform == 'win32' and win32process is not None:
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return int(pid) if pid else None
+    if sys.platform == 'darwin':
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionIncludingWindow,
+            int(hwnd),
+        )
+        for window in windows or ():
+            owner_pid = window.get(Quartz.kCGWindowOwnerPID)
+            if owner_pid is not None:
+                return int(owner_pid)
+    return None
 
 
 def movement_stage(node: str, status: str) -> str:
@@ -81,7 +108,7 @@ class CaptureStats:
             if self._game is None:
                 hwnd = self._get_hwnd()
                 if hwnd:
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    pid = _get_pid_by_hwnd(hwnd)
                     if pid:
                         self._game = psutil.Process(pid)
             if self._game is not None:
