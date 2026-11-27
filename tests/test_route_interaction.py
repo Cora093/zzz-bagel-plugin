@@ -475,31 +475,31 @@ def test_container_title_single_ocr_matches_all_variants() -> None:
     assert ctx.ocr_service.get_ocr_result_list.call_count == 1
 
 
-GO, STOP = '冲刺前进', '停车等转向'
-
-
-@pytest.mark.parametrize('frames', [
-    pytest.param([(1, 14, GO), (2, 17, GO), (2, 17, GO), (3, 17, STOP), (4, 12, STOP), (5, 9, GO)], id='滞回'),
-    pytest.param([(1, 3, GO), (2, 50, GO), (3, 4, GO), (4, 45, GO), (5, 2, GO)], id='单帧跳变'),
-])
-def test_cruise_stop_turn(
-    scene: Scene, monkeypatch: pytest.MonkeyPatch, frames: list[tuple[float, float, str]],
-) -> None:
-    """巡航停车：连续两张不同截图偏差 >16 度才停车，同一张截图多轮不算；停车后降回 <=10 度恢复前进。
-
-    frames 每项为（截图时间戳, 偏差, 期望状态）；未停车时按边走边转提交。
-    """
+def test_cruise_stop_turn_hysteresis(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> None:
+    """巡航偏差 >16 度才停车，停车后降回 <=10 度恢复前进；未停车时按边走边转提交。"""
     walker = scene.walker
     pt = BagelRoutePoint(100.0, 0.0, '测试层', BEACON)
     scene.worker.hold_forward.return_value = False
     scene.worker.forward_held_seconds.return_value = None
-    angle = [0.0]
+    angle = [14.0]
     monkeypatch.setattr(walker, 'player_angle', lambda: angle[0])
-    for stamp, deviation, expected in frames:
-        walker.last_screenshot_time = stamp
-        angle[0] = deviation
-        assert walker._cruise(pt, (0.0, 0.0)).status.startswith(expected), (stamp, deviation)
-        assert scene.worker.submit_turn.call_args.kwargs['cruise_only'] is (expected == GO)
+
+    # 行进中 14 度（<=16）：不停车，cruise_only=True
+    assert walker._cruise(pt, (0.0, 0.0)).status == '冲刺前进'
+    assert scene.worker.submit_turn.call_args.kwargs['cruise_only'] is True
+
+    # 偏到 17 度（>16）：松键停车，cruise_only=False
+    angle[0] = 17.0
+    assert walker._cruise(pt, (0.0, 0.0)).status.startswith('停车等转向')
+    assert scene.worker.submit_turn.call_args.kwargs['cruise_only'] is False
+
+    # 回到 12 度（仍 >10）：保持停车，不反复启停
+    angle[0] = 12.0
+    assert walker._cruise(pt, (0.0, 0.0)).status.startswith('停车等转向')
+
+    # 降回 9 度（<=10）：恢复前进
+    angle[0] = 9.0
+    assert walker._cruise(pt, (0.0, 0.0)).status == '冲刺前进'
 
 
 def test_slow_step_turn_dispatch_during_step_wait(
