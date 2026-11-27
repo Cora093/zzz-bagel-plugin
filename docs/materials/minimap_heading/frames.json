@@ -55,5 +55,10 @@
 {"file": "misc_160.webp", "scene": "misc", "reference": 160.1, "fit": {"width": 116.2, "rms": 0.24, "apex": [97.25, 99.12]}},
 {"file": "misc_229.webp", "scene": "misc", "reference": 228.71, "fit": {"width": 117.3, "rms": 0.2, "apex": [98.37, 102.12]}},
 {"file": "misc_324.webp", "scene": "misc", "reference": 324.12, "fit": {"width": 117.4, "rms": 0.24, "apex": [103.03, 100.89]}},
-{"file": "none_backpack.webp", "scene": "none_backpack", "reference": null, "note": "局内背包"}
+{"file": "none_backpack.webp", "scene": "none_backpack", "reference": null, "note": "局内背包"},
+{"file": "poster_036.webp", "scene": "poster", "reference": 36, "note": "仓储二层黄色海报；录屏帧，参考方向取镜头未动时前几帧的读数"},
+{"file": "poster_095.webp", "scene": "poster", "reference": 95, "note": "仓储二层黄色海报；录屏帧，参考方向取日志中转向目标的方位"},
+{"file": "poster_085.webp", "scene": "poster", "reference": 85, "note": "仓储二层黄色海报；MCP 无损截图，参考方向按扇区两条直边目视估计；宽门污染度 0.24，贴近换门阈值"},
+{"file": "poster_100.webp", "scene": "poster", "reference": 100, "note": "仓储二层黄色海报；MCP 无损截图，参考方向按扇区两条直边目视估计；旧实现读成 42 度"},
+{"file": "poster_038.webp", "scene": "poster", "reference": 38, "note": "仓储二层黄色海报；MCP 无损截图，参考方向按扇区两条直边目视估计；旧实现读成 269 度"}
 ]
